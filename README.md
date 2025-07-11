@@ -24,6 +24,7 @@ An AI-powered financial modeling and cash flow forecasting system built with Fas
 
 3. **Access the services**
    - **FastAPI Backend**: http://localhost:8000
+   - **React Frontend**: http://localhost:3000
    - **API Documentation**: http://localhost:8000/docs
    - **Ollama LLM Service**: http://localhost:11434
    - **Whisper ASR Service**: http://localhost:9000
@@ -163,7 +164,7 @@ python test_llm_service.py
 
 ## 🔮 Next Steps
 
-1. **Frontend Development**: Add React frontend for user interface
+1. **Frontend Development**: Basic React interface is now available at `http://localhost:3000`
 2. **Voice Integration**: Implement Whisper API calls for voice input
 3. **Advanced Forecasting**: Add more sophisticated financial modeling
 4. **Data Import/Export**: Implement CSV import/export functionality

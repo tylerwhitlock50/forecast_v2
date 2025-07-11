@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forecast AI Frontend</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #chat { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: auto; margin-top: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 4px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    function App() {
+      const [message, setMessage] = React.useState('');
+      const [useAgent, setUseAgent] = React.useState(false);
+      const [chatLog, setChatLog] = React.useState([]);
+      const [logs, setLogs] = React.useState([]);
+      const [forecast, setForecast] = React.useState([]);
+      const apiBase = 'http://localhost:8000';
+
+      React.useEffect(() => {
+        fetchLogs();
+        fetchForecast();
+      }, []);
+
+      const fetchLogs = async () => {
+        try {
+          const res = await fetch(`${apiBase}/logs/execution?limit=10`);
+          const data = await res.json();
+          if (data.status === 'success') {
+            setLogs(data.data.logs);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      const fetchForecast = async () => {
+        try {
+          const res = await fetch(`${apiBase}/forecast/results?limit=10`);
+          const data = await res.json();
+          if (data.status === 'success') {
+            setForecast(data.data.results);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      const sendMessage = async () => {
+        if (!message) return;
+        const endpoint = useAgent ? '/agent' : '/chat';
+        const res = await fetch(`${apiBase}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message })
+        });
+        const data = await res.json();
+        const response = data.data.response || data.data.explanation || 'No response';
+        setChatLog([...chatLog, { message, response }]);
+        setMessage('');
+        fetchLogs();
+      };
+
+      React.useEffect(() => {
+        if (forecast.length === 0) return;
+        const ctx = document.getElementById('forecastChart').getContext('2d');
+        new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: forecast.map(f => f.period),
+            datasets: [{
+              label: 'Revenue',
+              data: forecast.map(f => f.total_revenue),
+              backgroundColor: 'rgba(54, 162, 235, 0.5)'
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+      }, [forecast]);
+
+      return (
+        <div>
+          <h1>Forecast AI Frontend</h1>
+          <textarea rows="3" cols="60" placeholder="Ask something..." value={message} onChange={e => setMessage(e.target.value)} />
+          <br />
+          <label>
+            <input type="checkbox" checked={useAgent} onChange={e => setUseAgent(e.target.checked)} />
+            Use Agent Endpoint
+          </label>
+          <button onClick={sendMessage}>Send</button>
+
+          <div id="chat">
+            {chatLog.map((c, i) => (
+              <div key={i}>
+                <strong>You:</strong> {c.message}<br />
+                <strong>AI:</strong> {c.response}
+                <hr />
+              </div>
+            ))}
+          </div>
+
+          <h2>Execution Logs</h2>
+          <table>
+            <thead>
+              <tr><th>ID</th><th>Date</th><th>SQL</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {logs.map(log => (
+                <tr key={log.log_id}>
+                  <td>{log.log_id}</td>
+                  <td>{log.execution_date}</td>
+                  <td>{log.sql_statement}</td>
+                  <td>{log.execution_status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h2>Forecast Results</h2>
+          <div style={{height: '300px'}}>
+            <canvas id="forecastChart"></canvas>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
