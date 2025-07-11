@@ -1,0 +1,11 @@
+rate_id,rate_name,rate_description,rate_amount,rate_type
+RATE-001,Heavy Equipment,Heavy equipment operator,35.00,Hourly
+RATE-002,Light Equipment,Light equipment operator,28.00,Hourly
+RATE-003,Manual Labor,General manual labor,22.00,Hourly
+RATE-004,Supervisor,Production supervisor,45.00,Hourly
+RATE-005,Manager,Department manager,65.00,Hourly
+RATE-006,Machinist,CNC machinist,40.00,Hourly
+RATE-007,Technician,Maintenance technician,38.00,Hourly
+RATE-008,Engineer,Production engineer,55.00,Hourly
+RATE-009,Quality Control,Quality control inspector,32.00,Hourly
+RATE-010,Administrative,Administrative staff,25.00,Hourly

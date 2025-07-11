@@ -1,0 +1,11 @@
+employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date
+EMP-001,John Doe,40,35.00,Heavy Equipment,2024-01-01,2024-12-31
+EMP-002,Jane Smith,40,28.00,Light Equipment,2024-01-01,2024-12-31
+EMP-003,Mike Johnson,40,22.00,Manual Labor,2024-01-01,2024-12-31
+EMP-004,Sarah Wilson,40,45.00,Supervisor,2024-01-01,2024-12-31
+EMP-005,Tom Brown,40,65.00,Manager,2024-01-01,2024-12-31
+EMP-006,Lisa Davis,40,40.00,Machinist,2024-01-01,2024-12-31
+EMP-007,David Miller,40,38.00,Technician,2024-01-01,2024-12-31
+EMP-008,Amy Garcia,40,55.00,Engineer,2024-01-01,2024-12-31
+EMP-009,Chris Rodriguez,40,32.00,Quality Control,2024-01-01,2024-12-31
+EMP-010,Karen Martinez,40,25.00,Administrative,2024-01-01,2024-12-31

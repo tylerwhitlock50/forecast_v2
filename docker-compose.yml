@@ -1,0 +1,44 @@
+services:
+  fastapi:
+    build: ./app
+    container_name: forecast-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+      - ./app:/app
+    depends_on:
+      - ollama
+      - whisper
+    networks:
+      - forecast-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - forecast-network
+    restart: unless-stopped
+
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+  # ← Replaced broken OpenAI GHCR image
+    container_name: whisper
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data:/data
+    networks:
+      - forecast-network
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+
+networks:
+  forecast-network:
+    driver: bridge

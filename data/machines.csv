@@ -1,0 +1,16 @@
+machine_id,machine_name,machine_description,machine_rate,labor_type
+M0001,Excavator,Heavy excavation equipment,150.00,Heavy
+M0002,Backhoe,Backhoe loader for digging,120.00,Heavy
+M0003,Skid Steer,Compact skid steer loader,100.00,Heavy
+M0004,Loader,Wheel loader for material handling,130.00,Heavy
+M0005,Tractor,Agricultural tractor,80.00,Heavy
+M0006,Crane,Overhead crane system,200.00,Heavy
+M0007,Truck,Dump truck for transport,90.00,Heavy
+M0008,Scraper,Earth moving scraper,110.00,Heavy
+M0009,Pile Driver,Foundation pile driver,180.00,Heavy
+M0010,Pile Driver,Foundation pile driver,180.00,Heavy
+M0011,CNC-Milling,CNC milling machine,75.00,Machinist
+M0012,CNC-Lathe,CNC lathe machine,70.00,Machinist
+M0013,CNC-Plasma,CNC plasma cutter,60.00,Machinist
+M0014,CNC-Waterjet,CNC waterjet cutter,85.00,Machinist
+M0015,Manual-Labor,Manual labor station,25.00,Laborer

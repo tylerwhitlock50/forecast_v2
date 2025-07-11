@@ -1,0 +1,6 @@
+customer_id,customer_name,customer_type,region
+CUST-001,ACME Corp,Manufacturing,North
+CUST-002,TechStart,Technology,West
+CUST-003,Global Inc,Distribution,South
+CUST-004,Precision Parts,Manufacturing,East
+CUST-005,Innovation Labs,Technology,Central 
