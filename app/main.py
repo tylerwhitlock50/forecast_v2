@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
@@ -21,6 +21,9 @@ from db import (
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
 from services.agent_service import agent_service, AgentRequest
+from services.whisper_service import whisper_service
+from utils.data_loader import load_csv_to_table
+from utils.data_quality import get_data_quality_issues
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -118,6 +121,53 @@ async def agent_endpoint(request: ChatRequest):
         return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/voice", response_model=ForecastResponse)
+async def voice_command(audio: UploadFile = File(...), session_id: Optional[str] = None):
+    """Process a voice command via Whisper and the agent service"""
+    try:
+        audio_bytes = await audio.read()
+        transcript = await whisper_service.transcribe(audio_bytes)
+        context = {"session_id": session_id} if session_id else {"session_id": "default"}
+        agent_request = AgentRequest(message=transcript, context=context)
+        result = await agent_service.run(agent_request)
+        return ForecastResponse(
+            status="success",
+            data={"transcript": transcript, "response": result},
+            message="Voice command processed"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/load_table", response_model=ForecastResponse)
+async def load_table_endpoint(
+    table_name: str = Query(..., description="Destination table name"),
+    mode: str = Query("append", description="append or replace"),
+    csv_file: UploadFile = File(...),
+):
+    """Load CSV data into a database table"""
+    try:
+        csv_bytes = await csv_file.read()
+        result = load_csv_to_table(table_name, csv_bytes, if_exists=mode)
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["error"])
+        return ForecastResponse(
+            status="success",
+            data={"rows_loaded": result["rows_loaded"]},
+            message=f"Loaded {result['rows_loaded']} rows into {table_name}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/data_quality", response_model=ForecastResponse)
+async def data_quality_endpoint():
+    """Return basic data quality checks"""
+    result = get_data_quality_issues()
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["error"])
+    return ForecastResponse(status="success", data=result["data"], message="Data quality check complete")
 
 @app.post("/preview_sql", response_model=ForecastResponse)
 async def preview_sql_endpoint(request: SQLApplyRequest):

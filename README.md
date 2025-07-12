@@ -76,6 +76,10 @@ forecasting/
 | `/chat` | POST | Natural language to SQL conversion (LLM-powered) |
 | `/preview_sql` | POST | Preview SQL execution without applying changes |
 | `/apply_sql` | POST | Execute approved SQL transformations |
+| `/agent` | POST | Interact with the LangChain agent |
+| `/voice` | POST | Voice commands via Whisper and agent |
+| `/load_table` | POST | Upload CSV data into a table (append or replace) |
+| `/data_quality` | GET | Check for unmatched or incomplete data |
 | `/forecast` | GET | Get current forecast data |
 | `/recalculate` | POST | Recalculate all forecasts |
 | `/snapshot` | GET | Export database snapshot |
@@ -165,10 +169,9 @@ python test_llm_service.py
 ## 🔮 Next Steps
 
 1. **Frontend Development**: Basic React interface is now available at `http://localhost:3000`
-2. **Voice Integration**: Implement Whisper API calls for voice input
-3. **Advanced Forecasting**: Add more sophisticated financial modeling
-4. **Data Import/Export**: Implement CSV import/export functionality
-5. **Model Fine-tuning**: Customize LLM for specific forecasting scenarios
+2. **Advanced Forecasting**: Add more sophisticated financial modeling
+3. **Data Import/Export**: Implement CSV import/export functionality
+4. **Model Fine-tuning**: Customize LLM for specific forecasting scenarios
 
 ## 📝 License
 

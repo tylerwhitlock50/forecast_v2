@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Optional, Dict, Any
 
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from langchain_community.llms.ollama import Ollama
 from langchain_community.utilities.sql_database import SQLDatabase
+from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
+from langchain.agents import initialize_agent, AgentType
+from langchain.memory import ConversationBufferWindowMemory
 
 from .llm_service import DatabaseSchema
 
@@ -27,6 +29,7 @@ class AgentRequest:
     def __init__(self, message: str, context: Optional[Dict[str, Any]] = None):
         self.message = message
         self.context = context or {}
+        # session_id can be provided in context or separately
 
 
 class AgentService:
@@ -43,32 +46,55 @@ class AgentService:
         self.model = model
         # Prepare schema context once so it can be inserted into the prompt
         self.schema_context = DatabaseSchema.get_schema_context()
-        self._setup_agent()
+        self.session_history_size = 6
+        self.sessions: Dict[str, Any] = {}
+        self._setup_shared()
 
-    def _setup_agent(self) -> None:
-        llm = Ollama(base_url=self.ollama_url, model=self.model)
-        db = SQLDatabase.from_uri(f"sqlite:///{self.database_path}")
+    def _setup_shared(self) -> None:
+        """Initialize shared LLM, database connection and tools."""
+        self.llm = Ollama(base_url=self.ollama_url, model=self.model)
+        self.db = SQLDatabase.from_uri(f"sqlite:///{self.database_path}")
 
-        # Combine the generic system prompt with the database schema so the agent
-        # has immediate knowledge of the available tables and columns.
-        prefix = f"{AGENT_SYSTEM_PROMPT}\n\n{self.schema_context}"
+        self.toolkit = SQLDatabaseToolkit(db=self.db, llm=self.llm)
+        self.system_prefix = f"{AGENT_SYSTEM_PROMPT}\n\n{self.schema_context}"
 
-        # create_sql_agent returns a chain that can execute natural language queries
-        self.agent = create_sql_agent(llm=llm, db=db, prefix=prefix, verbose=True)
+    def _create_agent(self) -> Any:
+        memory = ConversationBufferWindowMemory(
+            k=self.session_history_size,
+            return_messages=True,
+            memory_key="chat_history",
+        )
+
+        agent = initialize_agent(
+            tools=self.toolkit.get_tools(),
+            llm=self.llm,
+            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=True,
+            agent_kwargs={"prefix": self.system_prefix},
+            memory=memory,
+        )
+        return agent
+
+    def _get_agent(self, session_id: str) -> Any:
+        if session_id not in self.sessions:
+            self.sessions[session_id] = self._create_agent()
+        return self.sessions[session_id]
 
     async def run(self, request: AgentRequest) -> str:
         """Run the agent with the given request."""
         import json
 
+        session_id = request.context.get("session_id", "default")
+        agent = self._get_agent(session_id)
+
         prompt = request.message
-        if request.context:
-            prompt += f"\nContext:\n{json.dumps(request.context, indent=2)}"
+        context = {k: v for k, v in request.context.items() if k != "session_id"}
+        if context:
+            prompt += f"\nContext:\n{json.dumps(context, indent=2)}"
 
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self.agent.invoke, prompt)
-        if isinstance(result, dict) and "output" in result:
-            return result["output"]
-        return str(result)
+        result = await loop.run_in_executor(None, agent.run, prompt)
+        return result if isinstance(result, str) else str(result)
 
 
 # Global instance used by FastAPI

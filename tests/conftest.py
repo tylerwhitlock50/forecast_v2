@@ -3,7 +3,7 @@ import os
 import tempfile
 import shutil
 from fastapi.testclient import TestClient
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import DatabaseManager
 from app.db import (
@@ -111,6 +111,26 @@ def test_app(test_db_manager):
             data={"response": f"Agent processed: {request.message}"},
             message="Agent response generated"
         )
+ 
+    @test_app.post("/voice", response_model=ForecastResponse)
+    async def voice_endpoint(audio: UploadFile = File(...), session_id: Optional[str] = None):
+        """Voice endpoint for testing"""
+        await audio.read()
+        return ForecastResponse(
+            status="success",
+            data={"transcript": "test transcript", "response": "Agent processed: test transcript"},
+            message="Voice command processed",
+        )
+
+    @test_app.post("/load_table", response_model=ForecastResponse)
+    async def load_table_endpoint(table_name: str = Query(...), mode: str = Query("append"), csv_file: UploadFile = File(...)):
+        await csv_file.read()
+        return ForecastResponse(status="success", data={"rows_loaded": 2}, message="Loaded data")
+
+    @test_app.get("/data_quality", response_model=ForecastResponse)
+    async def data_quality_endpoint():
+        return ForecastResponse(status="success", data={"sales_missing_bom": [], "routers_missing_machine": [], "employees_missing_labor_rate": []}, message="Data quality check complete")
+
     
     @test_app.post("/apply_sql", response_model=ForecastResponse)
     async def apply_sql_endpoint(request: SQLApplyRequest):
