@@ -78,6 +78,8 @@ forecasting/
 | `/apply_sql` | POST | Execute approved SQL transformations |
 | `/agent` | POST | Interact with the LangChain agent |
 | `/voice` | POST | Voice commands via Whisper and agent |
+| `/load_table` | POST | Upload CSV data into a table (append or replace) |
+| `/data_quality` | GET | Check for unmatched or incomplete data |
 | `/forecast` | GET | Get current forecast data |
 | `/recalculate` | POST | Recalculate all forecasts |
 | `/snapshot` | GET | Export database snapshot |

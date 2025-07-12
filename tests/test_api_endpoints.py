@@ -119,6 +119,26 @@ class TestAPIEndpoints:
         assert data["status"] == "success"
         assert "transcript" in data["data"]
         assert "response" in data["data"]
+
+    def test_load_table_endpoint(self, client: TestClient):
+        """Test loading CSV data into a table"""
+        csv_content = b"col1,col2\n1,2\n3,4\n"
+        response = client.post(
+            "/load_table?table_name=temp&mode=replace",
+            files={"csv_file": ("test.csv", csv_content, "text/csv")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["data"]["rows_loaded"] == 2
+
+    def test_data_quality_endpoint(self, client: TestClient):
+        """Test data quality check"""
+        response = client.get("/data_quality")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert "sales_missing_bom" in data["data"]
     
     def test_apply_sql_endpoint_select(self, client: TestClient):
         """Test applying a SELECT SQL statement"""
