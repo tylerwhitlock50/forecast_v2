@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
@@ -21,6 +21,7 @@ from db import (
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
 from services.agent_service import agent_service, AgentRequest
+from services.whisper_service import whisper_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -118,6 +119,47 @@ async def agent_endpoint(request: ChatRequest):
         return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/voice", response_model=ForecastResponse)
+async def voice_endpoint(
+    file: UploadFile = File(...),
+    mode: str = Form("chat"),
+    language: Optional[str] = Form(None),
+):
+    """Transcribe audio using Whisper and forward to chat or agent endpoints."""
+    try:
+        audio_bytes = await file.read()
+        transcription = await whisper_service.transcribe(audio_bytes, file.filename, file.content_type, language=language)
+
+        if mode == "agent":
+            agent_request = AgentRequest(message=transcription)
+            result = await agent_service.run(agent_request)
+            return ForecastResponse(
+                status="success",
+                data={"response": result, "transcription": transcription},
+                message="Agent response generated from voice input",
+            )
+
+        llm_request = LLMRequest(message=transcription, temperature=0.1, max_tokens=1000)
+        llm_response = await llm_service.generate_sql(llm_request)
+        if llm_response.error:
+            raise HTTPException(status_code=500, detail=llm_response.error)
+
+        return ForecastResponse(
+            status="success",
+            data={
+                "transcription": transcription,
+                "sql_statement": llm_response.sql_statement,
+                "explanation": llm_response.explanation,
+                "confidence": llm_response.confidence,
+                "requires_approval": llm_response.requires_approval,
+                "suggested_actions": llm_response.suggested_actions,
+            },
+            message="Voice transcription processed",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice processing error: {str(e)}")
 
 @app.post("/preview_sql", response_model=ForecastResponse)
 async def preview_sql_endpoint(request: SQLApplyRequest):

@@ -21,6 +21,8 @@
       const [message, setMessage] = React.useState('');
       const [useAgent, setUseAgent] = React.useState(false);
       const [chatLog, setChatLog] = React.useState([]);
+      const [recording, setRecording] = React.useState(false);
+      const [mediaRecorder, setMediaRecorder] = React.useState(null);
       const [logs, setLogs] = React.useState([]);
       const [forecast, setForecast] = React.useState([]);
       const apiBase = 'http://localhost:8000';
@@ -69,6 +71,50 @@
         fetchLogs();
       };
 
+      const sendAudio = async (blob) => {
+        const formData = new FormData();
+        formData.append('file', blob, 'recording.webm');
+        formData.append('mode', useAgent ? 'agent' : 'chat');
+        const res = await fetch(`${apiBase}/voice`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        const transcription = data.data.transcription || '';
+        const response = data.data.response || data.data.explanation || 'No response';
+        setChatLog([...chatLog, { message: transcription, response }]);
+        fetchLogs();
+      };
+
+      const startRecording = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          sendAudio(blob);
+        };
+        recorder.start();
+        setMediaRecorder(recorder);
+        setRecording(true);
+      };
+
+      const stopRecording = () => {
+        if (mediaRecorder) {
+          mediaRecorder.stop();
+          setRecording(false);
+        }
+      };
+
+      const toggleRecording = () => {
+        if (recording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      };
+
       React.useEffect(() => {
         if (forecast.length === 0) return;
         const ctx = document.getElementById('forecastChart').getContext('2d');
@@ -96,6 +142,7 @@
             Use Agent Endpoint
           </label>
           <button onClick={sendMessage}>Send</button>
+          <button onClick={toggleRecording}>{recording ? 'Stop' : 'Record'}</button>
 
           <div id="chat">
             {chatLog.map((c, i) => (
