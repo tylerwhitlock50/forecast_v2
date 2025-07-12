@@ -36,6 +36,18 @@ services:
       - forecast-network
     restart: unless-stopped
 
+  frontend:
+    build: ./frontend
+    container_name: forecast-frontend
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - fastapi
+    networks:
+      - forecast-network
+
 volumes:
   ollama_data:
 

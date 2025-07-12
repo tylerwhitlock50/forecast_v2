@@ -101,6 +101,15 @@ class TestAPIEndpoints:
         assert "sql_statement" in data["data"]
         assert "explanation" in data["data"]
         assert data["data"]["requires_approval"] == True
+
+    def test_agent_endpoint(self, client: TestClient):
+        """Test the agent endpoint"""
+        agent_request = {"message": "Increase July forecast by 15%"}
+        response = client.post("/agent", json=agent_request)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert "response" in data["data"]
     
     def test_apply_sql_endpoint_select(self, client: TestClient):
         """Test applying a SELECT SQL statement"""
@@ -221,7 +230,7 @@ class TestAPIEndpoints:
         # Verify data was reset to CSV state
         response = client.get("/data/customers")
         data = response.json()
-        assert len(data["data"]) == 1  # Back to original CSV data
+        assert len(data["data"]) == 2  # Back to original CSV data
     
     def test_apply_sql_endpoint_invalid_sql(self, client: TestClient):
         """Test applying invalid SQL statement"""

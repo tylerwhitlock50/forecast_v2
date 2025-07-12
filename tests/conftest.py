@@ -102,6 +102,15 @@ def test_app(test_db_manager):
         except Exception as e:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=str(e))
+
+    @test_app.post("/agent", response_model=ForecastResponse)
+    async def agent_endpoint(request: ChatRequest):
+        """Agent endpoint for testing"""
+        return ForecastResponse(
+            status="success",
+            data={"response": f"Agent processed: {request.message}"},
+            message="Agent response generated"
+        )
     
     @test_app.post("/apply_sql", response_model=ForecastResponse)
     async def apply_sql_endpoint(request: SQLApplyRequest):

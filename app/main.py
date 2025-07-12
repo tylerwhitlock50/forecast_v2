@@ -20,6 +20,7 @@ from db import (
 
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
+from services.agent_service import agent_service, AgentRequest
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -104,6 +105,17 @@ async def chat_endpoint(request: ChatRequest):
             },
             message="SQL generated successfully"
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agent", response_model=ForecastResponse)
+async def agent_endpoint(request: ChatRequest):
+    """Interact with a LangChain powered agent"""
+    try:
+        agent_request = AgentRequest(message=request.message, context=request.context)
+        result = await agent_service.run(agent_request)
+        return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
