@@ -325,4 +325,12 @@ class TestAPIEndpoints:
         data = response.json()
         assert "openapi" in data
         assert "paths" in data
-        assert "components" in data 
+        assert "components" in data
+
+    def test_voice_endpoint(self, client: TestClient):
+        """Test the voice transcription endpoint"""
+        files = {"file": ("test.wav", b"fake", "audio/wav")}
+        response = client.post("/voice", files=files)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
