@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
@@ -21,6 +21,7 @@ from db import (
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
 from services.agent_service import agent_service, AgentRequest
+from services.whisper_service import whisper_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -116,6 +117,23 @@ async def agent_endpoint(request: ChatRequest):
         agent_request = AgentRequest(message=request.message, context=request.context)
         result = await agent_service.run(agent_request)
         return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/voice", response_model=ForecastResponse)
+async def voice_command(audio: UploadFile = File(...), session_id: Optional[str] = None):
+    """Process a voice command via Whisper and the agent service"""
+    try:
+        audio_bytes = await audio.read()
+        transcript = await whisper_service.transcribe(audio_bytes)
+        context = {"session_id": session_id} if session_id else {"session_id": "default"}
+        agent_request = AgentRequest(message=transcript, context=context)
+        result = await agent_service.run(agent_request)
+        return ForecastResponse(
+            status="success",
+            data={"transcript": transcript, "response": result},
+            message="Voice command processed"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

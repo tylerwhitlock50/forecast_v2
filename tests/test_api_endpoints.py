@@ -110,6 +110,15 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["status"] == "success"
         assert "response" in data["data"]
+
+    def test_voice_endpoint(self, client: TestClient):
+        """Test the voice command endpoint"""
+        response = client.post("/voice", files={"audio": ("test.wav", b"dummy", "audio/wav")})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert "transcript" in data["data"]
+        assert "response" in data["data"]
     
     def test_apply_sql_endpoint_select(self, client: TestClient):
         """Test applying a SELECT SQL statement"""
