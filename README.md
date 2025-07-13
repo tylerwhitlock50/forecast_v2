@@ -77,6 +77,7 @@ forecasting/
 | `/preview_sql` | POST | Preview SQL execution without applying changes |
 | `/apply_sql` | POST | Execute approved SQL transformations |
 | `/agent` | POST | Interact with the LangChain agent |
+| `/plan_execute` | POST | Plan with DeepSeek and execute with Llama |
 | `/voice` | POST | Voice commands via Whisper and agent |
 | `/load_table` | POST | Upload CSV data into a table (append or replace) |
 | `/data_quality` | GET | Check for unmatched or incomplete data |
