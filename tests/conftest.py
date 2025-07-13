@@ -111,6 +111,15 @@ def test_app(test_db_manager):
             data={"response": f"Agent processed: {request.message}"},
             message="Agent response generated"
         )
+    @test_app.post("/plan_execute", response_model=ForecastResponse)
+    async def plan_execute_endpoint(request: ChatRequest):
+        """Plan and execute endpoint for testing"""
+        return ForecastResponse(
+            status="success",
+            data={"plan": ["step 1"], "results": [{"step": "step 1", "result": "done"}]},
+            message="Plan executed",
+        )
+
  
     @test_app.post("/voice", response_model=ForecastResponse)
     async def voice_endpoint(audio: UploadFile = File(...), session_id: Optional[str] = None):

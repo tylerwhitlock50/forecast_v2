@@ -111,6 +111,16 @@ class TestAPIEndpoints:
         assert data["status"] == "success"
         assert "response" in data["data"]
 
+    def test_plan_execute_endpoint(self, client: TestClient):
+        """Test the plan_execute endpoint"""
+        req = {"message": "Increase July forecast by 15%"}
+        response = client.post("/plan_execute", json=req)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert "plan" in data["data"]
+        assert "results" in data["data"]
+
     def test_voice_endpoint(self, client: TestClient):
         """Test the voice command endpoint"""
         response = client.post("/voice", files={"audio": ("test.wav", b"dummy", "audio/wav")})
