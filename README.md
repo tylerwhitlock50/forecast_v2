@@ -85,6 +85,8 @@ forecasting/
 | `/recalculate` | POST | Recalculate all forecasts |
 | `/snapshot` | GET | Export database snapshot |
 
+The `/plan_execute` endpoint lets one model plan a sequence of actions using DeepSeek while another model (Llama) executes each step. The response includes the generated plan and the results from each execution step. A LangGraph state machine coordinates planning, approval, and execution, with a human review step before any potentially destructive SQL (UPDATE, DELETE, DROP, or TRUNCATE).
+
 ## 🐳 Docker Services
 
 ### FastAPI Service (`fastapi`)

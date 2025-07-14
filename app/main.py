@@ -150,6 +150,17 @@ async def plan_execute_endpoint(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/plan_execute", response_model=ForecastResponse)
+async def plan_execute_endpoint(request: ChatRequest):
+    """Plan with DeepSeek and execute with the Llama agent"""
+    try:
+        agent_request = AgentRequest(message=request.message, context=request.context)
+        result = await plan_execute_service.run(agent_request)
+        return ForecastResponse(status="success", data=result, message="Plan and execution completed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/voice", response_model=ForecastResponse)
 async def voice_command(audio: UploadFile = File(...), session_id: Optional[str] = None):
     """Process a voice command via Whisper and the agent service"""
