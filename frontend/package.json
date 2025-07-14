@@ -14,7 +14,21 @@
     "react-datepicker": "^4.16.0",
     "react-select": "^5.7.0",
     "axios": "^1.4.0",
-    "web-vitals": "^2.1.4"
+    "web-vitals": "^2.1.4",
+    "react-window": "^1.8.8",
+    "react-window-infinite-loader": "^1.0.9",
+    "react-virtualized-auto-sizer": "^1.0.20",
+    "react-beautiful-dnd": "^13.1.1",
+    "react-router-dom": "^6.8.0",
+    "react-hot-toast": "^2.4.1",
+    "react-resizable-panels": "^0.0.55",
+    "react-grid-layout": "^1.4.4",
+    "react-dropzone": "^14.2.3",
+    "papaparse": "^5.4.1",
+    "xlsx": "^0.18.5",
+    "date-fns": "^2.30.0",
+    "lodash": "^4.17.21",
+    "classnames": "^2.3.2"
   },
   "scripts": {
     "start": "react-scripts start",
