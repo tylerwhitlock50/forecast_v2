@@ -1,6 +1,6 @@
 from typing import Dict, Any
 
-from app.db.database import db_manager
+from db.database import db_manager
 
 
 def get_data_quality_issues() -> Dict[str, Any]:

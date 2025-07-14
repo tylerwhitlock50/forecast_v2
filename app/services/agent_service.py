@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional, Dict, Any
 
-from langchain_community.llms.ollama import Ollama
+from langchain_ollama import OllamaLLM
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-from langchain.agents import initialize_agent, AgentType
-from langchain.memory import ConversationBufferWindowMemory
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_core.prompts import PromptTemplate
+
 
 from .llm_service import DatabaseSchema
 
@@ -40,11 +42,19 @@ class AgentService:
 
     def __init__(
         self,
-        database_path: str = "./data/forecast.db",
+        database_path: str = None,
         ollama_url: str = "http://ollama:11434",
         model: str = "llama3.1",
     ) -> None:
-        self.database_path = database_path
+        # Use local paths for development, Docker paths for production
+        if database_path is None:
+            if os.path.exists('/data'):  # Docker environment
+                self.database_path = '/data/forecast.db'
+            else:  # Local development
+                self.database_path = './data/forecast.db'
+        else:
+            self.database_path = database_path
+            
         self.ollama_url = ollama_url
         self.model = model
         # Prepare schema context once so it can be inserted into the prompt
@@ -55,28 +65,57 @@ class AgentService:
 
     def _setup_shared(self) -> None:
         """Initialize shared LLM, database connection and tools."""
-        self.llm = Ollama(base_url=self.ollama_url, model=self.model)
+        self.llm = OllamaLLM(base_url=self.ollama_url, model=self.model)
         self.db = SQLDatabase.from_uri(f"sqlite:///{self.database_path}")
 
         self.toolkit = SQLDatabaseToolkit(db=self.db, llm=self.llm)
         self.system_prefix = f"{AGENT_SYSTEM_PROMPT}\n\n{self.schema_context}"
 
     def _create_agent(self) -> Any:
-        memory = ConversationBufferWindowMemory(
-            k=self.session_history_size,
-            return_messages=True,
-            memory_key="chat_history",
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Creating new agent instance...")
+        
+        # Create prompt template with required React agent variables
+        prompt = PromptTemplate.from_template(
+            "You are an operational assistant for a financial forecasting database. "
+            "You can query the database and make modifications using SQL. "
+            "When a request is ambiguous, ask clarifying questions before executing any SQL. "
+            "Use SQLite dialect and limit SELECT queries to at most 10 rows unless instructed otherwise.\n\n"
+            "You have access to the following tools:\n{tools}\n\n"
+            "Use the following format:\n\n"
+            "Question: the input question you must answer\n"
+            "Thought: you should always think about what to do\n"
+            "Action: the action to take, should be one of [{tool_names}]\n"
+            "Action Input: the input to the action\n"
+            "Observation: the result of the action\n"
+            "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
+            "Thought: I now know the final answer\n"
+            "Final Answer: the final answer to the original input question\n\n"
+            "IMPORTANT: Only provide ONE response format at a time. Either continue with Thought/Action OR provide Final Answer, but never both.\n\n"
+            "Question: {input}\n"
+            "Thought: {agent_scratchpad}"
         )
 
-        agent = initialize_agent(
-            tools=self.toolkit.get_tools(),
+        # Create agent using newer API
+        logger.info("Creating React agent...")
+        agent = create_react_agent(
             llm=self.llm,
-            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-            verbose=True,
-            agent_kwargs={"prefix": self.system_prefix},
-            memory=memory,
+            tools=self.toolkit.get_tools(),
+            prompt=prompt
         )
-        return agent
+
+        # Wrap in executor with error handling
+        logger.info("Creating AgentExecutor...")
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=self.toolkit.get_tools(),
+            verbose=True,
+            handle_parsing_errors=True,  # Handle parsing errors gracefully
+            max_iterations=10  # Limit iterations to prevent infinite loops
+        )
+        logger.info("Agent creation completed successfully")
+        return agent_executor
 
     def _get_agent(self, session_id: str) -> Any:
         if session_id not in self.sessions:
@@ -86,18 +125,40 @@ class AgentService:
     async def run(self, request: AgentRequest) -> str:
         """Run the agent with the given request."""
         import json
+        import logging
 
-        session_id = request.context.get("session_id", "default")
-        agent = self._get_agent(session_id)
+        logger = logging.getLogger(__name__)
 
-        prompt = request.message
-        context = {k: v for k, v in request.context.items() if k != "session_id"}
-        if context:
-            prompt += f"\nContext:\n{json.dumps(context, indent=2)}"
+        try:
+            session_id = request.context.get("session_id", "default")
+            logger.info(f"Getting agent for session: {session_id}")
+            agent = self._get_agent(session_id)
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, agent.run, prompt)
-        return result if isinstance(result, str) else str(result)
+            prompt = request.message
+            context = {k: v for k, v in request.context.items() if k != "session_id"}
+            if context:
+                prompt += f"\nContext:\n{json.dumps(context, indent=2)}"
+
+            logger.info(f"Running agent with prompt: {prompt[:100]}...")
+            logger.info(f"Agent type: {type(agent)}")
+
+            loop = asyncio.get_event_loop()
+            logger.info("Starting agent execution...")
+            # Use invoke instead of run to avoid deprecation warning
+            result = await loop.run_in_executor(None, lambda: agent.invoke({"input": prompt}))
+            
+            logger.info(f"Agent execution completed")
+            logger.info(f"Agent result type: {type(result)}")
+            logger.info(f"Agent result: {result}")
+            
+            return result.get("output", str(result)) if isinstance(result, dict) else str(result)
+            
+        except Exception as e:
+            logger.error(f"Error in agent execution: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
 
 
 # Global instance used by FastAPI

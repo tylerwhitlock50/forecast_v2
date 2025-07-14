@@ -116,10 +116,37 @@ async def chat_endpoint(request: ChatRequest):
 @app.post("/agent", response_model=ForecastResponse)
 async def agent_endpoint(request: ChatRequest):
     """Interact with a LangChain powered agent"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        logger.info(f"Agent request received: {request.message[:100]}...")
+        logger.info(f"Agent context: {request.context}")
+        
+        agent_request = AgentRequest(message=request.message, context=request.context)
+        logger.info("Starting agent execution...")
+        
+        result = await agent_service.run(agent_request)
+        
+        logger.info(f"Agent execution completed successfully")
+        logger.info(f"Agent result: {result[:200]}..." if len(result) > 200 else f"Agent result: {result}")
+        
+        return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
+    except Exception as e:
+        logger.error(f"Agent execution failed: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/plan_execute", response_model=ForecastResponse)
+async def plan_execute_endpoint(request: ChatRequest):
+    """Plan with DeepSeek and execute with the Llama agent"""
     try:
         agent_request = AgentRequest(message=request.message, context=request.context)
-        result = await agent_service.run(agent_request)
-        return ForecastResponse(status="success", data={"response": result}, message="Agent response generated")
+        result = await plan_execute_service.run(agent_request)
+        return ForecastResponse(status="success", data=result, message="Plan and execution completed")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import httpx
+
 from typing import Dict, Any, Optional, List, TypedDict
 
 from langgraph.graph import StateGraph, END
 
+
 from .agent_service import AgentService, AgentRequest
+
 
 
 class HumanApproval:
@@ -17,8 +19,6 @@ class HumanApproval:
         # For now, automatically approve and log the step.
         print(f"[HUMAN REVIEW] Approving step: {step}")
         return True
-
-
 class PlanAndExecuteService:
     """Service that plans with one model and executes with another."""
 
@@ -27,11 +27,14 @@ class PlanAndExecuteService:
         agent_service: AgentService,
         ollama_url: str = "http://ollama:11434",
         planning_model: str = "deepseek:r1",
+
         human_approval: Optional[HumanApproval] = None,
+
     ) -> None:
         self.agent_service = agent_service
         self.ollama_url = ollama_url
         self.planning_model = planning_model
+
         self.human_approval = human_approval or HumanApproval()
         self.graph = self._build_graph()
 
@@ -61,6 +64,7 @@ class PlanAndExecuteService:
         plan_text = await self._call_ollama(self.planning_model, prompt)
         steps = [step.strip("- ") for step in plan_text.split("\n") if step.strip()]
         return steps
+
 
     def _build_graph(self):
         """Create the LangGraph state machine."""
@@ -116,6 +120,7 @@ class PlanAndExecuteService:
         """Run the planning and execution graph."""
         final_state = await self.graph.invoke({"request": request})
         return {"plan": final_state.get("plan", []), "results": final_state.get("results", [])}
+
 
 
 # Global instance used by FastAPI

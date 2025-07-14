@@ -2,7 +2,7 @@ import io
 import pandas as pd
 from typing import Dict, Any
 
-from app.db.database import db_manager
+from db.database import db_manager
 
 
 def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "append") -> Dict[str, Any]:
