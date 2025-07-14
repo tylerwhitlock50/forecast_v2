@@ -1,7 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
+import uuid
+from datetime import datetime, date
+import calendar
 
 # Import database functions and models
 from db import (
@@ -77,6 +80,190 @@ async def get_table_data_endpoint(table_name: str):
         raise HTTPException(status_code=500, detail=result["error"])
     return result
 
+@app.post("/forecast/create", response_model=ForecastResponse)
+async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
+    """
+    Create a new forecast using the wizard data
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Step 1: Create revenue forecast
+        if forecast_data.get('revenue'):
+            revenue = forecast_data['revenue']
+            if revenue.get('customer') and revenue.get('product'):
+                # Generate periods
+                periods = generate_periods(revenue.get('periods', 12))
+                
+                for period in periods:
+                    if revenue.get('forecastType') == 'flat':
+                        amount = float(revenue.get('flatAmount', 0))
+                    else:
+                        # Calculate growth-based amount
+                        base_amount = 1000  # Default base amount
+                        growth_rate = float(revenue.get('growthRate', 0)) / 100
+                        period_index = periods.index(period)
+                        amount = base_amount * (1 + growth_rate) ** period_index
+                    
+                    # Insert sales record
+                    sale_id = str(uuid.uuid4())
+                    cursor.execute("""
+                        INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (sale_id, revenue['customer'], revenue['product'], period, 1, amount, amount))
+        
+        # Step 2: Create BOM entries
+        if forecast_data.get('bom'):
+            bom = forecast_data['bom']
+            if bom.get('product') and bom.get('materialCost'):
+                bom_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO bom (bom_id, unit_id, router_id, material_cost)
+                    VALUES (?, ?, ?, ?)
+                """, (bom_id, bom['product'], bom.get('routerId', ''), float(bom['materialCost'])))
+        
+        # Step 3: Create labor entries
+        if forecast_data.get('labor'):
+            labor = forecast_data['labor']
+            if labor.get('employeeName'):
+                employee_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO payroll (employee_id, employee_name, weekly_hours, hourly_rate, labor_type, start_date, end_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    employee_id, 
+                    labor['employeeName'], 
+                    int(labor.get('weeklyHours', 0)), 
+                    float(labor.get('hourlyRate', 0)), 
+                    labor.get('laborType', 'direct'),
+                    labor.get('startDate', ''),
+                    labor.get('endDate', '')
+                ))
+        
+        # Step 4: Create recurring expenses (store in a new table or use existing structure)
+        if forecast_data.get('recurring'):
+            recurring = forecast_data['recurring']
+            if recurring.get('expenseName') and recurring.get('amount'):
+                # For now, we'll store this in a simple structure
+                # In a real implementation, you'd have a dedicated expenses table
+                pass
+        
+        # Step 5: Create loan entries (store in a new table or use existing structure)
+        if forecast_data.get('loans'):
+            loans = forecast_data['loans']
+            if loans.get('loanName') and loans.get('principal'):
+                # For now, we'll store this in a simple structure
+                # In a real implementation, you'd have a dedicated loans table
+                pass
+        
+        # Step 6: Create non-recurring expenses (store in a new table or use existing structure)
+        if forecast_data.get('nonRecurring'):
+            non_recurring = forecast_data['nonRecurring']
+            if non_recurring.get('expenseName') and non_recurring.get('amount'):
+                # For now, we'll store this in a simple structure
+                # In a real implementation, you'd have a dedicated expenses table
+                pass
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message="Forecast created successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating forecast: {str(e)}")
+
+def generate_periods(num_periods: int) -> List[str]:
+    """Generate period strings for the specified number of months"""
+    periods = []
+    current_date = datetime.now()
+    
+    for i in range(num_periods):
+        # Add i months to current date
+        month = current_date.month + i
+        year = current_date.year + (month - 1) // 12
+        month = ((month - 1) % 12) + 1
+        
+        period = f"{year:04d}-{month:02d}"
+        periods.append(period)
+    
+    return periods
+
+@app.post("/forecast/update", response_model=ForecastResponse)
+async def update_forecast_endpoint(update_data: Dict[str, Any]):
+    """
+    Update existing forecast data
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        table_name = update_data.get('table')
+        record_id = update_data.get('id')
+        updates = update_data.get('updates', {})
+        
+        if not table_name or not record_id:
+            raise HTTPException(status_code=400, detail="Table name and record ID are required")
+        
+        # Build update query dynamically
+        set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+        values = list(updates.values()) + [record_id]
+        
+        cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE id = ?", values)
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"Record updated successfully in {table_name}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating forecast: {str(e)}")
+
+@app.delete("/forecast/delete/{table_name}/{record_id}", response_model=ForecastResponse)
+async def delete_forecast_record(table_name: str, record_id: str):
+    """
+    Delete a specific record from a table
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get the primary key column name
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = cursor.fetchall()
+        primary_key = None
+        
+        for col in columns:
+            if col[5] == 1:  # Primary key flag
+                primary_key = col[1]
+                break
+        
+        if not primary_key:
+            raise HTTPException(status_code=400, detail="No primary key found for table")
+        
+        cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"Record deleted successfully from {table_name}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
+
 @app.post("/chat", response_model=ForecastResponse)
 async def chat_endpoint(request: ChatRequest):
     """
@@ -137,17 +324,6 @@ async def agent_endpoint(request: ChatRequest):
         logger.error(f"Error type: {type(e)}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/plan_execute", response_model=ForecastResponse)
-async def plan_execute_endpoint(request: ChatRequest):
-    """Plan with DeepSeek and execute with the Llama agent"""
-    try:
-        agent_request = AgentRequest(message=request.message, context=request.context)
-        result = await plan_execute_service.run(agent_request)
-        return ForecastResponse(status="success", data=result, message="Plan and execution completed")
-    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

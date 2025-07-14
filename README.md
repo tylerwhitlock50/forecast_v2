@@ -8,6 +8,7 @@ An AI-powered financial modeling and cash flow forecasting system built with Fas
 - Docker and Docker Compose installed
 - At least 4GB of RAM (for Ollama LLM service)
 - Python 3.12+ (for local development)
+- Node.js 18+ (for frontend development)
 
 ### Running the Application
 
@@ -23,8 +24,8 @@ An AI-powered financial modeling and cash flow forecasting system built with Fas
    ```
 
 3. **Access the services**
-   - **FastAPI Backend**: http://localhost:8000
    - **React Frontend**: http://localhost:3000
+   - **FastAPI Backend**: http://localhost:8000
    - **API Documentation**: http://localhost:8000/docs
    - **Ollama LLM Service**: http://localhost:11434
    - **Whisper ASR Service**: http://localhost:9000
@@ -37,15 +38,28 @@ An AI-powered financial modeling and cash flow forecasting system built with Fas
    pip install -r app/requirements.txt
    ```
 
-2. **Start Ollama separately**
+2. **Set up frontend**
+   ```bash
+   ./setup_frontend.sh
+   ```
+
+3. **Start Ollama separately**
    ```bash
    docker-compose up ollama
    ```
 
-3. **Run the application locally**
+4. **Run the backend locally**
    ```bash
    python run_local.py
    ```
+
+5. **Run the frontend locally**
+   ```bash
+   cd frontend
+   npm start
+   ```
+
+
 
 ## 📁 Project Structure
 
@@ -58,6 +72,12 @@ forecasting/
 │   ├── db/               # Database models and utilities
 │   ├── services/         # Business logic and transformers
 │   └── api/              # Route handlers
+├── frontend/             # React frontend
+│   ├── src/              # React source code
+│   ├── public/           # Static files
+│   ├── package.json      # Node.js dependencies
+│   ├── Dockerfile        # Frontend container configuration
+│   └── README.md         # Frontend documentation
 ├── data/                 # CSV data files and database
 │   ├── sales.csv         # Sales forecast data
 │   ├── bom.csv           # Bill of Materials
@@ -83,11 +103,19 @@ forecasting/
 | `/data_quality` | GET | Check for unmatched or incomplete data |
 | `/forecast` | GET | Get current forecast data |
 | `/recalculate` | POST | Recalculate all forecasts |
+| `/forecast/create` | POST | Create new forecast via wizard |
+| `/forecast/update` | POST | Update existing forecast data |
+| `/forecast/delete/{table}/{id}` | DELETE | Delete forecast records |
 | `/snapshot` | GET | Export database snapshot |
 
 The `/plan_execute` endpoint lets one model plan a sequence of actions using DeepSeek while another model (Llama) executes each step. The response includes the generated plan and the results from each execution step. A LangGraph state machine coordinates planning, approval, and execution, with a human review step before any potentially destructive SQL (UPDATE, DELETE, DROP, or TRUNCATE).
 
 ## 🐳 Docker Services
+
+### React Frontend Service (`frontend`)
+- **Port**: 3000
+- **Purpose**: Modern web interface for forecasting
+- **Features**: Interactive dashboard, AI chat, forecasting wizard, data tables
 
 ### FastAPI Service (`fastapi`)
 - **Port**: 8000
@@ -169,12 +197,44 @@ Run the test script to verify LLM functionality:
 python test_llm_service.py
 ```
 
+## 🎨 Frontend Features
+
+The application now includes a comprehensive React frontend with:
+
+### Interactive Dashboard
+- **Revenue Charts**: Line and bar charts showing revenue by period, customer, and product
+- **Data Tables**: Sortable tables with CRUD operations for all forecast data
+- **Summary Statistics**: Key metrics and KPIs at a glance
+
+### AI Chat Assistant
+- **Multiple AI Services**: Choose between LLM, LangChain Agent, or Plan & Execute
+- **Expandable Interface**: Collapsible chat panel that doesn't interfere with dashboard
+- **Real-time Messaging**: Live chat with typing indicators and message history
+
+### 6-Step Forecasting Wizard
+A guided process for creating comprehensive forecasts:
+
+1. **Revenue Forecasting**: Customer/product selection with flat or growth-based models
+2. **Bill of Materials**: Material costs and routing information
+3. **Labor Planning**: Employee details, hours, and rates
+4. **Recurring Expenses**: Monthly, quarterly, or yearly expense planning
+5. **Loan Management**: Principal, interest rates, and payment terms
+6. **Non-Recurring Expenses**: One-time expense planning
+
+### Data Management
+- **CRUD Operations**: Create, read, update, and delete forecast data
+- **Real-time Updates**: Changes reflect immediately in charts and tables
+- **Data Validation**: Form validation and error handling
+- **Responsive Design**: Works seamlessly on desktop and mobile devices
+
 ## 🔮 Next Steps
 
-1. **Frontend Development**: Basic React interface is now available at `http://localhost:3000`
-2. **Advanced Forecasting**: Add more sophisticated financial modeling
-3. **Data Import/Export**: Implement CSV import/export functionality
-4. **Model Fine-tuning**: Customize LLM for specific forecasting scenarios
+1. **Advanced Forecasting Models**: Add more sophisticated financial modeling algorithms
+2. **Data Import/Export**: Implement CSV import/export functionality with validation
+3. **Model Fine-tuning**: Customize LLM for specific forecasting scenarios
+4. **User Management**: Add authentication and user-specific forecasts
+5. **Advanced Analytics**: Add predictive analytics and trend analysis
+6. **Integration**: Connect with external financial data sources
 
 ## 📝 License
 

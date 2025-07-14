@@ -131,6 +131,10 @@ class AgentService:
 
         try:
             session_id = request.context.get("session_id", "default")
+            logger.info(f"Agent service starting for session: {session_id}")
+            logger.info(f"Request message: {request.message[:100]}...")
+            logger.info(f"Request context: {request.context}")
+            
             logger.info(f"Getting agent for session: {session_id}")
             agent = self._get_agent(session_id)
 
@@ -139,7 +143,8 @@ class AgentService:
             if context:
                 prompt += f"\nContext:\n{json.dumps(context, indent=2)}"
 
-            logger.info(f"Running agent with prompt: {prompt[:100]}...")
+            logger.info(f"Final prompt length: {len(prompt)} characters")
+            logger.info(f"Running agent with prompt: {prompt[:200]}...")
             logger.info(f"Agent type: {type(agent)}")
 
             loop = asyncio.get_event_loop()
@@ -149,9 +154,12 @@ class AgentService:
             
             logger.info(f"Agent execution completed")
             logger.info(f"Agent result type: {type(result)}")
-            logger.info(f"Agent result: {result}")
+            logger.info(f"Agent result length: {len(str(result))} characters")
+            logger.debug(f"Agent result: {result}")
             
-            return result.get("output", str(result)) if isinstance(result, dict) else str(result)
+            output = result.get("output", str(result)) if isinstance(result, dict) else str(result)
+            logger.info(f"Returning output length: {len(output)} characters")
+            return output
             
         except Exception as e:
             logger.error(f"Error in agent execution: {str(e)}")

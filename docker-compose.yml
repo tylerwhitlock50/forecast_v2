@@ -40,9 +40,7 @@ services:
     build: ./frontend
     container_name: forecast-frontend
     ports:
-      - "3000:80"
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
+      - "3000:3000"
     depends_on:
       - fastapi
     networks:
