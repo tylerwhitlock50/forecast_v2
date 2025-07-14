@@ -19,7 +19,10 @@ AGENT_SYSTEM_PROMPT = (
     "You can query the database and make modifications using SQL. "
     "When a request is ambiguous, ask clarifying questions before executing any "
     "SQL. Use the {dialect} dialect and limit SELECT queries to at most {top_k} "
-    "rows unless instructed otherwise."
+    "rows unless instructed otherwise. "
+    "When the user requests changes, produce targeted SQL such as UPDATE, INSERT, "
+    "DELETE, or DROP with clear WHERE clauses. Avoid returning read-only queries "
+    "if modifications are explicitly requested."
 )
 
 

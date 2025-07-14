@@ -77,12 +77,15 @@ forecasting/
 | `/preview_sql` | POST | Preview SQL execution without applying changes |
 | `/apply_sql` | POST | Execute approved SQL transformations |
 | `/agent` | POST | Interact with the LangChain agent |
+| `/plan_execute` | POST | Plan with DeepSeek and execute with Llama |
 | `/voice` | POST | Voice commands via Whisper and agent |
 | `/load_table` | POST | Upload CSV data into a table (append or replace) |
 | `/data_quality` | GET | Check for unmatched or incomplete data |
 | `/forecast` | GET | Get current forecast data |
 | `/recalculate` | POST | Recalculate all forecasts |
 | `/snapshot` | GET | Export database snapshot |
+
+The `/plan_execute` endpoint lets one model plan a sequence of actions using DeepSeek while another model (Llama) executes each step. The response includes the generated plan and the results from each execution step. A LangGraph state machine coordinates planning, approval, and execution, with a human review step before any potentially destructive SQL (UPDATE, DELETE, DROP, or TRUNCATE).
 
 ## 🐳 Docker Services
 
