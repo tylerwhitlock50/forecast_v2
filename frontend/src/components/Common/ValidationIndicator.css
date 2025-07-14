@@ -1,0 +1,81 @@
+.validation-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.validation-indicator.small {
+  font-size: 0.7rem;
+}
+
+.validation-indicator.medium {
+  font-size: 0.9rem;
+}
+
+.validation-indicator.large {
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+.validation-indicator.error.large {
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.validation-indicator.warning.large {
+  background-color: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.validation-indicator.info.large {
+  background-color: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.validation-indicator.success.large {
+  background-color: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.validation-icon {
+  display: inline-block;
+  animation: pulse 2s infinite;
+}
+
+.validation-message {
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Hover effects */
+.validation-indicator:hover {
+  transform: scale(1.05);
+}
+
+.validation-indicator:hover .validation-icon {
+  animation: none;
+}
+
+/* Focus styles for accessibility */
+.validation-indicator:focus {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+  border-radius: 2px;
+}

@@ -1,0 +1,169 @@
+.scenario-selector {
+  position: relative;
+  width: 100%;
+}
+
+.scenario-button {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transition: all 0.2s;
+  font-size: 0.9rem;
+}
+
+.scenario-button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.5);
+  transform: translateY(-1px);
+}
+
+.scenario-icon {
+  font-size: 1.1rem;
+}
+
+.scenario-name {
+  flex: 1;
+  font-weight: 500;
+  text-align: left;
+}
+
+.scenario-arrow {
+  transition: transform 0.2s;
+  font-size: 0.8rem;
+}
+
+.scenario-arrow.open {
+  transform: rotate(180deg);
+}
+
+.scenario-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  z-index: 1100;
+  margin-top: 0.5rem;
+  overflow: hidden;
+  animation: dropdown-appear 0.2s ease-out;
+}
+
+@keyframes dropdown-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.scenario-option {
+  width: 100%;
+  background: none;
+  border: none;
+  color: #374151;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transition: all 0.2s;
+  text-align: left;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.scenario-option:last-child {
+  border-bottom: none;
+}
+
+.scenario-option:hover {
+  background: #F9FAFB;
+}
+
+.scenario-option.active {
+  background: #EFF6FF;
+  color: #1D4ED8;
+  font-weight: 500;
+}
+
+.scenario-option-icon {
+  font-size: 1.1rem;
+  width: 24px;
+  text-align: center;
+}
+
+.scenario-option-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.scenario-option-name {
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.scenario-option-status {
+  font-size: 0.75rem;
+  color: #6B7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.scenario-option.active .scenario-option-status {
+  color: #1D4ED8;
+}
+
+/* Animation for smooth transitions */
+.scenario-selector * {
+  transition: all 0.2s ease;
+}
+
+/* Focus styles for accessibility */
+.scenario-button:focus,
+.scenario-option:focus {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .scenario-dropdown {
+    background: #1F2937;
+    border: 1px solid #374151;
+  }
+
+  .scenario-option {
+    color: #E5E7EB;
+    border-bottom-color: #374151;
+  }
+
+  .scenario-option:hover {
+    background: #374151;
+  }
+
+  .scenario-option.active {
+    background: #1E40AF;
+    color: #BFDBFE;
+  }
+
+  .scenario-option-status {
+    color: #9CA3AF;
+  }
+
+  .scenario-option.active .scenario-option-status {
+    color: #BFDBFE;
+  }
+}
