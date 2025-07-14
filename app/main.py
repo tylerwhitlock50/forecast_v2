@@ -21,6 +21,7 @@ from db import (
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
 from services.agent_service import agent_service, AgentRequest
+from services.plan_execute_service import plan_execute_service
 from services.whisper_service import whisper_service
 from utils.data_loader import load_csv_to_table
 from utils.data_quality import get_data_quality_issues
@@ -136,6 +137,17 @@ async def agent_endpoint(request: ChatRequest):
         logger.error(f"Error type: {type(e)}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/plan_execute", response_model=ForecastResponse)
+async def plan_execute_endpoint(request: ChatRequest):
+    """Plan with DeepSeek and execute with the Llama agent"""
+    try:
+        agent_request = AgentRequest(message=request.message, context=request.context)
+        result = await plan_execute_service.run(agent_request)
+        return ForecastResponse(status="success", data=result, message="Plan and execution completed")
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/voice", response_model=ForecastResponse)
