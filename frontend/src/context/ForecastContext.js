@@ -161,41 +161,39 @@ export const ForecastProvider = ({ children }) => {
     clearValidation: () => dispatch({ type: actionTypes.CLEAR_VALIDATION }),
 
     // API calls
-    fetchAllData: async (forecastId = null) => {
+    fetchAllData: async () => {
       try {
         actions.setLoading(true);
         
-        // First, load scenarios if we don't have them
-        if (Object.keys(state.scenarios).length === 0) {
-          await actions.fetchScenarios();
-        }
-        
         const [
-          forecastRes,
+          salesRes,
           unitsRes,
           customersRes,
           machinesRes,
           payrollRes,
           bomRes,
-          routersRes
+          routersRes,
+          forecastRes
         ] = await Promise.all([
-          axios.get(`${API_BASE}/forecast${forecastId ? `?forecast_id=${forecastId}` : ''}`),
+          axios.get(`${API_BASE}/data/sales`), // Get sales data directly from sales table
           axios.get(`${API_BASE}/data/units`),
           axios.get(`${API_BASE}/data/customers`),
           axios.get(`${API_BASE}/data/machines`),
           axios.get(`${API_BASE}/data/payroll`),
           axios.get(`${API_BASE}/data/bom`),
-          axios.get(`${API_BASE}/data/routers`)
+          axios.get(`${API_BASE}/data/routers`),
+          axios.get(`${API_BASE}/data/forecast`) // Get forecast data directly from forecast table
         ]);
 
         // Map backend data to frontend expected format
         const units = unitsRes.data.status === 'success' ? unitsRes.data.data || [] : [];
         const customers = customersRes.data.status === 'success' ? customersRes.data.data || [] : [];
-        const sales = forecastRes.data.status === 'success' ? forecastRes.data.data?.sales_forecast || [] : [];
+        const sales = salesRes.data.status === 'success' ? salesRes.data.data || [] : [];
         const machines = machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [];
         const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
         const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
         const routers = routersRes.data.status === 'success' ? routersRes.data.data || [] : [];
+        const forecast = forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [];
 
         // Transform units to products format
         const products = units.map(unit => ({
@@ -208,16 +206,22 @@ export const ForecastProvider = ({ children }) => {
           router: unit.router
         }));
 
-        // Transform sales to forecasts format
+        // Transform sales to forecasts format and normalize period format
         const forecasts = sales.map(sale => ({
           id: sale.sale_id,
           product_id: sale.unit_id, // Map unit_id to product_id
           customer_id: sale.customer_id,
-          period: sale.period,
+          period: sale.period ? sale.period.substring(0, 7) : sale.period, // Convert 2025-09-01 to 2025-09
           quantity: sale.quantity,
           price: sale.unit_price,
           total_revenue: sale.total_revenue,
           forecast_id: sale.forecast_id
+        }));
+
+        // Also normalize the sales data period format for direct use
+        const normalizedSales = sales.map(sale => ({
+          ...sale,
+          period: sale.period ? sale.period.substring(0, 7) : sale.period // Convert 2025-09-01 to 2025-09
         }));
 
         // Transform payroll to employees format
@@ -241,10 +245,33 @@ export const ForecastProvider = ({ children }) => {
           sequence: router.sequence
         }));
 
+        // Process forecast data for scenarios
+        const scenarioMap = {};
+        forecast.forEach(scenario => {
+          scenarioMap[scenario.forecast_id] = {
+            id: scenario.forecast_id,
+            name: scenario.name,
+            description: scenario.description,
+            isActive: false
+          };
+        });
+
+        // Set first scenario as active if no active scenario
+        if (forecast.length > 0 && !state.activeScenario) {
+          scenarioMap[forecast[0].forecast_id].isActive = true;
+          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: forecast[0].forecast_id });
+        }
+
+        // Store scenarios
+        dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
+        dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
+
         const data = {
           products,
           customers,
-          forecasts,
+          sales_forecast: normalizedSales, // Use normalized sales data for components
+          forecasts, // Keep transformed forecasts for backward compatibility
+          forecast, // Raw forecast table data
           machines,
           employees,
           payroll,
@@ -252,6 +279,23 @@ export const ForecastProvider = ({ children }) => {
           routing
         };
 
+        console.log('Data loaded:', {
+          productsCount: products.length,
+          customersCount: customers.length,
+          salesCount: sales.length,
+          forecastsCount: forecasts.length,
+          forecastCount: forecast.length,
+          sampleSales: sales.slice(0, 2),
+          sampleProducts: products.slice(0, 2),
+          sampleCustomers: customers.slice(0, 2),
+          sampleForecast: forecast.slice(0, 2)
+        });
+
+        console.log('Setting data in context:', {
+          salesCount: data.sales_forecast?.length || 0,
+          productsCount: data.products?.length || 0,
+          customersCount: data.customers?.length || 0
+        });
         actions.setData(data);
         toast.success('Data loaded successfully');
       } catch (error) {
@@ -264,11 +308,11 @@ export const ForecastProvider = ({ children }) => {
     fetchScenarios: async () => {
       try {
         console.log('Fetching scenarios...');
-        const response = await axios.get(`${API_BASE}/forecast/scenarios`);
-        console.log('Scenarios response:', response.data);
+        const response = await axios.get(`${API_BASE}/data/forecast`);
+        console.log('Forecast response:', response.data);
         
         if (response.data.status === 'success') {
-          const scenarios = response.data.data.scenarios || [];
+          const scenarios = response.data.data || [];
           console.log('Raw scenarios:', scenarios);
           
           const scenarioMap = {};
@@ -291,7 +335,7 @@ export const ForecastProvider = ({ children }) => {
           }
           
           // Store scenarios in both locations for compatibility
-          dispatch({ type: actionTypes.SET_DATA, payload: { scenarios: scenarioMap } });
+          dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
           dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
           
           console.log('Scenarios loaded successfully');
@@ -316,17 +360,58 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    bulkUpdateForecast: async (forecasts) => {
+    bulkUpdateForecast: async (salesData) => {
       try {
         actions.setLoading(true);
+        // Transform sales data to the format expected by the backend
+        const forecasts = salesData.map(sale => ({
+          product_id: sale.unit_id, // Map unit_id to product_id for backend
+          customer_id: sale.customer_id,
+          period: sale.period ? `${sale.period}-01` : sale.period, // Convert 2025-09 back to 2025-09-01 for backend
+          quantity: sale.quantity,
+          price: sale.unit_price, // Map unit_price to price for backend
+          total_revenue: sale.total_revenue,
+          forecast_id: sale.forecast_id
+        }));
+        
         const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { forecasts });
         if (response.data.status === 'success') {
           toast.success(`Updated ${response.data.data.updated_count} forecast records`);
-          await actions.fetchAllData(); // Remove the activeScenario parameter
+          await actions.fetchAllData();
         }
       } catch (error) {
         console.error('Error bulk updating forecast:', error);
         toast.error('Failed to update forecast');
+      }
+    },
+
+    updateSalesRecord: async (salesData) => {
+      try {
+        actions.setLoading(true);
+        
+        // Transform sales data to the format expected by the backend forecast/bulk_update endpoint
+        const forecasts = salesData.map(sale => ({
+          product_id: sale.unit_id, // Map unit_id to product_id for backend
+          customer_id: sale.customer_id,
+          period: sale.period ? `${sale.period}-01` : sale.period, // Convert 2025-09 back to 2025-09-01 for backend
+          quantity: sale.quantity,
+          price: sale.unit_price, // Map unit_price to price for backend
+          total_revenue: sale.total_revenue,
+          forecast_id: sale.forecast_id || 'F001' // Default forecast ID
+        }));
+        
+        // Use the existing forecast/bulk_update endpoint
+        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { forecasts });
+        if (response.data.status === 'success') {
+          toast.success(`Updated ${response.data.data.updated_count} sales records`);
+          await actions.fetchAllData(); // Refresh data
+        }
+      } catch (error) {
+        console.error('Error updating sales records:', error);
+        toast.error('Failed to update sales records');
+        throw error; // Re-throw so the component can handle it
+      } finally {
+        actions.setLoading(false);
       }
     },
 
@@ -436,15 +521,14 @@ export const ForecastProvider = ({ children }) => {
 
   // Load data on mount
   useEffect(() => {
-    actions.fetchAllData(); // Remove the activeScenario parameter
-    actions.fetchScenarios(); // Also fetch scenarios
+    actions.fetchAllData(); // This will also fetch scenarios if needed
   }, []);
 
   // Load data when active scenario changes
   useEffect(() => {
-    if (state.activeScenario) {
-      actions.fetchAllData(state.activeScenario);
-    }
+    // Don't filter by scenario - we want to see all sales data
+    // The scenario filtering should be done in the UI components
+    actions.fetchAllData();
   }, [state.activeScenario]);
 
   const value = {

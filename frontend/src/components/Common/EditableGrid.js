@@ -278,14 +278,42 @@ const EditableGrid = ({
     const errorKey = `${rowIndex}-${columnIndex}`;
     const hasError = validationErrors.has(errorKey);
 
+    const handleClick = (e) => {
+      console.log('Cell clicked:', { rowIndex, columnIndex, column: column.key, hasOnClick: !!column.onClick, event: e.type });
+      
+      // Visual feedback
+      const target = e.currentTarget;
+      target.style.backgroundColor = '#ffeb3b';
+      setTimeout(() => {
+        target.style.backgroundColor = '';
+      }, 200);
+      
+      setSelectedCells([[rowIndex, columnIndex]]);
+      
+      // Handle custom onClick if defined
+      if (column.onClick) {
+        console.log('Calling custom onClick for column:', column.key);
+        column.onClick(rowIndex, columnIndex, rowData);
+      }
+    };
+
     return (
       <div 
-        style={style}
-        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''}`}
-        onClick={() => setSelectedCells([[rowIndex, columnIndex]])}
+        style={{
+          ...style,
+          width: column.width || columnWidth,
+          minWidth: column.width || columnWidth,
+          height: rowHeight,
+          padding: 0,
+          border: '1px solid #dee2e6',
+          borderTop: 'none',
+          borderLeft: columnIndex === 0 ? '1px solid #dee2e6' : 'none',
+          cursor: column.onClick ? 'pointer' : 'default'
+        }}
+        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''} ${column.onClick ? 'clickable' : ''}`}
         onDoubleClick={() => startEditing(rowIndex, columnIndex)}
-        onMouseDown={() => handleDragStart(rowIndex, columnIndex)}
-        onMouseUp={handleDragEnd}
+        onDragStart={() => handleDragStart(rowIndex, columnIndex)}
+        onDragEnd={handleDragEnd}
       >
         {isEditing ? (
           <input
@@ -306,7 +334,11 @@ const EditableGrid = ({
             }}
           />
         ) : (
-          <div className="cell-content">
+          <div 
+            className="cell-content"
+            onClick={column.onClick ? handleClick : undefined}
+            style={{ cursor: column.onClick ? 'pointer' : 'default' }}
+          >
             <span className="cell-value">
               {column.format ? column.format(value) : value}
             </span>
@@ -331,12 +363,11 @@ const EditableGrid = ({
           className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''}`}
           style={{ 
             width: column.width || columnWidth, 
-            minWidth: column.width || columnWidth,
-            display: 'inline-block'
+            minWidth: column.width || columnWidth
           }}
           onClick={() => onSort(column.key)}
         >
-          <span className="header-title">{column.title}</span>
+          {column.title}
           {sortConfig.key === column.key && (
             <span className="sort-indicator">
               {sortConfig.direction === 'asc' ? '↑' : '↓'}
@@ -375,34 +406,28 @@ const EditableGrid = ({
       />
       
       <div className="grid-container" style={{ height: '400px', overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <tbody>
-            {sortedData.map((rowData, rowIndex) => (
-              <tr key={rowIndex} style={{ height: rowHeight }}>
-                {columns.map((column, colIndex) => (
-                  <td
-                    key={colIndex}
-                    style={{
-                      width: column.width || columnWidth,
-                      minWidth: column.width || columnWidth,
-                      height: rowHeight,
-                      padding: 0,
-                      border: '1px solid #dee2e6',
-                      borderTop: 'none',
-                      borderLeft: colIndex === 0 ? '1px solid #dee2e6' : 'none'
-                    }}
-                  >
-                    <Cell 
-                      columnIndex={colIndex} 
-                      rowIndex={rowIndex} 
-                      style={{ height: '100%' }}
-                    />
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="grid-rows" style={{ width: totalWidth }}>
+          {sortedData.map((rowData, rowIndex) => (
+            <div 
+              key={rowIndex} 
+              className="grid-row"
+              style={{ 
+                height: rowHeight,
+                display: 'flex',
+                width: totalWidth
+              }}
+            >
+              {columns.map((column, colIndex) => (
+                <Cell 
+                  key={colIndex}
+                  columnIndex={colIndex} 
+                  rowIndex={rowIndex} 
+                  style={{ height: '100%' }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
       
       {/* Bulk actions toolbar */}
