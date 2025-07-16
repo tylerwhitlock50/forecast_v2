@@ -7,6 +7,7 @@ import ChatPanel from './components/ChatPanel';
 
 // Module components
 import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecasting';
+import CostManagement from './components/Modules/CostManagement/CostManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -201,6 +202,7 @@ function App() {
               <Route path="/segments" element={<SegmentAnalysis />} />
               
               {/* Cost Management */}
+              <Route path="/cost-management" element={<CostManagement />} />
               <Route path="/bom" element={<BillOfMaterials />} />
               <Route path="/routing" element={<WorkRouting />} />
               <Route path="/machines" element={<MachineUtilization />} />

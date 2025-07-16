@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
+import { toast } from 'react-hot-toast';
 import './ChatPanel.css';
 
-const API_BASE = 'http://localhost:8000';
+// Use relative path for Docker nginx proxy, fallback to localhost for development
+const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
 const ChatPanel = ({ expanded, onToggle }) => {
   const [messages, setMessages] = useState([]);

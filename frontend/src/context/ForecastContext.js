@@ -2,16 +2,13 @@ import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
 
-const API_BASE = 'http://localhost:8000';
+// Use relative path for Docker nginx proxy, fallback to localhost for development
+const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
 // Initial state
 const initialState = {
-  scenarios: {
-    base: { id: 'base', name: 'Base Case', isActive: true, data: {} },
-    best: { id: 'best', name: 'Best Case', isActive: false, data: {} },
-    worst: { id: 'worst', name: 'Worst Case', isActive: false, data: {} }
-  },
-  activeScenario: 'base',
+  scenarios: {}, // Will be populated from database
+  activeScenario: null,
   data: {
     products: [], // Will be mapped from units
     customers: [],
@@ -164,9 +161,15 @@ export const ForecastProvider = ({ children }) => {
     clearValidation: () => dispatch({ type: actionTypes.CLEAR_VALIDATION }),
 
     // API calls
-    fetchAllData: async () => {
+    fetchAllData: async (forecastId = null) => {
       try {
         actions.setLoading(true);
+        
+        // First, load scenarios if we don't have them
+        if (Object.keys(state.scenarios).length === 0) {
+          await actions.fetchScenarios();
+        }
+        
         const [
           forecastRes,
           unitsRes,
@@ -176,7 +179,7 @@ export const ForecastProvider = ({ children }) => {
           bomRes,
           routersRes
         ] = await Promise.all([
-          axios.get(`${API_BASE}/forecast`),
+          axios.get(`${API_BASE}/forecast${forecastId ? `?forecast_id=${forecastId}` : ''}`),
           axios.get(`${API_BASE}/data/units`),
           axios.get(`${API_BASE}/data/customers`),
           axios.get(`${API_BASE}/data/machines`),
@@ -255,6 +258,75 @@ export const ForecastProvider = ({ children }) => {
         console.error('Error fetching data:', error);
         actions.setError('Failed to load data');
         toast.error('Failed to load data');
+      }
+    },
+
+    fetchScenarios: async () => {
+      try {
+        console.log('Fetching scenarios...');
+        const response = await axios.get(`${API_BASE}/forecast/scenarios`);
+        console.log('Scenarios response:', response.data);
+        
+        if (response.data.status === 'success') {
+          const scenarios = response.data.data.scenarios || [];
+          console.log('Raw scenarios:', scenarios);
+          
+          const scenarioMap = {};
+          
+          scenarios.forEach(scenario => {
+            scenarioMap[scenario.forecast_id] = {
+              id: scenario.forecast_id,
+              name: scenario.name,
+              description: scenario.description,
+              isActive: false
+            };
+          });
+          
+          console.log('Processed scenario map:', scenarioMap);
+          
+          // Set first scenario as active if no active scenario
+          if (scenarios.length > 0 && !state.activeScenario) {
+            scenarioMap[scenarios[0].forecast_id].isActive = true;
+            dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
+          }
+          
+          // Store scenarios in both locations for compatibility
+          dispatch({ type: actionTypes.SET_DATA, payload: { scenarios: scenarioMap } });
+          dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
+          
+          console.log('Scenarios loaded successfully');
+        }
+      } catch (error) {
+        console.error('Error fetching scenarios:', error);
+        toast.error('Failed to load forecast scenarios');
+      }
+    },
+
+    createScenario: async (scenarioData) => {
+      try {
+        const response = await axios.post(`${API_BASE}/forecast/scenario`, scenarioData);
+        if (response.data.status === 'success') {
+          toast.success('Scenario created successfully');
+          await actions.fetchScenarios();
+          return response.data.data;
+        }
+      } catch (error) {
+        console.error('Error creating scenario:', error);
+        toast.error('Failed to create scenario');
+      }
+    },
+
+    bulkUpdateForecast: async (forecasts) => {
+      try {
+        actions.setLoading(true);
+        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { forecasts });
+        if (response.data.status === 'success') {
+          toast.success(`Updated ${response.data.data.updated_count} forecast records`);
+          await actions.fetchAllData(); // Remove the activeScenario parameter
+        }
+      } catch (error) {
+        console.error('Error bulk updating forecast:', error);
+        toast.error('Failed to update forecast');
       }
     },
 
@@ -364,13 +436,21 @@ export const ForecastProvider = ({ children }) => {
 
   // Load data on mount
   useEffect(() => {
-    actions.fetchAllData();
+    actions.fetchAllData(); // Remove the activeScenario parameter
+    actions.fetchScenarios(); // Also fetch scenarios
   }, []);
+
+  // Load data when active scenario changes
+  useEffect(() => {
+    if (state.activeScenario) {
+      actions.fetchAllData(state.activeScenario);
+    }
+  }, [state.activeScenario]);
 
   const value = {
     state,
     actions,
-    scenarios: state.scenarios,
+    scenarios: state.scenarios || state.data.scenarios || {},
     activeScenario: state.activeScenario,
     data: state.data,
     loading: state.loading,

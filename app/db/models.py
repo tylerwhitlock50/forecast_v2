@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import date
 
 # Customer Models
@@ -56,7 +56,7 @@ class Sale(SaleBase):
 class SaleCreate(SaleBase):
     pass
 
-# BOM Models (updated structure)
+# BOM Models (updated structure with versioning)
 class BOMBase(BaseModel):
     bom_line: int
     material_description: str
@@ -68,23 +68,38 @@ class BOMBase(BaseModel):
 
 class BOM(BOMBase):
     bom_id: str
+    version: str = "1.0"
 
 class BOMCreate(BOMBase):
-    pass
+    bom_id: str
+    version: str = "1.0"
 
-# Router Models (updated structure)
+class BOMClone(BaseModel):
+    bom_id: str
+    from_version: str
+    to_version: str
+
+# Router Models (updated structure with versioning)
 class RouterBase(BaseModel):
     unit_id: str
     machine_id: str
     machine_minutes: float
     labor_minutes: float
+    labor_type_id: str
     sequence: int
 
 class Router(RouterBase):
     router_id: str
+    version: str = "1.0"
 
 class RouterCreate(RouterBase):
-    pass
+    router_id: str
+    version: str = "1.0"
+
+class RouterClone(BaseModel):
+    router_id: str
+    from_version: str
+    to_version: str
 
 # Machine Models
 class MachineBase(BaseModel):
@@ -92,6 +107,7 @@ class MachineBase(BaseModel):
     machine_description: Optional[str] = None
     machine_rate: float
     labor_type: str
+    available_minutes_per_month: int = 0
 
 class Machine(MachineBase):
     machine_id: str
@@ -182,4 +198,52 @@ class ForecastData(BaseModel):
     sales_forecast: List[SalesWithDetails]
     bom_data: List[BOMWithDetails]
     router_data: List[RouterWithDetails]
-    payroll_data: List[Payroll] 
+    payroll_data: List[Payroll]
+
+# Cost Management Models
+class ProductCostSummary(BaseModel):
+    product_id: str
+    product_name: str
+    forecasted_revenue: float
+    material_cost: float
+    labor_cost: float
+    machine_cost: float
+    total_cogs: float
+    gross_margin: float
+    gross_margin_percent: float
+
+class MaterialUsage(BaseModel):
+    material_description: str
+    total_quantity_needed: float
+    unit: str
+    unit_price: float
+    total_cost: float
+    products_using: List[str]
+
+class MachineUtilization(BaseModel):
+    machine_id: str
+    machine_name: str
+    total_minutes_required: float
+    available_minutes_per_month: int
+    utilization_percent: float
+    total_cost: float
+    capacity_exceeded: bool
+
+class LaborUtilization(BaseModel):
+    labor_type_id: str
+    labor_type_name: str
+    total_minutes_required: float
+    hourly_rate: float
+    total_cost: float
+    products_involved: List[str]
+
+class COGSBreakdown(BaseModel):
+    product_id: str
+    product_name: str
+    materials: List[Dict[str, Any]]
+    labor: List[Dict[str, Any]]
+    machines: List[Dict[str, Any]]
+    total_material_cost: float
+    total_labor_cost: float
+    total_machine_cost: float
+    total_cogs: float 

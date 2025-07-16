@@ -16,6 +16,7 @@ const navigationModules = {
   "Cost Management": {
     icon: "⚙️",
     routes: {
+      "Cost Overview": "/cost-management",
       "Bill of Materials": "/bom",
       "Work Routing": "/routing",
       "Machine Utilization": "/machines"
@@ -68,11 +69,6 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   };
 
   const getModuleStatus = (moduleName) => {
-    // Debug logging to help identify the issue
-    console.log('MainNavigation - data:', safeData);
-    console.log('MainNavigation - forecasts type:', typeof safeData.forecasts);
-    console.log('MainNavigation - forecasts value:', safeData.forecasts);
-    
     // Ensure all data arrays exist and are actually arrays
     const forecasts = Array.isArray(safeData.forecasts) ? safeData.forecasts : [];
     const products = Array.isArray(safeData.products) ? safeData.products : [];

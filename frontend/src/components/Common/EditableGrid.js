@@ -32,8 +32,17 @@ const EditableGrid = ({
 
   // Grid dimensions
   const rowHeight = 40;
-  const columnWidth = 120;
+  const columnWidth = 120; // Default width
   const headerHeight = 40;
+
+  // Calculate column widths from column definitions
+  const getColumnWidth = (columnIndex) => {
+    const column = columns[columnIndex];
+    return column.width || columnWidth;
+  };
+
+  // Calculate total width for the grid
+  const totalWidth = columns.reduce((sum, column) => sum + (column.width || columnWidth), 0);
 
   // Sort and filter data
   const sortedData = React.useMemo(() => {
@@ -321,8 +330,8 @@ const EditableGrid = ({
           key={column.key}
           className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''}`}
           style={{ 
-            width: columnWidth, 
-            minWidth: columnWidth,
+            width: column.width || columnWidth, 
+            minWidth: column.width || columnWidth,
             display: 'inline-block'
           }}
           onClick={() => onSort(column.key)}
@@ -365,19 +374,36 @@ const EditableGrid = ({
         sortConfig={sortConfig} 
       />
       
-      <Grid
-        ref={gridRef}
-        columnCount={columns.length}
-        rowCount={sortedData.length}
-        columnWidth={columnWidth}
-        rowHeight={rowHeight}
-        height={400}
-        width={800}
-        itemData={{ data: sortedData, columns }}
-        className="grid-container"
-      >
-        {Cell}
-      </Grid>
+      <div className="grid-container" style={{ height: '400px', overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <tbody>
+            {sortedData.map((rowData, rowIndex) => (
+              <tr key={rowIndex} style={{ height: rowHeight }}>
+                {columns.map((column, colIndex) => (
+                  <td
+                    key={colIndex}
+                    style={{
+                      width: column.width || columnWidth,
+                      minWidth: column.width || columnWidth,
+                      height: rowHeight,
+                      padding: 0,
+                      border: '1px solid #dee2e6',
+                      borderTop: 'none',
+                      borderLeft: colIndex === 0 ? '1px solid #dee2e6' : 'none'
+                    }}
+                  >
+                    <Cell 
+                      columnIndex={colIndex} 
+                      rowIndex={rowIndex} 
+                      style={{ height: '100%' }}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       
       {/* Bulk actions toolbar */}
       {enableBulkEdit && selectedCells.length > 1 && (

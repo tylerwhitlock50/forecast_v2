@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './ForecastingWizard.css';
 
-const API_BASE = 'http://localhost:8000';
+// Use relative path for Docker nginx proxy, fallback to localhost for development
+const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
 const ForecastingWizard = ({ onComplete, onCancel }) => {
   const [currentStep, setCurrentStep] = useState(1);

@@ -20,6 +20,15 @@ from db import (
     SQLApplyRequest,
     ForecastResponse
 )
+from db.models import (
+    BOMClone,
+    RouterClone,
+    ProductCostSummary,
+    MaterialUsage,
+    MachineUtilization,
+    LaborUtilization,
+    COGSBreakdown
+)
 
 # Import LLM service
 from services.llm_service import llm_service, LLMRequest
@@ -47,7 +56,13 @@ app = FastAPI(
 # CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=[
+        "http://localhost:3000",  # Development
+        "http://localhost:3001",  # Alternative dev port
+        "http://forecast-frontend:3000",  # Docker container
+        "http://frontend:3000",  # Alternative Docker name
+        "*"  # Allow all for now - configure appropriately for production
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -495,7 +510,7 @@ async def apply_sql_endpoint(request: SQLApplyRequest):
     )
 
 @app.get("/forecast", response_model=ForecastResponse)
-async def get_forecast():
+async def get_forecast(forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")):
     """
     Returns computed forecast state with joined data
     """
@@ -503,10 +518,138 @@ async def get_forecast():
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
     
+    # If forecast_id is provided, filter the sales data
+    if forecast_id and result["data"].get("sales_forecast"):
+        result["data"]["sales_forecast"] = [
+            sale for sale in result["data"]["sales_forecast"] 
+            if sale.get("forecast_id") == forecast_id
+        ]
+    
     return ForecastResponse(
         status="success",
         data=result["data"]
     )
+
+@app.get("/forecast/scenarios", response_model=ForecastResponse)
+async def get_forecast_scenarios():
+    """
+    Get all available forecast scenarios
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM forecast ORDER BY name")
+        forecasts = cursor.fetchall()
+        
+        # Convert to dictionaries
+        columns = [description[0] for description in cursor.description]
+        forecast_list = [dict(zip(columns, row)) for row in forecasts]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"scenarios": forecast_list},
+            message=f"Retrieved {len(forecast_list)} forecast scenarios"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving forecast scenarios: {str(e)}")
+
+@app.post("/forecast/scenario", response_model=ForecastResponse)
+async def create_forecast_scenario(scenario_data: Dict[str, Any]):
+    """
+    Create a new forecast scenario
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        forecast_id = scenario_data.get('forecast_id', str(uuid.uuid4()))
+        name = scenario_data.get('name', 'New Scenario')
+        description = scenario_data.get('description', '')
+        
+        cursor.execute("""
+            INSERT INTO forecast (forecast_id, name, description)
+            VALUES (?, ?, ?)
+        """, (forecast_id, name, description))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"forecast_id": forecast_id, "name": name, "description": description},
+            message="Forecast scenario created successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating forecast scenario: {str(e)}")
+
+@app.post("/forecast/bulk_update", response_model=ForecastResponse)
+async def bulk_update_forecast(bulk_data: Dict[str, Any]):
+    """
+    Bulk update forecast data
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        forecasts = bulk_data.get('forecasts', [])
+        updated_count = 0
+        
+        for forecast in forecasts:
+            # Try to update existing record first
+            cursor.execute("""
+                UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
+                WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
+            """, (
+                forecast.get('quantity', 0),
+                forecast.get('price', 0),
+                forecast.get('total_revenue', 0),
+                forecast.get('customer_id'),
+                forecast.get('product_id'),
+                forecast.get('period'),
+                forecast.get('forecast_id')
+            ))
+            
+            if cursor.rowcount == 0:
+                # If no existing record, insert new one
+                sale_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    sale_id,
+                    forecast.get('customer_id'),
+                    forecast.get('product_id'),
+                    forecast.get('period'),
+                    forecast.get('quantity', 0),
+                    forecast.get('price', 0),
+                    forecast.get('total_revenue', 0),
+                    forecast.get('forecast_id')
+                ))
+            
+            updated_count += 1
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"updated_count": updated_count},
+            message=f"Bulk updated {updated_count} forecast records"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error bulk updating forecast: {str(e)}")
 
 @app.get("/forecast/results", response_model=ForecastResponse)
 async def get_saved_forecast_results_endpoint(
@@ -627,6 +770,453 @@ async def export_snapshot():
             raise HTTPException(status_code=404, detail="Database not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# =============================================================================
+# COST MANAGEMENT API ENDPOINTS
+# =============================================================================
+
+@app.get("/products/cost-summary", response_model=ForecastResponse)
+async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
+    """
+    Get cost summary for all products including COGS calculation
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get products with their BOM and routing versions
+        cursor.execute("""
+            SELECT u.unit_id, u.unit_name, u.bom_id, u.bom_version, u.router_id, u.router_version, u.base_price
+            FROM units u
+        """)
+        products = cursor.fetchall()
+        
+        cost_summaries = []
+        for product in products:
+            unit_id, unit_name, bom_id, bom_version, router_id, router_version, base_price = product
+            
+            # Calculate forecasted revenue
+            revenue_query = """
+                SELECT SUM(total_revenue) as total_revenue, SUM(quantity) as total_quantity
+                FROM sales 
+                WHERE unit_id = ?
+            """
+            params = [unit_id]
+            if forecast_id:
+                revenue_query += " AND forecast_id = ?"
+                params.append(forecast_id)
+            
+            cursor.execute(revenue_query, params)
+            revenue_data = cursor.fetchone()
+            forecasted_revenue = revenue_data[0] if revenue_data[0] else 0
+            forecasted_quantity = revenue_data[1] if revenue_data[1] else 0
+            
+            # Calculate material costs from BOM
+            material_cost = 0
+            if bom_id:
+                cursor.execute("""
+                    SELECT SUM(material_cost) as total_material_cost
+                    FROM bom 
+                    WHERE bom_id = ? AND version = ?
+                """, (bom_id, bom_version))
+                bom_data = cursor.fetchone()
+                material_cost = (bom_data[0] if bom_data[0] else 0) * forecasted_quantity
+            
+            # Calculate labor and machine costs from routing
+            labor_cost = 0
+            machine_cost = 0
+            if router_id:
+                cursor.execute("""
+                    SELECT r.labor_minutes, r.machine_minutes, m.machine_rate, lr.rate_amount
+                    FROM routers r
+                    JOIN machines m ON r.machine_id = m.machine_id
+                    LEFT JOIN labor_rates lr ON r.labor_type_id = lr.rate_id
+                    WHERE r.router_id = ? AND r.version = ?
+                """, (router_id, router_version))
+                routing_data = cursor.fetchall()
+                
+                for route in routing_data:
+                    labor_minutes, machine_minutes, machine_rate, hourly_rate = route
+                    labor_cost += (labor_minutes / 60) * (hourly_rate if hourly_rate else 0) * forecasted_quantity
+                    machine_cost += (machine_minutes / 60) * (machine_rate if machine_rate else 0) * forecasted_quantity
+            
+            total_cogs = material_cost + labor_cost + machine_cost
+            gross_margin = forecasted_revenue - total_cogs
+            gross_margin_percent = (gross_margin / forecasted_revenue * 100) if forecasted_revenue > 0 else 0
+            
+            cost_summaries.append({
+                "product_id": unit_id,
+                "product_name": unit_name,
+                "forecasted_revenue": forecasted_revenue,
+                "material_cost": material_cost,
+                "labor_cost": labor_cost,
+                "machine_cost": machine_cost,
+                "total_cogs": total_cogs,
+                "gross_margin": gross_margin,
+                "gross_margin_percent": gross_margin_percent
+            })
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"products": cost_summaries},
+            message=f"Retrieved cost summary for {len(cost_summaries)} products"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving cost summary: {str(e)}")
+
+@app.get("/bom/{bom_id}", response_model=ForecastResponse)
+async def get_bom_details(bom_id: str, version: str = "1.0"):
+    """
+    Get detailed BOM information for a specific BOM and version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost
+            FROM bom 
+            WHERE bom_id = ? AND version = ?
+            ORDER BY bom_line
+        """, (bom_id, version))
+        
+        bom_data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        bom_list = [dict(zip(columns, row)) for row in bom_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"bom": bom_list},
+            message=f"Retrieved BOM {bom_id} version {version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving BOM: {str(e)}")
+
+@app.get("/routing/{router_id}", response_model=ForecastResponse)
+async def get_routing_details(router_id: str, version: str = "1.0"):
+    """
+    Get detailed routing information for a specific router and version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT r.router_id, r.version, r.unit_id, r.machine_id, r.machine_minutes, 
+                   r.labor_minutes, r.labor_type_id, r.sequence, m.machine_name, lr.rate_name
+            FROM routers r
+            JOIN machines m ON r.machine_id = m.machine_id
+            LEFT JOIN labor_rates lr ON r.labor_type_id = lr.rate_id
+            WHERE r.router_id = ? AND r.version = ?
+            ORDER BY r.sequence
+        """, (router_id, version))
+        
+        routing_data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        routing_list = [dict(zip(columns, row)) for row in routing_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"routing": routing_list},
+            message=f"Retrieved routing {router_id} version {version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving routing: {str(e)}")
+
+@app.get("/materials/usage", response_model=ForecastResponse)
+async def get_materials_usage(forecast_id: Optional[str] = Query(None)):
+    """
+    Get material usage forecast for purchasing decisions
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get material usage by joining sales forecast with BOM
+        usage_query = """
+            SELECT b.material_description, b.unit, b.unit_price, 
+                   SUM(s.quantity * b.qty) as total_quantity_needed,
+                   SUM(s.quantity * b.material_cost) as total_cost,
+                   GROUP_CONCAT(DISTINCT u.unit_name) as products_using
+            FROM sales s
+            JOIN units u ON s.unit_id = u.unit_id
+            JOIN bom b ON u.bom_id = b.bom_id AND u.bom_version = b.version
+        """
+        
+        params = []
+        if forecast_id:
+            usage_query += " WHERE s.forecast_id = ?"
+            params.append(forecast_id)
+        
+        usage_query += " GROUP BY b.material_description, b.unit, b.unit_price"
+        
+        cursor.execute(usage_query, params)
+        material_data = cursor.fetchall()
+        
+        materials_usage = []
+        for material in material_data:
+            materials_usage.append({
+                "material_description": material[0],
+                "unit": material[1],
+                "unit_price": material[2],
+                "total_quantity_needed": material[3],
+                "total_cost": material[4],
+                "products_using": material[5].split(',') if material[5] else []
+            })
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"materials": materials_usage},
+            message=f"Retrieved material usage for {len(materials_usage)} materials"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving material usage: {str(e)}")
+
+@app.get("/machines/utilization", response_model=ForecastResponse)
+async def get_machines_utilization(forecast_id: Optional[str] = Query(None)):
+    """
+    Get machine utilization forecast and capacity analysis
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get machine utilization by joining sales forecast with routing
+        utilization_query = """
+            SELECT m.machine_id, m.machine_name, m.available_minutes_per_month, m.machine_rate,
+                   SUM(s.quantity * r.machine_minutes) as total_minutes_required,
+                   SUM(s.quantity * r.machine_minutes * m.machine_rate / 60) as total_cost
+            FROM sales s
+            JOIN units u ON s.unit_id = u.unit_id
+            JOIN routers r ON u.router_id = r.router_id AND u.router_version = r.version
+            JOIN machines m ON r.machine_id = m.machine_id
+        """
+        
+        params = []
+        if forecast_id:
+            utilization_query += " WHERE s.forecast_id = ?"
+            params.append(forecast_id)
+        
+        utilization_query += " GROUP BY m.machine_id, m.machine_name, m.available_minutes_per_month, m.machine_rate"
+        
+        cursor.execute(utilization_query, params)
+        machine_data = cursor.fetchall()
+        
+        machines_utilization = []
+        for machine in machine_data:
+            machine_id, machine_name, available_minutes, machine_rate, total_minutes, total_cost = machine
+            utilization_percent = (total_minutes / available_minutes * 100) if available_minutes > 0 else 0
+            capacity_exceeded = total_minutes > available_minutes
+            
+            machines_utilization.append({
+                "machine_id": machine_id,
+                "machine_name": machine_name,
+                "total_minutes_required": total_minutes,
+                "available_minutes_per_month": available_minutes,
+                "utilization_percent": utilization_percent,
+                "total_cost": total_cost,
+                "capacity_exceeded": capacity_exceeded
+            })
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"machines": machines_utilization},
+            message=f"Retrieved utilization for {len(machines_utilization)} machines"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving machine utilization: {str(e)}")
+
+@app.get("/labor/utilization", response_model=ForecastResponse)
+async def get_labor_utilization(forecast_id: Optional[str] = Query(None)):
+    """
+    Get labor utilization forecast and cost analysis
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get labor utilization by joining sales forecast with routing and labor rates
+        utilization_query = """
+            SELECT lr.rate_id, lr.rate_name, lr.rate_amount,
+                   SUM(s.quantity * r.labor_minutes) as total_minutes_required,
+                   SUM(s.quantity * r.labor_minutes * lr.rate_amount / 60) as total_cost,
+                   GROUP_CONCAT(DISTINCT u.unit_name) as products_involved
+            FROM sales s
+            JOIN units u ON s.unit_id = u.unit_id
+            JOIN routers r ON u.router_id = r.router_id AND u.router_version = r.version
+            JOIN labor_rates lr ON r.labor_type_id = lr.rate_id
+        """
+        
+        params = []
+        if forecast_id:
+            utilization_query += " WHERE s.forecast_id = ?"
+            params.append(forecast_id)
+        
+        utilization_query += " GROUP BY lr.rate_id, lr.rate_name, lr.rate_amount"
+        
+        cursor.execute(utilization_query, params)
+        labor_data = cursor.fetchall()
+        
+        labor_utilization = []
+        for labor in labor_data:
+            labor_utilization.append({
+                "labor_type_id": labor[0],
+                "labor_type_name": labor[1],
+                "hourly_rate": labor[2],
+                "total_minutes_required": labor[3],
+                "total_cost": labor[4],
+                "products_involved": labor[5].split(',') if labor[5] else []
+            })
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"labor": labor_utilization},
+            message=f"Retrieved utilization for {len(labor_utilization)} labor types"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving labor utilization: {str(e)}")
+
+@app.post("/bom/clone", response_model=ForecastResponse)
+async def clone_bom(clone_request: BOMClone):
+    """
+    Clone a BOM to a new version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Copy BOM to new version
+        cursor.execute("""
+            INSERT INTO bom (bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost)
+            SELECT bom_id, ?, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost
+            FROM bom
+            WHERE bom_id = ? AND version = ?
+        """, (clone_request.to_version, clone_request.bom_id, clone_request.from_version))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"BOM {clone_request.bom_id} cloned from {clone_request.from_version} to {clone_request.to_version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cloning BOM: {str(e)}")
+
+@app.post("/routing/clone", response_model=ForecastResponse)
+async def clone_routing(clone_request: RouterClone):
+    """
+    Clone a routing to a new version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Copy routing to new version
+        cursor.execute("""
+            INSERT INTO routers (router_id, version, unit_id, machine_id, machine_minutes, labor_minutes, labor_type_id, sequence)
+            SELECT router_id, ?, unit_id, machine_id, machine_minutes, labor_minutes, labor_type_id, sequence
+            FROM routers
+            WHERE router_id = ? AND version = ?
+        """, (clone_request.to_version, clone_request.router_id, clone_request.from_version))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"Routing {clone_request.router_id} cloned from {clone_request.from_version} to {clone_request.to_version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cloning routing: {str(e)}")
+
+@app.patch("/products/{product_id}/bom-version", response_model=ForecastResponse)
+async def update_product_bom_version(product_id: str, bom_version: str):
+    """
+    Update a product's BOM version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE units SET bom_version = ? WHERE unit_id = ?
+        """, (bom_version, product_id))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"Product {product_id} BOM version updated to {bom_version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating BOM version: {str(e)}")
+
+@app.patch("/products/{product_id}/routing-version", response_model=ForecastResponse)
+async def update_product_routing_version(product_id: str, routing_version: str):
+    """
+    Update a product's routing version
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE units SET router_version = ? WHERE unit_id = ?
+        """, (routing_version, product_id))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message=f"Product {product_id} routing version updated to {routing_version}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating routing version: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

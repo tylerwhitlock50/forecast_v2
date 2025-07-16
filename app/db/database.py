@@ -45,7 +45,7 @@ class DatabaseManager:
             )
         ''')
         
-        # Create units table (updated - added bom and router columns)
+        # Create units table (updated - added bom and router columns with versioning)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS units (
                 unit_id TEXT PRIMARY KEY,
@@ -53,8 +53,10 @@ class DatabaseManager:
                 unit_description TEXT,
                 base_price REAL,
                 unit_type TEXT,
-                bom TEXT,
-                router TEXT
+                bom_id TEXT,
+                bom_version TEXT DEFAULT '1.0',
+                router_id TEXT,
+                router_version TEXT DEFAULT '1.0'
             )
         ''')
         
@@ -84,10 +86,11 @@ class DatabaseManager:
             )
         ''')
         
-        # Create BOM table (updated - new structure)
+        # Create BOM table (updated - new structure with versioning)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bom (
                 bom_id TEXT,
+                version TEXT DEFAULT '1.0',
                 bom_line INTEGER,
                 material_description TEXT,
                 qty REAL,
@@ -95,33 +98,39 @@ class DatabaseManager:
                 unit_price REAL,
                 material_cost REAL,
                 target_cost REAL,
-                PRIMARY KEY (bom_id, bom_line)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (bom_id, version, bom_line)
             )
         ''')
         
-        # Create routers table (updated - new structure)
+        # Create routers table (updated - new structure with versioning)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS routers (
                 router_id TEXT,
+                version TEXT DEFAULT '1.0',
                 unit_id TEXT,
                 machine_id TEXT,
                 machine_minutes REAL,
                 labor_minutes REAL,
+                labor_type_id TEXT,
                 sequence INTEGER,
-                PRIMARY KEY (router_id, sequence),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (router_id, version, sequence),
                 FOREIGN KEY (unit_id) REFERENCES units (unit_id),
-                FOREIGN KEY (machine_id) REFERENCES machines (machine_id)
+                FOREIGN KEY (machine_id) REFERENCES machines (machine_id),
+                FOREIGN KEY (labor_type_id) REFERENCES labor_rates (rate_id)
             )
         ''')
         
-        # Create machines table (updated - renamed from work_centers)
+        # Create machines table (updated - renamed from work_centers, added capacity)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS machines (
                 machine_id TEXT PRIMARY KEY,
                 machine_name TEXT NOT NULL,
                 machine_description TEXT,
                 machine_rate REAL,
-                labor_type TEXT
+                labor_type TEXT,
+                available_minutes_per_month INTEGER DEFAULT 0
             )
         ''')
         
@@ -214,6 +223,33 @@ class DatabaseManager:
             if os.path.exists(csv_path):
                 try:
                     df = pd.read_csv(csv_path)
+                    
+                    # Handle versioning for BOM and routing tables
+                    if table_name == 'bom':
+                        if 'version' not in df.columns:
+                            df['version'] = '1.0'
+                        if 'labor_type_id' not in df.columns:
+                            df['labor_type_id'] = 'RATE-001'  # Default to general rate
+                    elif table_name == 'routers':
+                        if 'version' not in df.columns:
+                            df['version'] = '1.0'
+                        if 'labor_type_id' not in df.columns:
+                            df['labor_type_id'] = 'RATE-001'  # Default to general rate
+                    elif table_name == 'units':
+                        # Update units table to support versioning
+                        if 'bom_id' not in df.columns and 'bom' in df.columns:
+                            df['bom_id'] = df['bom']
+                        if 'router_id' not in df.columns and 'router' in df.columns:
+                            df['router_id'] = df['router']
+                        if 'bom_version' not in df.columns:
+                            df['bom_version'] = '1.0'
+                        if 'router_version' not in df.columns:
+                            df['router_version'] = '1.0'
+                    elif table_name == 'machines':
+                        # Add available_minutes_per_month if not present
+                        if 'available_minutes_per_month' not in df.columns:
+                            df['available_minutes_per_month'] = 10000  # Default capacity
+                    
                     df.to_sql(table_name, conn, if_exists='replace', index=False)
                     print(f"Loaded {csv_file} into {table_name} table")
                 except Exception as e:
@@ -268,37 +304,69 @@ class DatabaseManager:
             
             # Get sales with customer and unit information
             cursor.execute('''
-                SELECT s.*, c.customer_name, u.unit_name, u.base_price
+                SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity, 
+                       s.unit_price, s.total_revenue, s.forecast_id,
+                       c.customer_name, u.unit_name, u.base_price, u.bom, u.router
                 FROM sales s
                 LEFT JOIN customers c ON s.customer_id = c.customer_id
                 LEFT JOIN units u ON s.unit_id = u.unit_id
                 ORDER BY s.period, s.customer_id
             ''')
-            sales_data = cursor.fetchall()
+            sales_rows = cursor.fetchall()
             
-            # Get BOM data (new structure - no direct unit relationship)
+            # Convert sales data to list of dictionaries
+            sales_columns = ['sale_id', 'customer_id', 'unit_id', 'period', 'quantity', 
+                           'unit_price', 'total_revenue', 'forecast_id', 'customer_name', 
+                           'unit_name', 'base_price', 'bom', 'router']
+            sales_data = [dict(zip(sales_columns, row)) for row in sales_rows]
+            
+            # Get BOM data with total cost per BOM
             cursor.execute('''
-                SELECT b.*
-                FROM bom b
-                ORDER BY b.bom_id, b.bom_line
+                SELECT bom_id, SUM(material_cost) as total_bom_cost
+                FROM bom 
+                GROUP BY bom_id
             ''')
-            bom_data = cursor.fetchall()
+            bom_costs = {row[0]: row[1] for row in cursor.fetchall()}
             
-            # Get routing information with machine costs
+            # Get routing information with machine costs - handle shared router_id and machine ID mapping
             cursor.execute('''
-                SELECT r.*, u.unit_name, m.machine_name, m.machine_rate,
+                SELECT r.router_id, r.unit_id, r.machine_id, r.machine_minutes, r.labor_minutes, r.sequence,
+                       u.unit_name, m.machine_name, m.machine_rate,
                        (r.machine_minutes * m.machine_rate / 60.0) as machine_cost_per_unit,
-                       (r.labor_minutes * 35.0 / 60.0) as labor_cost_per_unit
+                       r.labor_minutes
                 FROM routers r
                 LEFT JOIN units u ON r.unit_id = u.unit_id
-                LEFT JOIN machines m ON r.machine_id = m.machine_id
+                LEFT JOIN machines m ON ('WC000' || SUBSTR(r.machine_id, 3)) = m.machine_id
                 ORDER BY r.unit_id, r.sequence
             ''')
-            router_data = cursor.fetchall()
+            router_rows = cursor.fetchall()
             
-            # Get payroll data
+            # Convert router data to list of dictionaries
+            router_columns = ['router_id', 'unit_id', 'machine_id', 'machine_minutes', 'labor_minutes', 
+                             'sequence', 'unit_name', 'machine_name', 'machine_rate', 
+                             'machine_cost_per_unit', 'labor_minutes_raw']
+            router_data = [dict(zip(router_columns, row)) for row in router_rows]
+            
+            # Get labor rates for better calculation
+            cursor.execute('SELECT rate_type, AVG(rate_amount) as avg_rate FROM labor_rates GROUP BY rate_type')
+            labor_rates = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            # Get payroll data for labor rate calculation
             cursor.execute('SELECT * FROM payroll ORDER BY employee_id')
-            payroll_data = cursor.fetchall()
+            payroll_rows = cursor.fetchall()
+            
+            # Convert payroll data to list of dictionaries
+            cursor.execute("PRAGMA table_info(payroll)")
+            payroll_columns = [col[1] for col in cursor.fetchall()]
+            payroll_data = [dict(zip(payroll_columns, row)) for row in payroll_rows]
+            
+            # Calculate average labor rate from payroll data or use default
+            avg_labor_rate = 35.0  # Default fallback
+            if payroll_data:
+                total_rate = sum(row['hourly_rate'] for row in payroll_data)
+                avg_labor_rate = total_rate / len(payroll_data)
+            elif 'Hourly' in labor_rates:
+                avg_labor_rate = labor_rates['Hourly']
             
             # Compute and save forecast results
             from datetime import datetime
@@ -306,36 +374,31 @@ class DatabaseManager:
             
             # Process each sale and compute forecast
             for sale in sales_data:
-                # Handle both old and new sales data structure
-                if len(sale) == 10:
-                    # Old structure: sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, customer_name, unit_name, base_price
-                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, customer_name, unit_name, base_price = sale
-                elif len(sale) == 11:
-                    # New structure: includes forecast_id
-                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id, customer_name, unit_name, base_price = sale
-                else:
-                    # Handle any other structure
-                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id_scenario, forecast_source, customer_name, unit_name, base_price = sale
+                # Extract values from dictionary
+                sale_id = sale['sale_id']
+                customer_id = sale['customer_id']
+                unit_id = sale['unit_id']
+                period = sale['period']
+                quantity = sale['quantity']
+                unit_price = sale['unit_price']
+                total_revenue = sale['total_revenue']
+                forecast_id = sale['forecast_id']
+                customer_name = sale['customer_name']
+                unit_name = sale['unit_name']
+                base_price = sale['base_price']
+                bom_id = sale['bom']
+                router_id = sale['router']
                 
-                # Get BOM cost for this unit (new structure)
-                bom_cost = 0.0
-                # Get the BOM ID from the units table
-                cursor.execute('SELECT bom FROM units WHERE unit_id = ?', (unit_id,))
-                unit_bom = cursor.fetchone()
-                if unit_bom and unit_bom[0]:
-                    bom_id = unit_bom[0]
-                    # Sum up all material costs for this BOM
-                    cursor.execute('SELECT SUM(material_cost) FROM bom WHERE bom_id = ?', (bom_id,))
-                    bom_sum = cursor.fetchone()
-                    bom_cost = bom_sum[0] or 0.0
+                # Get BOM cost for this unit
+                bom_cost = bom_costs.get(bom_id, 0.0)
                 
-                # Get routing costs for this unit
+                # Get routing costs for this unit (sum all operations for this unit)
                 machine_cost_per_unit = 0.0
                 labor_cost_per_unit = 0.0
                 for router in router_data:
-                    if router[1] == unit_id:  # router.unit_id matches sale.unit_id
-                        machine_cost_per_unit += router[8] or 0.0  # machine_cost_per_unit
-                        labor_cost_per_unit += router[9] or 0.0    # labor_cost_per_unit
+                    if router['unit_id'] == unit_id:  # router.unit_id matches sale.unit_id
+                        machine_cost_per_unit += router['machine_cost_per_unit'] or 0.0
+                        labor_cost_per_unit += (router['labor_minutes_raw'] or 0.0) * avg_labor_rate / 60.0  # labor_minutes * rate / 60
                 
                 # Calculate total costs
                 material_cost = bom_cost * quantity
@@ -383,12 +446,14 @@ class DatabaseManager:
                 "status": "success",
                 "data": {
                     "sales_forecast": sales_data,
-                    "bom_data": bom_data,
+                    "bom_costs": bom_costs,
                     "router_data": router_data,
                     "payroll_data": payroll_data,
+                    "labor_rates": labor_rates,
                     "forecast_results": forecast_data_list,
                     "forecast_columns": forecast_columns,
-                    "forecast_date": forecast_date
+                    "forecast_date": forecast_date,
+                    "avg_labor_rate": avg_labor_rate
                 }
             }
         except Exception as e:

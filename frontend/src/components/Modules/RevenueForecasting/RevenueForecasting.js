@@ -6,13 +6,14 @@ import { toast } from 'react-hot-toast';
 import './RevenueForecasting.css';
 
 const RevenueForecasting = () => {
-  const { data, actions, loading } = useForecast();
+  const { data, actions, loading, scenarios, activeScenario } = useForecast();
   const [activeTab, setActiveTab] = useState('matrix');
   const [selectedSegment, setSelectedSegment] = useState('all');
   const [timeRange, setTimeRange] = useState('monthly');
   const [forecastData, setForecastData] = useState([]);
   const [segments, setSegments] = useState([]);
   const [bulkImportMode, setBulkImportMode] = useState(false);
+  const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
 
   // Initialize forecast data
   useEffect(() => {
@@ -92,7 +93,7 @@ const RevenueForecasting = () => {
   // Generate columns for the matrix grid
   const matrixColumns = useMemo(() => {
     const columns = [
-      { key: 'product_name', title: 'Product', type: 'text', required: true, width: 150 },
+      { key: 'product_name', title: 'Unit', type: 'text', required: true, width: 150 },
       { key: 'customer_name', title: 'Customer', type: 'text', required: true, width: 150 },
       { key: 'segment', title: 'Segment', type: 'text', width: 100 }
     ];
@@ -140,41 +141,30 @@ const RevenueForecasting = () => {
 
   // Handle matrix data changes
   const handleMatrixDataChange = (newData) => {
-    setForecastData(prevData => {
-      const updatedForecasts = [...prevData];
-      
-      newData.forEach(row => {
-        timePeriods.forEach(period => {
-          const quantity = row[`quantity_${period.key}`];
-          const price = row[`price_${period.key}`];
-          
-          if (quantity > 0 || price > 0) {
-            const existingIndex = updatedForecasts.findIndex(f => 
-              f.product_id === row.product_id && 
-              f.customer_id === row.customer_id && 
-              f.period === period.key
-            );
+    const updatedForecasts = [];
+    
+    newData.forEach(row => {
+      timePeriods.forEach(period => {
+        const quantity = row[`quantity_${period.key}`] || 0;
+        const price = row[`price_${period.key}`] || 0;
+        
+        if (quantity > 0 || price > 0) {
+          const forecastItem = {
+            product_id: row.product_id,
+            customer_id: row.customer_id,
+            period: period.key,
+            quantity: quantity,
+            price: price,
+            total_revenue: quantity * price,
+            forecast_id: activeScenario
+          };
 
-            const forecastItem = {
-              product_id: row.product_id,
-              customer_id: row.customer_id,
-              period: period.key,
-              quantity: quantity || 0,
-              price: price || 0,
-              total_revenue: (quantity || 0) * (price || 0)
-            };
-
-            if (existingIndex >= 0) {
-              updatedForecasts[existingIndex] = forecastItem;
-            } else {
-              updatedForecasts.push(forecastItem);
-            }
-          }
-        });
+          updatedForecasts.push(forecastItem);
+        }
       });
-
-      return updatedForecasts;
     });
+
+    setForecastData(updatedForecasts);
   };
 
   // Handle cell changes
@@ -298,11 +288,11 @@ const RevenueForecasting = () => {
   // Handle save changes
   const handleSaveChanges = async () => {
     try {
-      // Save each forecast item
-      for (const forecast of forecastData) {
-        await actions.saveForecast(forecast);
+      if (forecastData.length > 0) {
+        await actions.bulkUpdateForecast(forecastData);
+      } else {
+        toast.info('No changes to save');
       }
-      toast.success('All changes saved successfully');
     } catch (error) {
       toast.error('Failed to save changes');
     }
@@ -322,6 +312,18 @@ const RevenueForecasting = () => {
     console.log('Sample products:', data.products?.slice(0, 2));
     console.log('Sample customers:', data.customers?.slice(0, 2));
     console.log('Sample forecasts:', data.forecasts?.slice(0, 2));
+    
+    // Debug matrix generation
+    console.log('Matrix data info:', {
+      matrixDataLength: matrixData.length,
+      filteredMatrixDataLength: filteredMatrixData.length,
+      timePeriodsLength: timePeriods.length,
+      selectedSegment: selectedSegment
+    });
+    
+    if (matrixData.length > 0) {
+      console.log('First matrix row:', matrixData[0]);
+    }
   };
 
   // Log data structure on component mount
@@ -362,6 +364,21 @@ const RevenueForecasting = () => {
       <div className="revenue-header">
         <h2>Revenue Forecasting</h2>
         <div className="revenue-controls">
+          <div className="control-group">
+            <label>Forecast Scenario:</label>
+            <select 
+              value={activeScenario || 'base'} 
+              onChange={(e) => actions.switchScenario(e.target.value)}
+              className="scenario-selector"
+            >
+              {Object.entries(scenarios || {}).map(([id, scenario]) => (
+                <option key={id} value={id}>
+                  {id} | {scenario.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          
           <div className="control-group">
             <label>Segment:</label>
             <select 
@@ -417,6 +434,37 @@ const RevenueForecasting = () => {
         </div>
       )}
 
+      {showNewScenarioModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3>Create New Scenario</h3>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.target);
+              const scenarioData = {
+                name: formData.get('name'),
+                description: formData.get('description')
+              };
+              actions.createScenario(scenarioData);
+              setShowNewScenarioModal(false);
+            }}>
+              <div className="form-group">
+                <label>Name:</label>
+                <input type="text" name="name" required />
+              </div>
+              <div className="form-group">
+                <label>Description:</label>
+                <textarea name="description" rows="3"></textarea>
+              </div>
+              <div className="form-actions">
+                <button type="submit">Create</button>
+                <button type="button" onClick={() => setShowNewScenarioModal(false)}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <div className="revenue-tabs">
         <button 
           className={`tab ${activeTab === 'matrix' ? 'active' : ''}`}
@@ -429,6 +477,12 @@ const RevenueForecasting = () => {
           onClick={() => setActiveTab('analysis')}
         >
           Segment Analysis
+        </button>
+        <button 
+          className={`tab ${activeTab === 'visualization' ? 'active' : ''}`}
+          onClick={() => setActiveTab('visualization')}
+        >
+          Visualizations
         </button>
         <button 
           className={`tab ${activeTab === 'validation' ? 'active' : ''}`}
@@ -498,6 +552,86 @@ const RevenueForecasting = () => {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'visualization' && (
+          <div className="visualization-tab">
+            <h3>Revenue Visualizations</h3>
+            <div className="visualization-grid">
+              <div className="chart-container">
+                <h4>Revenue by Product</h4>
+                <div className="simple-chart">
+                  {Array.from(new Set(matrixData.map(row => row.product_name))).map(product => {
+                    const productRevenue = matrixData
+                      .filter(row => row.product_name === product)
+                      .reduce((sum, row) => sum + row.total_revenue, 0);
+                    const maxRevenue = Math.max(...Array.from(new Set(matrixData.map(row => row.product_name))).map(p => 
+                      matrixData.filter(row => row.product_name === p).reduce((sum, row) => sum + row.total_revenue, 0)
+                    ));
+                    const width = maxRevenue > 0 ? (productRevenue / maxRevenue) * 100 : 0;
+                    
+                    return (
+                      <div key={product} className="chart-bar">
+                        <div className="bar-label">{product}</div>
+                        <div className="bar-container">
+                          <div className="bar" style={{ width: `${width}%` }}></div>
+                          <span className="bar-value">${productRevenue.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              
+              <div className="chart-container">
+                <h4>Revenue by Customer</h4>
+                <div className="simple-chart">
+                  {Array.from(new Set(matrixData.map(row => row.customer_name))).map(customer => {
+                    const customerRevenue = matrixData
+                      .filter(row => row.customer_name === customer)
+                      .reduce((sum, row) => sum + row.total_revenue, 0);
+                    const maxRevenue = Math.max(...Array.from(new Set(matrixData.map(row => row.customer_name))).map(c => 
+                      matrixData.filter(row => row.customer_name === c).reduce((sum, row) => sum + row.total_revenue, 0)
+                    ));
+                    const width = maxRevenue > 0 ? (customerRevenue / maxRevenue) * 100 : 0;
+                    
+                    return (
+                      <div key={customer} className="chart-bar">
+                        <div className="bar-label">{customer}</div>
+                        <div className="bar-container">
+                          <div className="bar" style={{ width: `${width}%` }}></div>
+                          <span className="bar-value">${customerRevenue.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              
+              <div className="chart-container">
+                <h4>Revenue by Time Period</h4>
+                <div className="simple-chart">
+                  {timePeriods.map(period => {
+                    const periodRevenue = matrixData.reduce((sum, row) => sum + (row[`revenue_${period.key}`] || 0), 0);
+                    const maxRevenue = Math.max(...timePeriods.map(p => 
+                      matrixData.reduce((sum, row) => sum + (row[`revenue_${p.key}`] || 0), 0)
+                    ));
+                    const width = maxRevenue > 0 ? (periodRevenue / maxRevenue) * 100 : 0;
+                    
+                    return (
+                      <div key={period.key} className="chart-bar">
+                        <div className="bar-label">{period.label}</div>
+                        <div className="bar-container">
+                          <div className="bar" style={{ width: `${width}%` }}></div>
+                          <span className="bar-value">${periodRevenue.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
         )}

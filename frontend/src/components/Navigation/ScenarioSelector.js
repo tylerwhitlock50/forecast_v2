@@ -40,7 +40,10 @@ const ScenarioSelector = () => {
           {getScenarioIcon(activeScenario)}
         </span>
         <span className="scenario-name">
-          {scenarios[activeScenario]?.name || 'Select Scenario'}
+          {scenarios[activeScenario] ? 
+            `${activeScenario} | ${scenarios[activeScenario].name}` : 
+            'Select Scenario'
+          }
         </span>
         <span className={`scenario-arrow ${isOpen ? 'open' : ''}`}>
           ▼
@@ -63,7 +66,7 @@ const ScenarioSelector = () => {
                 {getScenarioIcon(id)}
               </span>
               <div className="scenario-option-content">
-                <span className="scenario-option-name">{scenario.name}</span>
+                <span className="scenario-option-name">{`${id} | ${scenario.name}`}</span>
                 <span className="scenario-option-status">
                   {id === activeScenario ? 'Active' : 'Switch to'}
                 </span>

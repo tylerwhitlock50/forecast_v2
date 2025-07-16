@@ -1,5 +1,5 @@
-machine_id,machine_name,machine_description,machine_rate,labor_type
-WC0001,Press Area,Holt and Cold Press and Associated tools,20,"degreaser, machine depreciation, releases"
-WC0002,Assembly Area,Assembly Area and Associated Tools,10,"sanding, glue, cleanup supplies, tools, jigs, fixtures"
-WC0003,Shipping Area,"Shipping Area, Supplies, and Tooling",10,"sanding, glue, cleanup supplies, tools, jigs, fixtures"
-WC0004,Trim/Clean,Trim and Deflash Steps,15,"sanding, glue, cleanup supplies, tools, jigs, fixtures"
+machine_id,machine_name,machine_description,machine_rate,labor_type,available_minutes_per_month
+WC0001,Press Area,Holt and Cold Press and Associated tools,20,"degreaser, machine depreciation, releases",12000
+WC0002,Assembly Area,Assembly Area and Associated Tools,10,"sanding, glue, cleanup supplies, tools, jigs, fixtures",15000
+WC0003,Shipping Area,"Shipping Area, Supplies, and Tooling",10,"sanding, glue, cleanup supplies, tools, jigs, fixtures",8000
+WC0004,Trim/Clean,Trim and Deflash Steps,15,"sanding, glue, cleanup supplies, tools, jigs, fixtures",10000
