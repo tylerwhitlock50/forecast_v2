@@ -9,9 +9,10 @@ const RevenueMatrix = ({
   timePeriods, 
   selectedSegment, 
   onDataChange, 
-  onCellChange 
+  onCellChange,
+  onAddForecastLine 
 }) => {
-  const { actions } = useForecast();
+  const { actions, activeScenario } = useForecast();
   const [editingCell, setEditingCell] = useState(null);
   const [editModal, setEditModal] = useState(null);
 
@@ -50,7 +51,8 @@ const RevenueMatrix = ({
           const existingSale = sales.find(s => 
             s.unit_id === product.id && 
             s.customer_id === customer.customer_id && 
-            s.period === period.key
+            s.period === period.key &&
+            s.forecast_id === (activeScenario || 'F001')
           );
           
           const quantity = existingSale?.quantity || 0;
@@ -70,7 +72,7 @@ const RevenueMatrix = ({
     });
 
     return matrix;
-  }, [data.products, data.customers, data.sales_forecast, timePeriods]);
+  }, [data.products, data.customers, data.sales_forecast, timePeriods, activeScenario]);
 
   // Filter matrix data by segment
   const filteredMatrixData = useMemo(() => {
@@ -136,14 +138,15 @@ const RevenueMatrix = ({
         quantity: newQuantity,
         unit_price: newPrice,
         total_revenue: newRevenue,
-        forecast_id: 'F001' // Default forecast ID
+        forecast_id: activeScenario || 'F001' // Use active scenario or default
       };
 
       // Check if record exists
       const existingSale = data.sales_forecast?.find(s => 
         s.unit_id === rowData.product_id && 
         s.customer_id === rowData.customer_id && 
-        s.period === periodKey
+        s.period === periodKey &&
+        s.forecast_id === (activeScenario || 'F001')
       );
 
       if (existingSale) {
@@ -209,6 +212,28 @@ const RevenueMatrix = ({
 
   return (
     <div className="matrix-tab">
+      <div className="matrix-header">
+        <h3>Revenue Matrix</h3>
+        {onAddForecastLine && (
+          <button 
+            onClick={onAddForecastLine}
+            className="add-forecast-line-btn"
+            style={{ 
+              backgroundColor: '#007bff', 
+              color: 'white', 
+              borderColor: '#007bff',
+              padding: '0.5rem 1rem',
+              borderRadius: '6px',
+              border: '1px solid',
+              cursor: 'pointer',
+              fontSize: '0.9rem',
+              fontWeight: '500'
+            }}
+          >
+            ➕ Add Forecast Line
+          </button>
+        )}
+      </div>
 
       <EditableGrid
         data={filteredMatrixData}

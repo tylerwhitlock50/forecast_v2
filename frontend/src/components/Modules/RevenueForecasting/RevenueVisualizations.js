@@ -1,7 +1,9 @@
 import React, { useMemo } from 'react';
+import { useForecast } from '../../../context/ForecastContext';
 import './RevenueForecasting.css';
 
 const RevenueVisualizations = ({ data, timePeriods }) => {
+  const { activeScenario } = useForecast();
   // Generate matrix data for visualizations
   const matrixData = useMemo(() => {
     const matrix = [];
@@ -28,7 +30,8 @@ const RevenueVisualizations = ({ data, timePeriods }) => {
           const existingSale = sales.find(s => 
             s.unit_id === product.id && 
             s.customer_id === customer.customer_id && 
-            s.period === period.key
+            s.period === period.key &&
+            s.forecast_id === (activeScenario || 'F001')
           );
           
           baseRow[`quantity_${period.key}`] = existingSale?.quantity || 0;
@@ -44,7 +47,7 @@ const RevenueVisualizations = ({ data, timePeriods }) => {
     });
 
     return matrix;
-  }, [data.products, data.customers, data.sales_forecast, timePeriods]);
+  }, [data.products, data.customers, data.sales_forecast, timePeriods, activeScenario]);
 
   return (
     <div className="visualization-tab">

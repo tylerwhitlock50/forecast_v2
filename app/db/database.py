@@ -259,7 +259,7 @@ class DatabaseManager:
         
         conn.close()
     
-    def get_table_data(self, table_name: str) -> Dict[str, Any]:
+    def get_table_data(self, table_name: str, forecast_id: str = None) -> Dict[str, Any]:
         """Get data from a specific table"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -269,8 +269,16 @@ class DatabaseManager:
             cursor.execute(f"PRAGMA table_info({table_name})")
             columns = [col[1] for col in cursor.fetchall()]
             
+            # Build query with optional forecast_id filtering
+            query = f"SELECT * FROM {table_name}"
+            params = []
+            
+            if forecast_id and table_name == 'sales':
+                query += " WHERE forecast_id = ?"
+                params.append(forecast_id)
+            
             # Get data
-            cursor.execute(f"SELECT * FROM {table_name}")
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             
             # Convert to list of dictionaries
@@ -816,9 +824,9 @@ def initialize_database():
     """Initialize the database"""
     db_manager.initialize()
 
-def get_table_data(table_name: str) -> Dict[str, Any]:
+def get_table_data(table_name: str, forecast_id: str = None) -> Dict[str, Any]:
     """Get data from a specific table"""
-    return db_manager.get_table_data(table_name)
+    return db_manager.get_table_data(table_name, forecast_id)
 
 def get_forecast_data() -> Dict[str, Any]:
     """Get comprehensive forecast data"""

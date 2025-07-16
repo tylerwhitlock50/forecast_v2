@@ -1,7 +1,9 @@
 import React, { useMemo } from 'react';
+import { useForecast } from '../../../context/ForecastContext';
 import './RevenueForecasting.css';
 
 const RevenueAnalysis = ({ data, timePeriods }) => {
+  const { activeScenario } = useForecast();
   // Get unique segments
   const segments = useMemo(() => {
     const customers = Array.isArray(data.customers) ? data.customers : [];
@@ -34,7 +36,8 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
           const existingSale = sales.find(s => 
             s.unit_id === product.id && 
             s.customer_id === customer.customer_id && 
-            s.period === period.key
+            s.period === period.key &&
+            s.forecast_id === (activeScenario || 'F001')
           );
           
           baseRow[`quantity_${period.key}`] = existingSale?.quantity || 0;
@@ -50,7 +53,7 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
     });
 
     return matrix;
-  }, [data.products, data.customers, data.sales_forecast, timePeriods]);
+  }, [data.products, data.customers, data.sales_forecast, timePeriods, activeScenario]);
 
   return (
     <div className="analysis-tab">

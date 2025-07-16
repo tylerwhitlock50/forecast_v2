@@ -7,6 +7,7 @@ import RevenueAnalysis from './RevenueAnalysis';
 import RevenueVisualizations from './RevenueVisualizations';
 import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
+import ForecastLineModal from './ForecastLineModal';
 import './RevenueForecasting.css';
 
 const RevenueForecasting = () => {
@@ -17,6 +18,7 @@ const RevenueForecasting = () => {
   const [segments, setSegments] = useState([]);
   const [bulkImportMode, setBulkImportMode] = useState(false);
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
+  const [showForecastLineModal, setShowForecastLineModal] = useState(false);
 
   // Generate time periods
   const timePeriods = useMemo(() => {
@@ -195,6 +197,18 @@ const RevenueForecasting = () => {
     }
   };
 
+  // Handle forecast line save
+  const handleForecastLineSave = async (salesRecords, operation) => {
+    try {
+      await actions.bulkUpdateForecast(salesRecords, operation);
+      // Refresh the data after saving
+      await actions.fetchAllData();
+    } catch (error) {
+      console.error('Error saving forecast line:', error);
+      throw error;
+    }
+  };
+
   // Debug function to log data structure
   const logDataStructure = () => {
     console.log('Current data structure:', {
@@ -279,6 +293,9 @@ const RevenueForecasting = () => {
           </div>
           
           <div className="bulk-actions">
+            <button onClick={() => setShowForecastLineModal(true)} style={{ backgroundColor: '#007bff', color: 'white', borderColor: '#007bff' }}>
+              ➕ Add Forecast Line
+            </button>
             <button onClick={() => setBulkImportMode(!bulkImportMode)}>
               📥 Bulk Import
             </button>
@@ -338,6 +355,12 @@ const RevenueForecasting = () => {
         </div>
       )}
 
+      <ForecastLineModal
+        isOpen={showForecastLineModal}
+        onClose={() => setShowForecastLineModal(false)}
+        onSave={handleForecastLineSave}
+      />
+
       <div className="revenue-tabs">
         <button 
           className={`tab ${activeTab === 'matrix' ? 'active' : ''}`}
@@ -381,6 +404,7 @@ const RevenueForecasting = () => {
             selectedSegment={selectedSegment}
             onDataChange={handleMatrixDataChange}
             onCellChange={handleCellChange}
+            onAddForecastLine={() => setShowForecastLineModal(true)}
           />
         )}
 

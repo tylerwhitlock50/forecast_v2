@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
 import uuid
+import sqlite3
 from datetime import datetime, date
 import calendar
 
@@ -88,9 +89,9 @@ async def get_database_schema():
     }
 
 @app.get("/data/{table_name}")
-async def get_table_data_endpoint(table_name: str):
+async def get_table_data_endpoint(table_name: str, forecast_id: Optional[str] = Query(None)):
     """Get data from a specific table"""
-    result = get_table_data(table_name)
+    result = get_table_data(table_name, forecast_id=forecast_id)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -99,12 +100,46 @@ async def get_table_data_endpoint(table_name: str):
 async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
     """
     Create a new forecast using the wizard data or direct sales data
+    - This is probably wrong
     """
     try:
         from db.database import db_manager
         
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        
+        # Handle customer creation
+        if forecast_data.get('table') == 'customers':
+            customer_data = forecast_data.get('data', {})
+            customer_id = customer_data.get('customer_id')
+            
+            if not customer_id:
+                raise HTTPException(status_code=400, detail="Customer ID is required")
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO customers (customer_id, customer_name, customer_type, region)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    customer_id,
+                    customer_data.get('customer_name', ''),
+                    customer_data.get('customer_type', ''),
+                    customer_data.get('region', '')
+                ))
+                
+                conn.commit()
+                db_manager.close_connection(conn)
+                
+                return ForecastResponse(
+                    status="success",
+                    message="Customer created successfully"
+                )
+            except sqlite3.IntegrityError as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=400, detail=f"Customer ID '{customer_id}' already exists")
+            except Exception as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         
         # Handle direct sales data from frontend
         if forecast_data.get('sales'):
@@ -562,7 +597,7 @@ async def get_forecast_scenarios():
 @app.post("/forecast/scenario", response_model=ForecastResponse)
 async def create_forecast_scenario(scenario_data: Dict[str, Any]):
     """
-    Create a new forecast scenario
+    Create a new forecast scenario with auto-generated FXXX ID
     """
     try:
         from db.database import db_manager
@@ -570,7 +605,20 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
-        forecast_id = scenario_data.get('forecast_id', str(uuid.uuid4()))
+        # Get the next available FXXX ID
+        cursor.execute("SELECT forecast_id FROM forecast WHERE forecast_id LIKE 'F%' ORDER BY forecast_id DESC LIMIT 1")
+        last_forecast = cursor.fetchone()
+        
+        if last_forecast:
+            # Extract the number from the last forecast_id (e.g., "F003" -> 3)
+            last_number = int(last_forecast[0][1:])
+            next_number = last_number + 1
+        else:
+            next_number = 1
+        
+        # Generate new forecast_id with FXXX format
+        forecast_id = f"F{next_number:03d}"  # F001, F002, F003, etc.
+        
         name = scenario_data.get('name', 'New Scenario')
         description = scenario_data.get('description', '')
         
@@ -585,7 +633,7 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
         return ForecastResponse(
             status="success",
             data={"forecast_id": forecast_id, "name": name, "description": description},
-            message="Forecast scenario created successfully"
+            message=f"Forecast scenario {forecast_id} created successfully"
         )
         
     except Exception as e:
@@ -603,25 +651,55 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
         cursor = conn.cursor()
         
         forecasts = bulk_data.get('forecasts', [])
+        operation = bulk_data.get('operation', 'add')  # add, subtract, replace
         updated_count = 0
         
         for forecast in forecasts:
-            # Try to update existing record first
+            # Check if record exists
             cursor.execute("""
-                UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
+                SELECT quantity, unit_price, total_revenue FROM sales 
                 WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
             """, (
-                forecast.get('quantity', 0),
-                forecast.get('price', 0),
-                forecast.get('total_revenue', 0),
                 forecast.get('customer_id'),
-                forecast.get('product_id'),
+                forecast.get('unit_id'),
                 forecast.get('period'),
                 forecast.get('forecast_id')
             ))
             
-            if cursor.rowcount == 0:
-                # If no existing record, insert new one
+            existing_record = cursor.fetchone()
+            
+            if existing_record:
+                # Record exists - apply operation
+                existing_quantity, existing_price, existing_revenue = existing_record
+                new_quantity = existing_quantity
+                new_price = existing_price
+                
+                if operation == 'add':
+                    new_quantity = existing_quantity + forecast.get('quantity', 0)
+                    new_price = forecast.get('unit_price', existing_price)  # Use new price if provided
+                elif operation == 'subtract':
+                    new_quantity = max(0, existing_quantity - forecast.get('quantity', 0))
+                    new_price = existing_price  # Keep existing price
+                elif operation == 'replace':
+                    new_quantity = forecast.get('quantity', 0)
+                    new_price = forecast.get('unit_price', 0)
+                
+                new_revenue = new_quantity * new_price
+                
+                cursor.execute("""
+                    UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
+                    WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
+                """, (
+                    new_quantity,
+                    new_price,
+                    new_revenue,
+                    forecast.get('customer_id'),
+                    forecast.get('unit_id'),
+                    forecast.get('period'),
+                    forecast.get('forecast_id')
+                ))
+            else:
+                # Record doesn't exist - insert new one
                 sale_id = str(uuid.uuid4())
                 cursor.execute("""
                     INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
@@ -629,10 +707,10 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                 """, (
                     sale_id,
                     forecast.get('customer_id'),
-                    forecast.get('product_id'),
+                    forecast.get('unit_id'),
                     forecast.get('period'),
                     forecast.get('quantity', 0),
-                    forecast.get('price', 0),
+                    forecast.get('unit_price', 0),
                     forecast.get('total_revenue', 0),
                     forecast.get('forecast_id')
                 ))
@@ -645,7 +723,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
         return ForecastResponse(
             status="success",
             data={"updated_count": updated_count},
-            message=f"Bulk updated {updated_count} forecast records"
+            message=f"Bulk updated {updated_count} forecast records using {operation} operation"
         )
         
     except Exception as e:

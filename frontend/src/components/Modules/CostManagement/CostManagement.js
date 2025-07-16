@@ -23,7 +23,13 @@ const CostManagement = () => {
   const fetchCostSummary = async () => {
     try {
       setLoading(true);
-      const url = `${API_BASE}/products/cost-summary${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      if (!activeScenario) {
+        toast.info('Please select a forecast scenario first');
+        setLoading(false);
+        return;
+      }
+      
+      const url = `${API_BASE}/products/cost-summary?forecast_id=${activeScenario}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -40,7 +46,8 @@ const CostManagement = () => {
   // Fetch materials usage
   const fetchMaterialsUsage = async () => {
     try {
-      const url = `${API_BASE}/materials/usage${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      if (!activeScenario) return;
+      const url = `${API_BASE}/materials/usage?forecast_id=${activeScenario}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -55,7 +62,8 @@ const CostManagement = () => {
   // Fetch machines utilization
   const fetchMachinesUtilization = async () => {
     try {
-      const url = `${API_BASE}/machines/utilization${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      if (!activeScenario) return;
+      const url = `${API_BASE}/machines/utilization?forecast_id=${activeScenario}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -70,7 +78,8 @@ const CostManagement = () => {
   // Fetch labor utilization
   const fetchLaborUtilization = async () => {
     try {
-      const url = `${API_BASE}/labor/utilization${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      if (!activeScenario) return;
+      const url = `${API_BASE}/labor/utilization?forecast_id=${activeScenario}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {

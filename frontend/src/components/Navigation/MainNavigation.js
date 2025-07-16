@@ -8,9 +8,10 @@ const navigationModules = {
   "Revenue Planning": {
     icon: "📊",
     routes: {
-      "Product & Customer Setup": "/products-customers",
       "Sales Forecasting": "/sales-forecast",
-      "Segment Analysis": "/segments"
+      "Product Setup": "/products",
+      "Customer Setup": "/customers",
+      
     }
   },
   "Cost Management": {

@@ -170,9 +170,12 @@ export const ForecastProvider = ({ children }) => {
     clearValidation: () => dispatch({ type: actionTypes.CLEAR_VALIDATION }),
 
     // API calls
-    fetchAllData: async () => {
+    fetchAllData: async (forecastId = null) => {
       try {
         actions.setLoading(true);
+        
+        // Use the current active scenario if no forecastId provided
+        const activeForecastId = forecastId || state.activeScenario;
         
         const [
           salesRes,
@@ -184,7 +187,8 @@ export const ForecastProvider = ({ children }) => {
           routersRes,
           forecastRes
         ] = await Promise.all([
-          axios.get(`${API_BASE}/data/sales`), // Get sales data directly from sales table
+          // Filter sales by forecast_id if we have an active scenario
+          axios.get(`${API_BASE}/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`),
           axios.get(`${API_BASE}/data/units`),
           axios.get(`${API_BASE}/data/customers`),
           axios.get(`${API_BASE}/data/machines`),
@@ -359,9 +363,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         const response = await axios.post(`${API_BASE}/forecast/scenario`, scenarioData);
         if (response.data.status === 'success') {
-          toast.success('Scenario created successfully');
+          const newScenario = response.data.data;
+          toast.success(`Scenario ${newScenario.forecast_id} created successfully`);
+          
+          // Refresh scenarios and switch to the new one
           await actions.fetchScenarios();
-          return response.data.data;
+          actions.switchScenario(newScenario.forecast_id);
+          
+          return newScenario;
         }
       } catch (error) {
         console.error('Error creating scenario:', error);
@@ -369,21 +378,24 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    bulkUpdateForecast: async (salesData) => {
+    bulkUpdateForecast: async (salesData, operation = 'add') => {
       try {
         actions.setLoading(true);
         // Transform sales data to the format expected by the backend
         const forecasts = salesData.map(sale => ({
-          product_id: sale.unit_id, // Map unit_id to product_id for backend
+          unit_id: sale.unit_id, // Keep as unit_id for backend
           customer_id: sale.customer_id,
           period: sale.period ? `${sale.period}-01` : sale.period, // Convert 2025-09 back to 2025-09-01 for backend
           quantity: sale.quantity,
-          price: sale.unit_price, // Map unit_price to price for backend
+          unit_price: sale.unit_price, // Keep as unit_price for backend
           total_revenue: sale.total_revenue,
           forecast_id: sale.forecast_id
         }));
         
-        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { forecasts });
+        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { 
+          forecasts,
+          operation 
+        });
         if (response.data.status === 'success') {
           toast.success(`Updated ${response.data.data.updated_count} forecast records`);
           await actions.fetchAllData();
@@ -391,6 +403,9 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error bulk updating forecast:', error);
         toast.error('Failed to update forecast');
+        throw error; // Re-throw so the component can handle it
+      } finally {
+        actions.setLoading(false);
       }
     },
 
@@ -525,6 +540,81 @@ export const ForecastProvider = ({ children }) => {
 
       errors.forEach(error => actions.addValidationError(error));
       return errors.length === 0;
+    },
+
+    // Customer Management Functions
+    createCustomer: async (customerData) => {
+      try {
+        actions.setLoading(true);
+        
+        // Generate a unique customer ID if not provided
+        if (!customerData.customer_id) {
+          const customers = Array.isArray(state.data.customers) ? state.data.customers : [];
+          const maxId = Math.max(...customers.map(c => {
+            const id = c.customer_id?.replace('CUST-', '') || '0';
+            return parseInt(id) || 0;
+          }), 0);
+          customerData.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
+        }
+
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'customers',
+          data: customerData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Customer created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating customer:', error);
+        toast.error('Failed to create customer');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateCustomer: async (customerId, customerData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'customers',
+          id: customerId,
+          updates: customerData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Customer updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating customer:', error);
+        toast.error('Failed to update customer');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteCustomer: async (tableName, customerId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${customerId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Customer deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting customer:', error);
+        toast.error('Failed to delete customer');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
     }
   };
 
@@ -535,9 +625,10 @@ export const ForecastProvider = ({ children }) => {
 
   // Load data when active scenario changes
   useEffect(() => {
-    // Don't filter by scenario - we want to see all sales data
-    // The scenario filtering should be done in the UI components
-    actions.fetchAllData();
+    if (state.activeScenario) {
+      // Fetch data filtered by the active scenario
+      actions.fetchAllData(state.activeScenario);
+    }
   }, [state.activeScenario]);
 
 
