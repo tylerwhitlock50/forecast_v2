@@ -53,6 +53,9 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   const [expandedModules, setExpandedModules] = useState({});
   const { data, loading, error } = useForecast();
 
+  // Ensure data is always an object with expected properties
+  const safeData = data || {};
+
   const toggleModule = (moduleName) => {
     setExpandedModules(prev => ({
       ...prev,
@@ -65,27 +68,43 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   };
 
   const getModuleStatus = (moduleName) => {
+    // Debug logging to help identify the issue
+    console.log('MainNavigation - data:', safeData);
+    console.log('MainNavigation - forecasts type:', typeof safeData.forecasts);
+    console.log('MainNavigation - forecasts value:', safeData.forecasts);
+    
+    // Ensure all data arrays exist and are actually arrays
+    const forecasts = Array.isArray(safeData.forecasts) ? safeData.forecasts : [];
+    const products = Array.isArray(safeData.products) ? safeData.products : [];
+    const customers = Array.isArray(safeData.customers) ? safeData.customers : [];
+    const bom = Array.isArray(safeData.bom) ? safeData.bom : [];
+    const employees = Array.isArray(safeData.employees) ? safeData.employees : [];
+    const payroll = Array.isArray(safeData.payroll) ? safeData.payroll : [];
+    const expenses = Array.isArray(safeData.expenses) ? safeData.expenses : [];
+    const loans = Array.isArray(safeData.loans) ? safeData.loans : [];
+    const validationErrors = Array.isArray(safeData.validation?.errors) ? safeData.validation.errors : [];
+
     // Calculate completion status for each module
     const completionStatus = {
       "Revenue Planning": {
-        total: data.products.length + data.customers.length + data.forecasts.length,
-        completed: data.forecasts.filter(f => f.customer_id && f.product_id && f.quantity > 0).length
+        total: products.length + customers.length + forecasts.length,
+        completed: forecasts.filter(f => f.customer_id && f.product_id && f.quantity > 0).length
       },
       "Cost Management": {
-        total: data.products.length,
-        completed: data.bom.filter(b => b.material_cost > 0).length
+        total: products.length,
+        completed: bom.filter(b => b.material_cost > 0).length
       },
       "Resource Planning": {
-        total: data.employees.length,
-        completed: data.payroll.filter(p => p.allocation_percentage > 0).length
+        total: employees.length,
+        completed: payroll.filter(p => p.allocation_percentage > 0).length
       },
       "Financial Planning": {
-        total: data.expenses.length + data.loans.length,
-        completed: data.expenses.filter(e => e.amount > 0).length + data.loans.filter(l => l.principal > 0).length
+        total: expenses.length + loans.length,
+        completed: expenses.filter(e => e.amount > 0).length + loans.filter(l => l.principal > 0).length
       },
       "Reporting & Analysis": {
         total: 1,
-        completed: data.validation.errors.length === 0 ? 1 : 0
+        completed: validationErrors.length === 0 ? 1 : 0
       }
     };
 
@@ -200,14 +219,14 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         <div className="nav-status">
           <div className="status-item">
             <span className="status-label">Errors:</span>
-            <span className={`status-value ${data.validation.errors.length > 0 ? 'error' : 'success'}`}>
-              {data.validation.errors.length}
+            <span className={`status-value ${(safeData.validation?.errors || []).length > 0 ? 'error' : 'success'}`}>
+              {(safeData.validation?.errors || []).length}
             </span>
           </div>
           <div className="status-item">
             <span className="status-label">Last Updated:</span>
             <span className="status-value">
-              {data.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : 'Never'}
+              {safeData.lastUpdated ? new Date(safeData.lastUpdated).toLocaleTimeString() : 'Never'}
             </span>
           </div>
         </div>

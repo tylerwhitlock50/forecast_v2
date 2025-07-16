@@ -1,11 +1,7 @@
-unit_id,unit_name,unit_description,base_price,unit_type
-PROD-001,Steel Bracket,Heavy-duty steel mounting bracket,50.00,Component
-PROD-002,Aluminum Housing,Precision aluminum housing unit,75.00,Assembly
-PROD-003,Plastic Cover,Injection molded plastic cover,25.00,Component
-PROD-004,Circuit Board,Printed circuit board assembly,120.00,Electronics
-PROD-005,Motor Assembly,Complete motor with mounting,200.00,Assembly
-PROD-006,Sensor Module,Electronic sensor with housing,85.00,Electronics
-PROD-007,Gear Set,Precision gear assembly,150.00,Component
-PROD-008,Control Panel,User interface control panel,180.00,Assembly
-PROD-009,Power Supply,Switching power supply unit,95.00,Electronics
-PROD-010,Frame Assembly,Main structural frame,300.00,Assembly 
+unit_id,unit_name,unit_description,base_price,unit_type,bom,router
+PROD-001,Runout-E,Runout Elongated Paddle,185,each,BOM-001,R0001
+PROD-002,Runout-H,Runout Hybrid Paddle,185,each,BOM-001,R0001
+PROD-003,Runout-S,Runout Standard Paddle,185,each,BOM-001,R0001
+PROD-004,NextLaunch-E,Next Launch Elongated,185,each,BOM-001,R0001
+PROD-005,NextLaunch-H,Next Launch Hybrid,185,each,BOM-001,R0001
+PROD-006,NextLaunch-S,Next Launch Standard,185,each,BOM-001,R0001

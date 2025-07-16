@@ -45,18 +45,29 @@ class DatabaseManager:
             )
         ''')
         
-        # Create units table
+        # Create units table (updated - added bom and router columns)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS units (
                 unit_id TEXT PRIMARY KEY,
                 unit_name TEXT NOT NULL,
                 unit_description TEXT,
                 base_price REAL,
-                unit_type TEXT
+                unit_type TEXT,
+                bom TEXT,
+                router TEXT
             )
         ''')
         
-        # Create sales table
+        # Create forecast table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS forecast (
+                forecast_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT
+            )
+        ''')
+        
+        # Create sales table (updated - with forecast_id FK)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sales (
                 sale_id TEXT PRIMARY KEY,
@@ -66,37 +77,44 @@ class DatabaseManager:
                 quantity INTEGER,
                 unit_price REAL,
                 total_revenue REAL,
+                forecast_id TEXT,
                 FOREIGN KEY (customer_id) REFERENCES customers (customer_id),
-                FOREIGN KEY (unit_id) REFERENCES units (unit_id)
+                FOREIGN KEY (unit_id) REFERENCES units (unit_id),
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
             )
         ''')
         
-        # Create BOM table
+        # Create BOM table (updated - new structure)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bom (
-                bom_id TEXT PRIMARY KEY,
-                unit_id TEXT,
-                router_id TEXT,
+                bom_id TEXT,
+                bom_line INTEGER,
+                material_description TEXT,
+                qty REAL,
+                unit TEXT,
+                unit_price REAL,
                 material_cost REAL,
-                FOREIGN KEY (unit_id) REFERENCES units (unit_id)
+                target_cost REAL,
+                PRIMARY KEY (bom_id, bom_line)
             )
         ''')
         
-        # Create routers table
+        # Create routers table (updated - new structure)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS routers (
-                router_id TEXT PRIMARY KEY,
+                router_id TEXT,
                 unit_id TEXT,
                 machine_id TEXT,
-                machine_minutes INTEGER,
-                labor_minutes INTEGER,
+                machine_minutes REAL,
+                labor_minutes REAL,
                 sequence INTEGER,
+                PRIMARY KEY (router_id, sequence),
                 FOREIGN KEY (unit_id) REFERENCES units (unit_id),
                 FOREIGN KEY (machine_id) REFERENCES machines (machine_id)
             )
         ''')
         
-        # Create machines table
+        # Create machines table (updated - renamed from work_centers)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS machines (
                 machine_id TEXT PRIMARY KEY,
@@ -107,7 +125,7 @@ class DatabaseManager:
             )
         ''')
         
-        # Create labor_rates table
+        # Create labor_rates table (updated)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS labor_rates (
                 rate_id TEXT PRIMARY KEY,
@@ -118,7 +136,7 @@ class DatabaseManager:
             )
         ''')
         
-        # Create payroll table
+        # Create payroll table (keep existing structure for now)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS payroll (
                 employee_id TEXT PRIMARY KEY,
@@ -187,7 +205,8 @@ class DatabaseManager:
             'routers.csv': 'routers',
             'machines.csv': 'machines',
             'labor_rates.csv': 'labor_rates',
-            'payroll.csv': 'payroll'
+            'payroll.csv': 'payroll',
+            'forecast.csv': 'forecast'
         }
         
         for csv_file, table_name in csv_mappings.items():
@@ -257,11 +276,11 @@ class DatabaseManager:
             ''')
             sales_data = cursor.fetchall()
             
-            # Get BOM with unit information
+            # Get BOM data (new structure - no direct unit relationship)
             cursor.execute('''
-                SELECT b.*, u.unit_name
+                SELECT b.*
                 FROM bom b
-                LEFT JOIN units u ON b.unit_id = u.unit_id
+                ORDER BY b.bom_id, b.bom_line
             ''')
             bom_data = cursor.fetchall()
             
@@ -287,14 +306,28 @@ class DatabaseManager:
             
             # Process each sale and compute forecast
             for sale in sales_data:
-                sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, customer_name, unit_name, base_price = sale
+                # Handle both old and new sales data structure
+                if len(sale) == 10:
+                    # Old structure: sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, customer_name, unit_name, base_price
+                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, customer_name, unit_name, base_price = sale
+                elif len(sale) == 11:
+                    # New structure: includes forecast_id
+                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id, customer_name, unit_name, base_price = sale
+                else:
+                    # Handle any other structure
+                    sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id_scenario, forecast_source, customer_name, unit_name, base_price = sale
                 
-                # Get BOM cost for this unit
+                # Get BOM cost for this unit (new structure)
                 bom_cost = 0.0
-                for bom in bom_data:
-                    if bom[1] == unit_id:  # bom.unit_id matches sale.unit_id
-                        bom_cost = bom[3] or 0.0  # material_cost
-                        break
+                # Get the BOM ID from the units table
+                cursor.execute('SELECT bom FROM units WHERE unit_id = ?', (unit_id,))
+                unit_bom = cursor.fetchone()
+                if unit_bom and unit_bom[0]:
+                    bom_id = unit_bom[0]
+                    # Sum up all material costs for this BOM
+                    cursor.execute('SELECT SUM(material_cost) FROM bom WHERE bom_id = ?', (bom_id,))
+                    bom_sum = cursor.fetchone()
+                    bom_cost = bom_sum[0] or 0.0
                 
                 # Get routing costs for this unit
                 machine_cost_per_unit = 0.0
@@ -688,7 +721,7 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            tables_to_clear = ['customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates', 'payroll']
+            tables_to_clear = ['customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates', 'payroll', 'forecast']
             
             for table in tables_to_clear:
                 cursor.execute(f"DELETE FROM {table}")

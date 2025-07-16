@@ -94,14 +94,38 @@ class PlanAndExecuteService:
         logger.info(f"Generating plan for message: {message[:100]}...")
         
         prompt = (
-            "You are a planning assistant for a financial forecasting system. Break down the following request into a"
-            " concise numbered list of 3-5 specific steps that can be executed using SQL queries or database operations.\n\n"
-            "Each step should be a specific action like:\n"
-            "- 'Query the sales table to get customer revenue data for 2024'\n"
-            "- 'Calculate total revenue by customer and sort in descending order'\n"
-            "- 'Return the top customer with highest total revenue'\n\n"
-            "Request: " + message + "\n\n"
-            "Generate a plan with specific, actionable steps:"
+            f"""
+            You are a planning assistant for a financial forecasting system. Break down the following request into a numbered list of 3–5 specific steps.
+
+Each step should be executable using SQL queries or database operations, and may involve analysis, simulation, or updates.
+
+If the request involves increasing or decreasing revenue, consider:
+- querying current values (e.g., revenue by product),
+- calculating gaps to target values,
+- recommending specific changes (e.g., update quantity, unit price),
+- writing SQL `UPDATE` statements to simulate the change in the database.
+- We're working with a sqlite database, so we can't use joins or complex queries.
+- The database is simple so plans should be simple and straightforward.
+- speed and simplicity are more important than detailed report backs. Reporting is typcially handled by the frontend.
+- Your job is to complete the request, not to explain the request.
+
+
+# Example:
+user: I want to increase revenue by 10% in july 2025
+assistant:
+1. Review database schema and identify relevant tables (forecasts, products, customers)
+2. Validate request clarity and ask follow-up questions if needed (e.g. specific products/customers)
+3. Query existing forecasts for July 2025:
+   - If found: Generate SQL UPDATE to increase forecast quantities by 10%
+   - If not found: Generate SQL INSERT based on historical patterns
+4. Execute the generated SQL statements
+5. Verify changes by querying updated table
+
+
+Request: {message}
+
+Generate a plan with specific, executable steps:
+"""
         )
         
         logger.info(f"Calling planning model: {self.planning_model}")

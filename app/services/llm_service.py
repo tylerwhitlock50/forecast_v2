@@ -45,7 +45,17 @@ class DatabaseSchema:
                 "unit_name": "TEXT NOT NULL - Product name",
                 "unit_description": "TEXT - Detailed product description",
                 "base_price": "REAL - Standard unit price",
-                "unit_type": "TEXT - Product category (Component, Assembly, Electronics)"
+                "unit_type": "TEXT - Product category (Component, Assembly, Electronics)",
+                "bom": "TEXT - BOM identifier for this unit",
+                "router": "TEXT - Router identifier for this unit"
+            }
+        },
+        "forecast": {
+            "description": "Forecast scenarios for revenue planning",
+            "columns": {
+                "forecast_id": "TEXT PRIMARY KEY - Unique forecast identifier",
+                "name": "TEXT NOT NULL - Forecast scenario name",
+                "description": "TEXT - Detailed forecast description"
             }
         },
         "sales": {
@@ -54,29 +64,34 @@ class DatabaseSchema:
                 "sale_id": "TEXT PRIMARY KEY - Unique sale identifier",
                 "customer_id": "TEXT FOREIGN KEY - Reference to customers table",
                 "unit_id": "TEXT FOREIGN KEY - Reference to units table",
-                "period": "TEXT - Sales period (YYYY-MM)",
+                "period": "TEXT - Sales period (YYYY-MM-DD)",
                 "quantity": "INTEGER - Number of units sold",
                 "unit_price": "REAL - Actual sale price per unit",
-                "total_revenue": "REAL - Total revenue for this sale"
+                "total_revenue": "REAL - Total revenue for this sale",
+                "forecast_id": "TEXT FOREIGN KEY - Reference to forecast table"
             }
         },
         "bom": {
-            "description": "Bill of Materials - links units to their manufacturing routers",
+            "description": "Bill of Materials - detailed material components",
             "columns": {
-                "bom_id": "TEXT PRIMARY KEY - Unique BOM identifier",
-                "unit_id": "TEXT FOREIGN KEY - Reference to units table",
-                "router_id": "TEXT - Manufacturing router identifier",
-                "material_cost": "REAL - Total material cost per unit"
+                "bom_id": "TEXT - BOM identifier",
+                "bom_line": "INTEGER - Line number in BOM",
+                "material_description": "TEXT - Description of material",
+                "qty": "REAL - Quantity required",
+                "unit": "TEXT - Unit of measure",
+                "unit_price": "REAL - Price per unit",
+                "material_cost": "REAL - Total cost for this line",
+                "target_cost": "REAL - Target cost for this material"
             }
         },
         "routers": {
             "description": "Manufacturing routing information - defines the production steps",
             "columns": {
-                "router_id": "TEXT PRIMARY KEY - Router identifier",
+                "router_id": "TEXT - Router identifier",
                 "unit_id": "TEXT FOREIGN KEY - Reference to units table",
                 "machine_id": "TEXT FOREIGN KEY - Reference to machines table",
-                "machine_minutes": "INTEGER - Machine time required",
-                "labor_minutes": "INTEGER - Labor time required",
+                "machine_minutes": "REAL - Machine time required in minutes",
+                "labor_minutes": "REAL - Labor time required in minutes",
                 "sequence": "INTEGER - Production step sequence"
             }
         },

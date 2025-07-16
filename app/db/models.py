@@ -20,11 +20,24 @@ class UnitBase(BaseModel):
     unit_description: Optional[str] = None
     base_price: float
     unit_type: Optional[str] = None
+    bom: Optional[str] = None
+    router: Optional[str] = None
 
 class Unit(UnitBase):
     unit_id: str
 
 class UnitCreate(UnitBase):
+    pass
+
+# Forecast Models
+class ForecastBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class Forecast(ForecastBase):
+    forecast_id: str
+
+class ForecastCreate(ForecastBase):
     pass
 
 # Sales Models
@@ -35,6 +48,7 @@ class SaleBase(BaseModel):
     quantity: int
     unit_price: float
     total_revenue: float
+    forecast_id: Optional[str] = None
 
 class Sale(SaleBase):
     sale_id: str
@@ -42,11 +56,15 @@ class Sale(SaleBase):
 class SaleCreate(SaleBase):
     pass
 
-# BOM Models
+# BOM Models (updated structure)
 class BOMBase(BaseModel):
-    unit_id: str
-    router_id: str
+    bom_line: int
+    material_description: str
+    qty: float
+    unit: str
+    unit_price: float
     material_cost: float
+    target_cost: Optional[float] = None
 
 class BOM(BOMBase):
     bom_id: str
@@ -54,12 +72,12 @@ class BOM(BOMBase):
 class BOMCreate(BOMBase):
     pass
 
-# Router Models
+# Router Models (updated structure)
 class RouterBase(BaseModel):
     unit_id: str
     machine_id: str
-    machine_minutes: int
-    labor_minutes: int
+    machine_minutes: float
+    labor_minutes: float
     sequence: int
 
 class Router(RouterBase):
@@ -137,13 +155,17 @@ class SalesWithDetails(BaseModel):
     quantity: int
     unit_price: float
     total_revenue: float
+    forecast_id: Optional[str] = None
 
 class BOMWithDetails(BaseModel):
     bom_id: str
-    unit_id: str
-    unit_name: str
-    router_id: str
+    bom_line: int
+    material_description: str
+    qty: float
+    unit: str
+    unit_price: float
     material_cost: float
+    target_cost: Optional[float] = None
 
 class RouterWithDetails(BaseModel):
     router_id: str
@@ -152,8 +174,8 @@ class RouterWithDetails(BaseModel):
     machine_id: str
     machine_name: str
     machine_rate: float
-    machine_minutes: int
-    labor_minutes: int
+    machine_minutes: float
+    labor_minutes: float
     sequence: int
 
 class ForecastData(BaseModel):

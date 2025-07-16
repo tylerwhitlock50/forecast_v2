@@ -1,6 +1,5 @@
 customer_id,customer_name,customer_type,region
-CUST-001,ACME Corp,Manufacturing,North
-CUST-002,TechStart,Technology,West
-CUST-003,Global Inc,Distribution,South
-CUST-004,Precision Parts,Manufacturing,East
-CUST-005,Innovation Labs,Technology,Central 
+CUST-001,Direct to Consumer,D2C-WEB,US
+CUST-002,Online Big 3 Stores,ONLINE-DEALER,US
+CUST-003,Brick and Mortar,DEALER,US
+CUST-004,Amazon,D2C-AMAZON,US

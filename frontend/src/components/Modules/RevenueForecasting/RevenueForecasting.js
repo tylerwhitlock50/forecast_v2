@@ -16,7 +16,7 @@ const RevenueForecasting = () => {
 
   // Initialize forecast data
   useEffect(() => {
-    if (data.forecasts) {
+    if (Array.isArray(data.forecasts)) {
       setForecastData(data.forecasts);
     }
   }, [data.forecasts]);
@@ -44,8 +44,11 @@ const RevenueForecasting = () => {
   const matrixData = useMemo(() => {
     const matrix = [];
     
-    data.products.forEach(product => {
-      data.customers.forEach(customer => {
+    const products = Array.isArray(data.products) ? data.products : [];
+    const customers = Array.isArray(data.customers) ? data.customers : [];
+    
+    products.forEach(product => {
+      customers.forEach(customer => {
         const baseRow = {
           id: `${product.id}-${customer.id}`,
           product_id: product.id,
@@ -202,7 +205,8 @@ const RevenueForecasting = () => {
 
   // Get unique segments
   useEffect(() => {
-    const uniqueSegments = [...new Set(data.customers.map(c => c.segment || 'General'))];
+    const customers = Array.isArray(data.customers) ? data.customers : [];
+    const uniqueSegments = [...new Set(customers.map(c => c.segment || 'General'))];
     setSegments(uniqueSegments);
   }, [data.customers]);
 

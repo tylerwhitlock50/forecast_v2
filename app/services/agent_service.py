@@ -17,14 +17,21 @@ from .llm_service import DatabaseSchema
 # placeholders expected by `create_sql_agent` so the helper can correctly
 # initialize the underlying LangChain prompt.
 AGENT_SYSTEM_PROMPT = (
-    "You are an operational assistant for a financial forecasting database. "
-    "You can query the database and make modifications using SQL. "
-    "When a request is ambiguous, ask clarifying questions before executing any "
-    "SQL. Use the {dialect} dialect and limit SELECT queries to at most {top_k} "
-    "rows unless instructed otherwise. "
-    "When the user requests changes, produce targeted SQL such as UPDATE, INSERT, "
-    "DELETE, or DROP with clear WHERE clauses. Avoid returning read-only queries "
-    "if modifications are explicitly requested."
+    """You are an operational assistant for a financial forecasting database.
+
+You can:
+- Query data using SQL (use SQLite dialect, max 10 rows unless specified)
+- Modify data using `UPDATE`, `INSERT`, or `DELETE` when required
+
+When given a goal (e.g., "increase July revenue by $100k"):
+- Query the current data to understand the gap
+- Recommend specific changes that would close the gap
+- Use `UPDATE` statements to adjust `quantity` or `unit_price`
+- Only update data in the `forecast_results` table (not historical `sales`)
+- Avoid wild changes; adjust a few rows with plausible deltas
+- Include a `WHERE` clause with `period = '2024-07'` or matching
+
+Only return valid SQL unless explicitly asked for explanation."""
 )
 
 
@@ -77,25 +84,26 @@ class AgentService:
         logger.info("Creating new agent instance...")
         
         # Create prompt template with required React agent variables
-        prompt = PromptTemplate.from_template(
-            "You are an operational assistant for a financial forecasting database. "
-            "You can query the database and make modifications using SQL. "
-            "When a request is ambiguous, ask clarifying questions before executing any SQL. "
-            "Use SQLite dialect and limit SELECT queries to at most 10 rows unless instructed otherwise.\n\n"
-            "You have access to the following tools:\n{tools}\n\n"
-            "Use the following format:\n\n"
-            "Question: the input question you must answer\n"
-            "Thought: you should always think about what to do\n"
-            "Action: the action to take, should be one of [{tool_names}]\n"
-            "Action Input: the input to the action\n"
-            "Observation: the result of the action\n"
-            "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
-            "Thought: I now know the final answer\n"
-            "Final Answer: the final answer to the original input question\n\n"
-            "IMPORTANT: Only provide ONE response format at a time. Either continue with Thought/Action OR provide Final Answer, but never both.\n\n"
-            "Question: {input}\n"
-            "Thought: {agent_scratchpad}"
-        )
+        prompt = PromptTemplate.from_template(f"""{self.system_prefix}
+
+You have access to the following tools:
+{{tools}}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{{tool_names}}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+IMPORTANT: Only provide ONE response format at a time. Either continue with Thought/Action OR provide Final Answer, but never both.
+
+Question: {{input}}
+Thought: {{agent_scratchpad}}""")
 
         # Create agent using newer API
         logger.info("Creating React agent...")
@@ -139,6 +147,7 @@ class AgentService:
             agent = self._get_agent(session_id)
 
             prompt = request.message
+            #logger.debug(f"Agent full system prompt:\n{prompt.template}")
             context = {k: v for k, v in request.context.items() if k != "session_id"}
             if context:
                 prompt += f"\nContext:\n{json.dumps(context, indent=2)}"

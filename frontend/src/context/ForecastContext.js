@@ -175,14 +175,14 @@ export const ForecastProvider = ({ children }) => {
           employeesRes
         ] = await Promise.all([
           axios.get(`${API_BASE}/forecast`),
-          axios.get(`${API_BASE}/products`),
-          axios.get(`${API_BASE}/customers`),
-          axios.get(`${API_BASE}/machines`),
-          axios.get(`${API_BASE}/employees`)
+          axios.get(`${API_BASE}/data/units`),
+          axios.get(`${API_BASE}/data/customers`),
+          axios.get(`${API_BASE}/data/machines`),
+          axios.get(`${API_BASE}/data/payroll`)
         ]);
 
         const data = {
-          forecasts: forecastRes.data.status === 'success' ? forecastRes.data.data.sales_forecast || [] : [],
+          forecasts: forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [],
           products: productsRes.data.status === 'success' ? productsRes.data.data || [] : [],
           customers: customersRes.data.status === 'success' ? customersRes.data.data || [] : [],
           machines: machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [],
@@ -201,7 +201,7 @@ export const ForecastProvider = ({ children }) => {
     saveForecast: async (forecastData) => {
       try {
         actions.setLoading(true);
-        const response = await axios.post(`${API_BASE}/forecast`, forecastData);
+        const response = await axios.post(`${API_BASE}/forecast/create`, forecastData);
         if (response.data.status === 'success') {
           toast.success('Forecast saved successfully');
           actions.fetchAllData(); // Refresh data
@@ -213,10 +213,10 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    updateForecast: async (id, forecastData) => {
+    updateForecast: async (updateData) => {
       try {
         actions.setLoading(true);
-        const response = await axios.put(`${API_BASE}/forecast/${id}`, forecastData);
+        const response = await axios.post(`${API_BASE}/forecast/update`, updateData);
         if (response.data.status === 'success') {
           toast.success('Forecast updated successfully');
           actions.fetchAllData(); // Refresh data
@@ -228,10 +228,10 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    deleteForecast: async (id) => {
+    deleteForecast: async (tableName, recordId) => {
       try {
         actions.setLoading(true);
-        const response = await axios.delete(`${API_BASE}/forecast/${id}`);
+        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${recordId}`);
         if (response.data.status === 'success') {
           toast.success('Forecast deleted successfully');
           actions.fetchAllData(); // Refresh data
@@ -247,8 +247,9 @@ export const ForecastProvider = ({ children }) => {
       actions.clearValidation();
       const errors = [];
       
-      // Validate forecasts
-      state.data.forecasts.forEach((forecast, index) => {
+      // Validate forecasts - ensure forecasts is an array
+      const forecasts = Array.isArray(state.data.forecasts) ? state.data.forecasts : [];
+      forecasts.forEach((forecast, index) => {
         if (!forecast.customer_id) {
           errors.push({ type: 'forecast', index, field: 'customer_id', message: 'Customer is required' });
         }

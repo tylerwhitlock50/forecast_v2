@@ -23,6 +23,12 @@ services:
     networks:
       - forecast-network
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    runtime: nvidia
 
   whisper:
     image: onerahmet/openai-whisper-asr-webservice:latest
