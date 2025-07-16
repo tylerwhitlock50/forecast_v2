@@ -6,6 +6,8 @@ const ScenarioSelector = () => {
   const { scenarios, activeScenario, actions } = useForecast();
   const [isOpen, setIsOpen] = useState(false);
 
+
+
   const handleScenarioChange = (scenarioId) => {
     actions.switchScenario(scenarioId);
     setIsOpen(false);
@@ -41,7 +43,7 @@ const ScenarioSelector = () => {
         </span>
         <span className="scenario-name">
           {scenarios[activeScenario] ? 
-            `${activeScenario} | ${scenarios[activeScenario].name}` : 
+            `${activeScenario} | ${scenarios[activeScenario].name || 'Unnamed Scenario'}` : 
             'Select Scenario'
           }
         </span>
@@ -66,7 +68,7 @@ const ScenarioSelector = () => {
                 {getScenarioIcon(id)}
               </span>
               <div className="scenario-option-content">
-                <span className="scenario-option-name">{`${id} | ${scenario.name}`}</span>
+                <span className="scenario-option-name">{`${id} | ${scenario.name || 'Unnamed Scenario'}`}</span>
                 <span className="scenario-option-status">
                   {id === activeScenario ? 'Active' : 'Switch to'}
                 </span>

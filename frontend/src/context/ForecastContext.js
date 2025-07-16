@@ -91,16 +91,25 @@ const forecastReducer = (state, action) => {
       };
     
     case actionTypes.UPDATE_SCENARIO:
-      return {
-        ...state,
-        scenarios: {
-          ...state.scenarios,
-          [action.payload.id]: {
-            ...state.scenarios[action.payload.id],
-            ...action.payload.data
+      if (action.payload.scenarios) {
+        // If we're passing a full scenarios object, use it
+        return {
+          ...state,
+          scenarios: action.payload.scenarios
+        };
+      } else {
+        // If we're updating a single scenario
+        return {
+          ...state,
+          scenarios: {
+            ...state.scenarios,
+            [action.payload.id]: {
+              ...state.scenarios[action.payload.id],
+              ...action.payload.data
+            }
           }
-        }
-      };
+        };
+      }
     
     case actionTypes.ADD_VALIDATION_ERROR:
       return {
@@ -250,8 +259,8 @@ export const ForecastProvider = ({ children }) => {
         forecast.forEach(scenario => {
           scenarioMap[scenario.forecast_id] = {
             id: scenario.forecast_id,
-            name: scenario.name,
-            description: scenario.description,
+            name: scenario.name || 'Unnamed Scenario',
+            description: scenario.description || '',
             isActive: false
           };
         });
@@ -320,8 +329,8 @@ export const ForecastProvider = ({ children }) => {
           scenarios.forEach(scenario => {
             scenarioMap[scenario.forecast_id] = {
               id: scenario.forecast_id,
-              name: scenario.name,
-              description: scenario.description,
+              name: scenario.name || 'Unnamed Scenario',
+              description: scenario.description || '',
               isActive: false
             };
           });
@@ -530,6 +539,8 @@ export const ForecastProvider = ({ children }) => {
     // The scenario filtering should be done in the UI components
     actions.fetchAllData();
   }, [state.activeScenario]);
+
+
 
   const value = {
     state,
