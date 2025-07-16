@@ -50,12 +50,12 @@ const RevenueForecasting = () => {
     products.forEach(product => {
       customers.forEach(customer => {
         const baseRow = {
-          id: `${product.id}-${customer.id}`,
+          id: `${product.id}-${customer.customer_id}`,
           product_id: product.id,
-          product_name: product.name,
-          customer_id: customer.id,
-          customer_name: customer.name,
-          segment: customer.segment || 'General',
+          product_name: product.name || product.unit_name,
+          customer_id: customer.customer_id,
+          customer_name: customer.customer_name,
+          segment: customer.customer_type || customer.region || 'General',
           total_quantity: 0,
           total_revenue: 0
         };
@@ -64,16 +64,16 @@ const RevenueForecasting = () => {
         timePeriods.forEach(period => {
           const existingForecast = forecastData.find(f => 
             f.product_id === product.id && 
-            f.customer_id === customer.id && 
+            f.customer_id === customer.customer_id && 
             f.period === period.key
           );
           
           baseRow[`quantity_${period.key}`] = existingForecast?.quantity || 0;
-          baseRow[`price_${period.key}`] = existingForecast?.price || 0;
-          baseRow[`revenue_${period.key}`] = (existingForecast?.quantity || 0) * (existingForecast?.price || 0);
+          baseRow[`price_${period.key}`] = existingForecast?.price || product.base_price || 0;
+          baseRow[`revenue_${period.key}`] = (existingForecast?.quantity || 0) * (existingForecast?.price || product.base_price || 0);
           
           baseRow.total_quantity += existingForecast?.quantity || 0;
-          baseRow.total_revenue += (existingForecast?.quantity || 0) * (existingForecast?.price || 0);
+          baseRow.total_revenue += (existingForecast?.quantity || 0) * (existingForecast?.price || product.base_price || 0);
         });
 
         matrix.push(baseRow);
@@ -206,7 +206,7 @@ const RevenueForecasting = () => {
   // Get unique segments
   useEffect(() => {
     const customers = Array.isArray(data.customers) ? data.customers : [];
-    const uniqueSegments = [...new Set(customers.map(c => c.segment || 'General'))];
+    const uniqueSegments = [...new Set(customers.map(c => c.customer_type || c.region || 'General'))];
     setSegments(uniqueSegments);
   }, [data.customers]);
 
@@ -295,12 +295,63 @@ const RevenueForecasting = () => {
     };
   }, [filteredMatrixData]);
 
+  // Handle save changes
+  const handleSaveChanges = async () => {
+    try {
+      // Save each forecast item
+      for (const forecast of forecastData) {
+        await actions.saveForecast(forecast);
+      }
+      toast.success('All changes saved successfully');
+    } catch (error) {
+      toast.error('Failed to save changes');
+    }
+  };
+
+  // Debug function to log data structure
+  const logDataStructure = () => {
+    console.log('Current data structure:', {
+      products: data.products?.length || 0,
+      customers: data.customers?.length || 0,
+      forecasts: data.forecasts?.length || 0,
+      machines: data.machines?.length || 0,
+      employees: data.employees?.length || 0,
+      bom: data.bom?.length || 0,
+      routing: data.routing?.length || 0
+    });
+    console.log('Sample products:', data.products?.slice(0, 2));
+    console.log('Sample customers:', data.customers?.slice(0, 2));
+    console.log('Sample forecasts:', data.forecasts?.slice(0, 2));
+  };
+
+  // Log data structure on component mount
+  useEffect(() => {
+    if (data.products?.length > 0 || data.customers?.length > 0) {
+      logDataStructure();
+    }
+  }, [data.products, data.customers]);
+
   if (loading) {
     return (
       <div className="revenue-forecasting">
         <div className="loading-spinner">
           <div className="spinner"></div>
           <p>Loading revenue data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if no data is loaded
+  if (!data.products?.length && !data.customers?.length) {
+    return (
+      <div className="revenue-forecasting">
+        <div className="loading-spinner">
+          <div className="spinner"></div>
+          <p>No data available. Please check the backend connection.</p>
+          <button onClick={() => actions.fetchAllData()} style={{ marginTop: '1rem', padding: '0.5rem 1rem' }}>
+            Retry Loading Data
+          </button>
         </div>
       </div>
     );
@@ -343,6 +394,12 @@ const RevenueForecasting = () => {
             </button>
             <button onClick={handleBulkExport}>
               📤 Export
+            </button>
+            <button onClick={handleSaveChanges} style={{ backgroundColor: '#28a745', color: 'white', borderColor: '#28a745' }}>
+              💾 Save Changes
+            </button>
+            <button onClick={logDataStructure} style={{ backgroundColor: '#6c757d', color: 'white', borderColor: '#6c757d' }}>
+              🐛 Debug Data
             </button>
           </div>
         </div>

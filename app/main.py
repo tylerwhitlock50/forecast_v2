@@ -83,7 +83,7 @@ async def get_table_data_endpoint(table_name: str):
 @app.post("/forecast/create", response_model=ForecastResponse)
 async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
     """
-    Create a new forecast using the wizard data
+    Create a new forecast using the wizard data or direct sales data
     """
     try:
         from db.database import db_manager
@@ -91,8 +91,26 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
-        # Step 1: Create revenue forecast
-        if forecast_data.get('revenue'):
+        # Handle direct sales data from frontend
+        if forecast_data.get('sales'):
+            sales = forecast_data['sales']
+            sale_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sale_id, 
+                sales['customer_id'], 
+                sales['unit_id'], 
+                sales['period'], 
+                sales['quantity'], 
+                sales['unit_price'], 
+                sales['total_revenue'],
+                sales.get('forecast_id')
+            ))
+        
+        # Handle wizard-style forecast data
+        elif forecast_data.get('revenue'):
             revenue = forecast_data['revenue']
             if revenue.get('customer') and revenue.get('product'):
                 # Generate periods
@@ -115,7 +133,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (sale_id, revenue['customer'], revenue['product'], period, 1, amount, amount))
         
-        # Step 2: Create BOM entries
+        # Handle BOM entries
         if forecast_data.get('bom'):
             bom = forecast_data['bom']
             if bom.get('product') and bom.get('materialCost'):
@@ -125,7 +143,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                     VALUES (?, ?, ?, ?)
                 """, (bom_id, bom['product'], bom.get('routerId', ''), float(bom['materialCost'])))
         
-        # Step 3: Create labor entries
+        # Handle labor entries
         if forecast_data.get('labor'):
             labor = forecast_data['labor']
             if labor.get('employeeName'):
@@ -143,7 +161,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                     labor.get('endDate', '')
                 ))
         
-        # Step 4: Create recurring expenses (store in a new table or use existing structure)
+        # Handle recurring expenses (store in a new table or use existing structure)
         if forecast_data.get('recurring'):
             recurring = forecast_data['recurring']
             if recurring.get('expenseName') and recurring.get('amount'):
@@ -151,7 +169,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 # In a real implementation, you'd have a dedicated expenses table
                 pass
         
-        # Step 5: Create loan entries (store in a new table or use existing structure)
+        # Handle loan entries (store in a new table or use existing structure)
         if forecast_data.get('loans'):
             loans = forecast_data['loans']
             if loans.get('loanName') and loans.get('principal'):
@@ -159,7 +177,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 # In a real implementation, you'd have a dedicated loans table
                 pass
         
-        # Step 6: Create non-recurring expenses (store in a new table or use existing structure)
+        # Handle non-recurring expenses (store in a new table or use existing structure)
         if forecast_data.get('nonRecurring'):
             non_recurring = forecast_data['nonRecurring']
             if non_recurring.get('expenseName') and non_recurring.get('amount'):
@@ -212,11 +230,36 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
         if not table_name or not record_id:
             raise HTTPException(status_code=400, detail="Table name and record ID are required")
         
+        # Get the primary key column name for the table
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = cursor.fetchall()
+        primary_key = None
+        
+        for col in columns:
+            if col[5] == 1:  # Primary key flag
+                primary_key = col[1]
+                break
+        
+        if not primary_key:
+            # If no primary key found, use common naming conventions
+            if table_name == 'sales':
+                primary_key = 'sale_id'
+            elif table_name == 'customers':
+                primary_key = 'customer_id'
+            elif table_name == 'units':
+                primary_key = 'unit_id'
+            elif table_name == 'machines':
+                primary_key = 'machine_id'
+            elif table_name == 'payroll':
+                primary_key = 'employee_id'
+            else:
+                primary_key = 'id'
+        
         # Build update query dynamically
         set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
         values = list(updates.values()) + [record_id]
         
-        cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE id = ?", values)
+        cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = ?", values)
         conn.commit()
         db_manager.close_connection(conn)
         

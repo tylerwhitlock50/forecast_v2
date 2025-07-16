@@ -13,13 +13,13 @@ const initialState = {
   },
   activeScenario: 'base',
   data: {
-    products: [],
+    products: [], // Will be mapped from units
     customers: [],
-    forecasts: [],
+    forecasts: [], // Will be mapped from sales
     bom: [],
-    routing: [],
+    routing: [], // Will be mapped from routers
     machines: [],
-    employees: [],
+    employees: [], // Will be mapped from payroll
     departments: [],
     payroll: [],
     expenses: [],
@@ -169,24 +169,84 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         const [
           forecastRes,
-          productsRes,
+          unitsRes,
           customersRes,
           machinesRes,
-          employeesRes
+          payrollRes,
+          bomRes,
+          routersRes
         ] = await Promise.all([
           axios.get(`${API_BASE}/forecast`),
           axios.get(`${API_BASE}/data/units`),
           axios.get(`${API_BASE}/data/customers`),
           axios.get(`${API_BASE}/data/machines`),
-          axios.get(`${API_BASE}/data/payroll`)
+          axios.get(`${API_BASE}/data/payroll`),
+          axios.get(`${API_BASE}/data/bom`),
+          axios.get(`${API_BASE}/data/routers`)
         ]);
 
+        // Map backend data to frontend expected format
+        const units = unitsRes.data.status === 'success' ? unitsRes.data.data || [] : [];
+        const customers = customersRes.data.status === 'success' ? customersRes.data.data || [] : [];
+        const sales = forecastRes.data.status === 'success' ? forecastRes.data.data?.sales_forecast || [] : [];
+        const machines = machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [];
+        const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
+        const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
+        const routers = routersRes.data.status === 'success' ? routersRes.data.data || [] : [];
+
+        // Transform units to products format
+        const products = units.map(unit => ({
+          id: unit.unit_id,
+          name: unit.unit_name,
+          description: unit.unit_description,
+          base_price: unit.base_price,
+          unit_type: unit.unit_type,
+          bom: unit.bom,
+          router: unit.router
+        }));
+
+        // Transform sales to forecasts format
+        const forecasts = sales.map(sale => ({
+          id: sale.sale_id,
+          product_id: sale.unit_id, // Map unit_id to product_id
+          customer_id: sale.customer_id,
+          period: sale.period,
+          quantity: sale.quantity,
+          price: sale.unit_price,
+          total_revenue: sale.total_revenue,
+          forecast_id: sale.forecast_id
+        }));
+
+        // Transform payroll to employees format
+        const employees = payroll.map(emp => ({
+          id: emp.employee_id,
+          name: emp.employee_name,
+          weekly_hours: emp.weekly_hours,
+          hourly_rate: emp.hourly_rate,
+          labor_type: emp.labor_type,
+          start_date: emp.start_date,
+          end_date: emp.end_date
+        }));
+
+        // Transform routers to routing format
+        const routing = routers.map(router => ({
+          id: router.router_id,
+          unit_id: router.unit_id,
+          machine_id: router.machine_id,
+          machine_minutes: router.machine_minutes,
+          labor_minutes: router.labor_minutes,
+          sequence: router.sequence
+        }));
+
         const data = {
-          forecasts: forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [],
-          products: productsRes.data.status === 'success' ? productsRes.data.data || [] : [],
-          customers: customersRes.data.status === 'success' ? customersRes.data.data || [] : [],
-          machines: machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [],
-          employees: employeesRes.data.status === 'success' ? employeesRes.data.data || [] : []
+          products,
+          customers,
+          forecasts,
+          machines,
+          employees,
+          payroll,
+          bom,
+          routing
         };
 
         actions.setData(data);
@@ -201,7 +261,19 @@ export const ForecastProvider = ({ children }) => {
     saveForecast: async (forecastData) => {
       try {
         actions.setLoading(true);
-        const response = await axios.post(`${API_BASE}/forecast/create`, forecastData);
+        
+        // Transform frontend forecast data to backend sales format
+        const salesData = {
+          customer_id: forecastData.customer_id,
+          unit_id: forecastData.product_id, // Map product_id back to unit_id
+          period: forecastData.period,
+          quantity: forecastData.quantity,
+          unit_price: forecastData.price,
+          total_revenue: forecastData.total_revenue,
+          forecast_id: forecastData.forecast_id
+        };
+
+        const response = await axios.post(`${API_BASE}/forecast/create`, { sales: salesData });
         if (response.data.status === 'success') {
           toast.success('Forecast saved successfully');
           actions.fetchAllData(); // Refresh data
@@ -216,7 +288,26 @@ export const ForecastProvider = ({ children }) => {
     updateForecast: async (updateData) => {
       try {
         actions.setLoading(true);
-        const response = await axios.post(`${API_BASE}/forecast/update`, updateData);
+        
+        // Transform the update data to match backend structure
+        const backendUpdateData = {
+          table: updateData.table === 'forecasts' ? 'sales' : updateData.table,
+          id: updateData.id,
+          updates: {}
+        };
+
+        // Map frontend field names to backend field names
+        Object.keys(updateData.updates).forEach(key => {
+          if (key === 'product_id') {
+            backendUpdateData.updates['unit_id'] = updateData.updates[key];
+          } else if (key === 'price') {
+            backendUpdateData.updates['unit_price'] = updateData.updates[key];
+          } else {
+            backendUpdateData.updates[key] = updateData.updates[key];
+          }
+        });
+
+        const response = await axios.post(`${API_BASE}/forecast/update`, backendUpdateData);
         if (response.data.status === 'success') {
           toast.success('Forecast updated successfully');
           actions.fetchAllData(); // Refresh data
@@ -231,7 +322,9 @@ export const ForecastProvider = ({ children }) => {
     deleteForecast: async (tableName, recordId) => {
       try {
         actions.setLoading(true);
-        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${recordId}`);
+        // Map frontend table names to backend table names
+        const backendTableName = tableName === 'forecasts' ? 'sales' : tableName;
+        const response = await axios.delete(`${API_BASE}/forecast/delete/${backendTableName}/${recordId}`);
         if (response.data.status === 'success') {
           toast.success('Forecast deleted successfully');
           actions.fetchAllData(); // Refresh data
