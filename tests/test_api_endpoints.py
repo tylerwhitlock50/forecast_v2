@@ -364,4 +364,20 @@ class TestAPIEndpoints:
         data = response.json()
         assert "openapi" in data
         assert "paths" in data
-        assert "components" in data 
+        assert "components" in data
+
+    def test_materials_usage_horizon(self, client: TestClient):
+        """Test materials usage with date range"""
+        response = client.get("/materials/usage?start_date=2024-01&end_date=2024-01")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]["materials"]) > 0
+
+    def test_labor_utilization_horizon_empty(self, client: TestClient):
+        """Test labor utilization returns empty for out-of-range dates"""
+        response = client.get("/labor/utilization?start_date=2024-02&end_date=2024-03")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]["labor"]) == 0

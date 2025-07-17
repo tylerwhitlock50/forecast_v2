@@ -40,12 +40,17 @@ const PlaceholderComponent = ({ title, description }) => (
   </div>
 );
 
+// Data management modules
+import CustomerManagementModule from './components/Modules/DataManagement/CustomerManagementModule';
+import UnitManagementModule from './components/Modules/DataManagement/UnitManagementModule';
+import MachineManagementModule from './components/Modules/DataManagement/MachineManagementModule';
+import RouterManagementModule from './components/Modules/DataManagement/RouterManagementModule';
+import BomManagementModule from './components/Modules/DataManagement/BomManagementModule';
+import LaborRateManagementModule from './components/Modules/DataManagement/LaborRateManagementModule';
+
 // Module placeholder components
 const ProductCustomerSetup = () => (
-  <PlaceholderComponent 
-    title="Product & Customer Setup" 
-    description="Manage your product catalog and customer database. Create product SKUs, define customer segments, and set up the foundational data for your revenue forecasting."
-  />
+  <CustomerManagementModule />
 );
 
 const SegmentAnalysis = () => (
@@ -56,24 +61,15 @@ const SegmentAnalysis = () => (
 );
 
 const BillOfMaterials = () => (
-  <PlaceholderComponent 
-    title="Bill of Materials" 
-    description="Configure material costs and BOM calculations for your products. Set up component hierarchies and manage cost structures."
-  />
+  <BomManagementModule />
 );
 
 const WorkRouting = () => (
-  <PlaceholderComponent 
-    title="Work Routing" 
-    description="Define manufacturing processes and work routing steps. Configure machine assignments, cycle times, and labor requirements."
-  />
+  <RouterManagementModule />
 );
 
 const MachineUtilization = () => (
-  <PlaceholderComponent 
-    title="Machine Utilization" 
-    description="Monitor machine capacity and utilization rates. Track performance metrics and optimize production scheduling."
-  />
+  <MachineManagementModule />
 );
 
 const PayrollAllocation = () => (
@@ -91,10 +87,7 @@ const DepartmentManagement = () => (
 );
 
 const LaborAnalysis = () => (
-  <PlaceholderComponent 
-    title="Labor Analysis" 
-    description="Analyze labor costs and productivity metrics. Track efficiency trends and identify optimization opportunities."
-  />
+  <LaborRateManagementModule />
 );
 
 const ExpenseManagement = () => (
@@ -198,6 +191,7 @@ function App() {
               
               {/* Revenue Planning */}
               <Route path="/products-customers" element={<ProductCustomerSetup />} />
+              <Route path="/units" element={<UnitManagementModule />} />
               <Route path="/sales-forecast" element={<RevenueForecasting />} />
               <Route path="/segments" element={<SegmentAnalysis />} />
               

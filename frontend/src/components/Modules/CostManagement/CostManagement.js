@@ -2,6 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import './CostManagement.css';
+import OverviewTab from './Tabs/OverviewTab';
+import MaterialsTab from './Tabs/MaterialsTab';
+import MachinesTab from './Tabs/MachinesTab';
+import LaborTab from './Tabs/LaborTab';
+import MetricsHorizonSelector from './MetricsHorizonSelector';
+import LaborHorizonSelector from './LaborHorizonSelector';
 
 const CostManagement = () => {
   const { activeScenario } = useForecast();
@@ -14,8 +20,8 @@ const CostManagement = () => {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [bomData, setBomData] = useState([]);
   const [routingData, setRoutingData] = useState([]);
-  const [showVersionModal, setShowVersionModal] = useState(false);
-  const [versionType, setVersionType] = useState(''); // 'bom' or 'routing'
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
@@ -23,7 +29,11 @@ const CostManagement = () => {
   const fetchCostSummary = async () => {
     try {
       setLoading(true);
-      const url = `${API_BASE}/products/cost-summary${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      const params = new URLSearchParams();
+      if (activeScenario) params.append('forecast_id', activeScenario);
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const url = `${API_BASE}/products/cost-summary?${params.toString()}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -40,7 +50,11 @@ const CostManagement = () => {
   // Fetch materials usage
   const fetchMaterialsUsage = async () => {
     try {
-      const url = `${API_BASE}/materials/usage${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      const params = new URLSearchParams();
+      if (activeScenario) params.append('forecast_id', activeScenario);
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const url = `${API_BASE}/materials/usage?${params.toString()}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -55,7 +69,11 @@ const CostManagement = () => {
   // Fetch machines utilization
   const fetchMachinesUtilization = async () => {
     try {
-      const url = `${API_BASE}/machines/utilization${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      const params = new URLSearchParams();
+      if (activeScenario) params.append('forecast_id', activeScenario);
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const url = `${API_BASE}/machines/utilization?${params.toString()}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -70,7 +88,11 @@ const CostManagement = () => {
   // Fetch labor utilization
   const fetchLaborUtilization = async () => {
     try {
-      const url = `${API_BASE}/labor/utilization${activeScenario ? `?forecast_id=${activeScenario}` : ''}`;
+      const params = new URLSearchParams();
+      if (activeScenario) params.append('forecast_id', activeScenario);
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const url = `${API_BASE}/labor/utilization?${params.toString()}`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.status === 'success') {
@@ -113,44 +135,26 @@ const CostManagement = () => {
   // Handle product tile click
   const handleProductClick = (product) => {
     setSelectedProduct(product);
-    if (product.bom_id) {
-      fetchBomDetails(product.bom_id, product.bom_version);
-    }
-    if (product.router_id) {
-      fetchRoutingDetails(product.router_id, product.router_version);
-    }
   };
 
-  // Handle version cloning
-  const handleVersionClone = async (type, id, fromVersion, toVersion) => {
-    try {
-      const endpoint = type === 'bom' ? '/bom/clone' : '/routing/clone';
-      const body = type === 'bom' 
-        ? { bom_id: id, from_version: fromVersion, to_version: toVersion }
-        : { router_id: id, from_version: fromVersion, to_version: toVersion };
-
-      const response = await fetch(`${API_BASE}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-
-      const data = await response.json();
-      if (data.status === 'success') {
-        toast.success(data.message);
-        setShowVersionModal(false);
-        // Refresh the current data
-        if (type === 'bom' && selectedProduct?.bom_id) {
-          fetchBomDetails(selectedProduct.bom_id, toVersion);
-        } else if (type === 'routing' && selectedProduct?.router_id) {
-          fetchRoutingDetails(selectedProduct.router_id, toVersion);
-        }
+  useEffect(() => {
+    if (selectedProduct) {
+      if (selectedProduct.bom_id) {
+        fetchBomDetails(selectedProduct.bom_id, selectedProduct.bom_version);
+      } else {
+        setBomData([]);
       }
-    } catch (error) {
-      console.error('Error cloning version:', error);
-      toast.error('Failed to clone version');
+      if (selectedProduct.router_id) {
+        fetchRoutingDetails(selectedProduct.router_id, selectedProduct.router_version);
+      } else {
+        setRoutingData([]);
+      }
+    } else {
+      setBomData([]);
+      setRoutingData([]);
     }
-  };
+  }, [selectedProduct]);
+
 
   // Load data on component mount and when active scenario changes
   useEffect(() => {
@@ -158,7 +162,7 @@ const CostManagement = () => {
     fetchMaterialsUsage();
     fetchMachinesUtilization();
     fetchLaborUtilization();
-  }, [activeScenario]);
+  }, [activeScenario, startDate, endDate]);
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', {
@@ -231,229 +235,50 @@ const CostManagement = () => {
 
       <div className="cost-content">
         {activeTab === 'overview' && (
-          <div className="overview-tab">
-            <div className="product-tiles">
-              {costSummary.map((product) => (
-                <div 
-                  key={product.product_id} 
-                  className={`product-tile ${selectedProduct?.product_id === product.product_id ? 'selected' : ''}`}
-                  onClick={() => handleProductClick(product)}
-                >
-                  <div className="product-header">
-                    <h3>{product.product_name}</h3>
-                    <span className="product-id">{product.product_id}</span>
-                  </div>
-                  <div className="product-metrics">
-                    <div className="metric">
-                      <span className="metric-label">Revenue</span>
-                      <span className="metric-value">{formatCurrency(product.forecasted_revenue)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">COGS</span>
-                      <span className="metric-value">{formatCurrency(product.total_cogs)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Margin</span>
-                      <span className="metric-value">{formatPercent(product.gross_margin_percent)}</span>
-                    </div>
-                  </div>
-                  <div className="cost-breakdown">
-                    <div className="cost-item">
-                      <span>Materials:</span>
-                      <span>{formatCurrency(product.material_cost)}</span>
-                    </div>
-                    <div className="cost-item">
-                      <span>Labor:</span>
-                      <span>{formatCurrency(product.labor_cost)}</span>
-                    </div>
-                    <div className="cost-item">
-                      <span>Machines:</span>
-                      <span>{formatCurrency(product.machine_cost)}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {selectedProduct && (
-              <div className="product-details">
-                <div className="details-header">
-                  <h3>Details for {selectedProduct.product_name}</h3>
-                  <button onClick={() => setSelectedProduct(null)}>×</button>
-                </div>
-                
-                <div className="details-tabs">
-                  <div className="detail-section">
-                    <h4>Bill of Materials</h4>
-                    <div className="bom-table">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Line</th>
-                            <th>Material</th>
-                            <th>Qty</th>
-                            <th>Unit</th>
-                            <th>Unit Price</th>
-                            <th>Total Cost</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bomData.map((item, index) => (
-                            <tr key={index}>
-                              <td>{item.bom_line}</td>
-                              <td>{item.material_description}</td>
-                              <td>{item.qty}</td>
-                              <td>{item.unit}</td>
-                              <td>{formatCurrency(item.unit_price)}</td>
-                              <td>{formatCurrency(item.material_cost)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="detail-section">
-                    <h4>Routing</h4>
-                    <div className="routing-table">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Seq</th>
-                            <th>Machine</th>
-                            <th>Machine Min</th>
-                            <th>Labor Min</th>
-                            <th>Labor Type</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {routingData.map((item, index) => (
-                            <tr key={index}>
-                              <td>{item.sequence}</td>
-                              <td>{item.machine_name}</td>
-                              <td>{item.machine_minutes}</td>
-                              <td>{item.labor_minutes}</td>
-                              <td>{item.rate_name}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <OverviewTab
+            costSummary={costSummary}
+            selectedProduct={selectedProduct}
+            onProductClick={handleProductClick}
+            bomData={bomData}
+            routingData={routingData}
+            formatCurrency={formatCurrency}
+            formatPercent={formatPercent}
+            setSelectedProduct={setSelectedProduct}
+          />
         )}
 
         {activeTab === 'materials' && (
-          <div className="materials-tab">
-            <h3>Materials Usage Forecast</h3>
-            <div className="materials-grid">
-              {materialsUsage.map((material, index) => (
-                <div key={index} className="material-card">
-                  <h4>{material.material_description}</h4>
-                  <div className="material-metrics">
-                    <div className="metric">
-                      <span className="metric-label">Quantity Needed</span>
-                      <span className="metric-value">{material.total_quantity_needed} {material.unit}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Unit Price</span>
-                      <span className="metric-value">{formatCurrency(material.unit_price)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Total Cost</span>
-                      <span className="metric-value">{formatCurrency(material.total_cost)}</span>
-                    </div>
-                  </div>
-                  <div className="products-using">
-                    <strong>Used by:</strong>
-                    <div className="product-tags">
-                      {material.products_using.map((product, i) => (
-                        <span key={i} className="product-tag">{product}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <MaterialsTab
+            materialsUsage={materialsUsage}
+            formatCurrency={formatCurrency}
+            startDate={startDate}
+            endDate={endDate}
+            onStartChange={setStartDate}
+            onEndChange={setEndDate}
+          />
         )}
 
         {activeTab === 'machines' && (
-          <div className="machines-tab">
-            <h3>Machine Utilization</h3>
-            <div className="machines-grid">
-              {machinesUtilization.map((machine, index) => (
-                <div key={index} className={`machine-card ${machine.capacity_exceeded ? 'over-capacity' : ''}`}>
-                  <h4>{machine.machine_name}</h4>
-                  <div className="machine-metrics">
-                    <div className="metric">
-                      <span className="metric-label">Required Minutes</span>
-                      <span className="metric-value">{Math.round(machine.total_minutes_required)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Available Minutes</span>
-                      <span className="metric-value">{machine.available_minutes_per_month}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Utilization</span>
-                      <span className="metric-value">{formatPercent(machine.utilization_percent)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Total Cost</span>
-                      <span className="metric-value">{formatCurrency(machine.total_cost)}</span>
-                    </div>
-                  </div>
-                  {machine.capacity_exceeded && (
-                    <div className="capacity-warning">
-                      ⚠️ Capacity Exceeded
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <MachinesTab
+            machinesUtilization={machinesUtilization}
+            formatCurrency={formatCurrency}
+            formatPercent={formatPercent}
+            startDate={startDate}
+            endDate={endDate}
+            onStartChange={setStartDate}
+            onEndChange={setEndDate}
+          />
         )}
 
         {activeTab === 'labor' && (
-          <div className="labor-tab">
-            <h3>Labor Utilization</h3>
-            <div className="labor-grid">
-              {laborUtilization.map((labor, index) => (
-                <div key={index} className="labor-card">
-                  <h4>{labor.labor_type_name}</h4>
-                  <div className="labor-metrics">
-                    <div className="metric">
-                      <span className="metric-label">Required Minutes</span>
-                      <span className="metric-value">{Math.round(labor.total_minutes_required)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Required Hours</span>
-                      <span className="metric-value">{Math.round(labor.total_minutes_required / 60)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Hourly Rate</span>
-                      <span className="metric-value">{formatCurrency(labor.hourly_rate)}</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Total Cost</span>
-                      <span className="metric-value">{formatCurrency(labor.total_cost)}</span>
-                    </div>
-                  </div>
-                  <div className="products-involved">
-                    <strong>Products:</strong>
-                    <div className="product-tags">
-                      {labor.products_involved.map((product, i) => (
-                        <span key={i} className="product-tag">{product}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <LaborTab
+            laborUtilization={laborUtilization}
+            formatCurrency={formatCurrency}
+            startDate={startDate}
+            endDate={endDate}
+            onStartChange={setStartDate}
+            onEndChange={setEndDate}
+          />
         )}
       </div>
     </div>

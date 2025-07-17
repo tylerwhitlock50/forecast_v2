@@ -776,7 +776,11 @@ async def export_snapshot():
 # =============================================================================
 
 @app.get("/products/cost-summary", response_model=ForecastResponse)
-async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
+async def get_products_cost_summary(
+    forecast_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None)
+):
     """
     Get cost summary for all products including COGS calculation
     """
@@ -800,13 +804,19 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
             # Calculate forecasted revenue
             revenue_query = """
                 SELECT SUM(total_revenue) as total_revenue, SUM(quantity) as total_quantity
-                FROM sales 
+                FROM sales
                 WHERE unit_id = ?
             """
             params = [unit_id]
             if forecast_id:
                 revenue_query += " AND forecast_id = ?"
                 params.append(forecast_id)
+            if start_date:
+                revenue_query += " AND period >= ?"
+                params.append(start_date)
+            if end_date:
+                revenue_query += " AND period <= ?"
+                params.append(end_date)
             
             cursor.execute(revenue_query, params)
             revenue_data = cursor.fetchone()
@@ -849,6 +859,10 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
             cost_summaries.append({
                 "product_id": unit_id,
                 "product_name": unit_name,
+                "bom_id": bom_id,
+                "bom_version": bom_version,
+                "router_id": router_id,
+                "router_version": router_version,
                 "forecasted_revenue": forecasted_revenue,
                 "material_cost": material_cost,
                 "labor_cost": labor_cost,
@@ -939,7 +953,11 @@ async def get_routing_details(router_id: str, version: str = "1.0"):
         raise HTTPException(status_code=500, detail=f"Error retrieving routing: {str(e)}")
 
 @app.get("/materials/usage", response_model=ForecastResponse)
-async def get_materials_usage(forecast_id: Optional[str] = Query(None)):
+async def get_materials_usage(
+    forecast_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None)
+):
     """
     Get material usage forecast for purchasing decisions
     """
@@ -964,6 +982,12 @@ async def get_materials_usage(forecast_id: Optional[str] = Query(None)):
         if forecast_id:
             usage_query += " WHERE s.forecast_id = ?"
             params.append(forecast_id)
+        if start_date:
+            usage_query += " AND s.period >= ?" if forecast_id else " WHERE s.period >= ?"
+            params.append(start_date)
+        if end_date:
+            usage_query += " AND s.period <= ?" if (forecast_id or start_date) else " WHERE s.period <= ?"
+            params.append(end_date)
         
         usage_query += " GROUP BY b.material_description, b.unit, b.unit_price"
         
@@ -993,7 +1017,11 @@ async def get_materials_usage(forecast_id: Optional[str] = Query(None)):
         raise HTTPException(status_code=500, detail=f"Error retrieving material usage: {str(e)}")
 
 @app.get("/machines/utilization", response_model=ForecastResponse)
-async def get_machines_utilization(forecast_id: Optional[str] = Query(None)):
+async def get_machines_utilization(
+    forecast_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None)
+):
     """
     Get machine utilization forecast and capacity analysis
     """
@@ -1018,6 +1046,12 @@ async def get_machines_utilization(forecast_id: Optional[str] = Query(None)):
         if forecast_id:
             utilization_query += " WHERE s.forecast_id = ?"
             params.append(forecast_id)
+        if start_date:
+            utilization_query += " AND s.period >= ?" if forecast_id else " WHERE s.period >= ?"
+            params.append(start_date)
+        if end_date:
+            utilization_query += " AND s.period <= ?" if (forecast_id or start_date) else " WHERE s.period <= ?"
+            params.append(end_date)
         
         utilization_query += " GROUP BY m.machine_id, m.machine_name, m.available_minutes_per_month, m.machine_rate"
         
@@ -1052,7 +1086,11 @@ async def get_machines_utilization(forecast_id: Optional[str] = Query(None)):
         raise HTTPException(status_code=500, detail=f"Error retrieving machine utilization: {str(e)}")
 
 @app.get("/labor/utilization", response_model=ForecastResponse)
-async def get_labor_utilization(forecast_id: Optional[str] = Query(None)):
+async def get_labor_utilization(
+    forecast_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None)
+):
     """
     Get labor utilization forecast and cost analysis
     """
@@ -1078,7 +1116,13 @@ async def get_labor_utilization(forecast_id: Optional[str] = Query(None)):
         if forecast_id:
             utilization_query += " WHERE s.forecast_id = ?"
             params.append(forecast_id)
-        
+        if start_date:
+            utilization_query += " AND s.period >= ?" if forecast_id else " WHERE s.period >= ?"
+            params.append(start_date)
+        if end_date:
+            utilization_query += " AND s.period <= ?" if (forecast_id or start_date) else " WHERE s.period <= ?"
+            params.append(end_date)
+
         utilization_query += " GROUP BY lr.rate_id, lr.rate_name, lr.rate_amount"
         
         cursor.execute(utilization_query, params)

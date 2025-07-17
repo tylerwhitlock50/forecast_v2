@@ -408,6 +408,32 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
+    executeSQL: async (sql, description = 'SQL Execution') => {
+      try {
+        const response = await axios.post(`${API_BASE}/apply_sql`, {
+          sql_statement: sql,
+          description
+        });
+        if (response.data.status === 'success') {
+          toast.success(description);
+          actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error executing SQL:', error);
+        toast.error('SQL execution failed');
+      }
+    },
+
+    createRecord: async (table, record) => {
+      const columns = Object.keys(record);
+      const values = columns.map(key => {
+        const value = record[key];
+        return typeof value === 'number' ? value : `'${String(value).replace(/'/g, "''")}'`;
+      });
+      const sql = `INSERT INTO ${table} (${columns.join(',')}) VALUES (${values.join(',')})`;
+      await actions.executeSQL(sql, `Insert into ${table}`);
+    },
+
     validateData: () => {
       actions.clearValidation();
       const errors = [];
