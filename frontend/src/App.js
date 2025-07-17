@@ -9,6 +9,8 @@ import ChatPanel from './components/ChatPanel';
 import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecasting';
 import CostManagement from './components/Modules/CostManagement/CostManagement';
 import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagement';
+import MachineManagement from './components/Modules/MachineManagement/MachineManagement';
+import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -63,19 +65,20 @@ const BillOfMaterials = () => (
   />
 );
 
-const WorkRouting = () => (
-  <PlaceholderComponent 
-    title="Work Routing" 
-    description="Define manufacturing processes and work routing steps. Configure machine assignments, cycle times, and labor requirements."
-  />
-);
+// Work Routing and Machine Utilization now use actual components
+// const WorkRouting = () => (
+//   <PlaceholderComponent 
+//     title="Work Routing" 
+//     description="Define manufacturing processes and work routing steps. Configure machine assignments, cycle times, and labor requirements."
+//   />
+// );
 
-const MachineUtilization = () => (
-  <PlaceholderComponent 
-    title="Machine Utilization" 
-    description="Monitor machine capacity and utilization rates. Track performance metrics and optimize production scheduling."
-  />
-);
+// const MachineUtilization = () => (
+//   <PlaceholderComponent 
+//     title="Machine Utilization" 
+//     description="Monitor machine capacity and utilization rates. Track performance metrics and optimize production scheduling."
+//   />
+// );
 
 const PayrollAllocation = () => (
   <PlaceholderComponent 
@@ -95,6 +98,20 @@ const LaborAnalysis = () => (
   <PlaceholderComponent 
     title="Labor Analysis" 
     description="Analyze labor costs and productivity metrics. Track efficiency trends and identify optimization opportunities."
+  />
+);
+
+const LaborRates = () => (
+  <PlaceholderComponent 
+    title="Labor Rates Management" 
+    description="Manage labor rates and categories. Define hourly rates, overtime policies, and labor cost structures for accurate costing."
+  />
+);
+
+const UnitManagement = () => (
+  <PlaceholderComponent 
+    title="Unit Management" 
+    description="Manage product units and finished goods. Configure unit specifications, pricing, and product catalog information."
   />
 );
 
@@ -203,11 +220,15 @@ function App() {
               <Route path="/sales-forecast" element={<RevenueForecasting />} />
               <Route path="/segments" element={<SegmentAnalysis />} />
               
+              {/* Manufacturing Setup */}
+              <Route path="/machines" element={<MachineManagement />} />
+              <Route path="/routing" element={<RouterManagement />} />
+              <Route path="/bom" element={<BillOfMaterials />} />
+              <Route path="/labor-rates" element={<LaborRates />} />
+              
               {/* Cost Management */}
               <Route path="/cost-management" element={<CostManagement />} />
-              <Route path="/bom" element={<BillOfMaterials />} />
-              <Route path="/routing" element={<WorkRouting />} />
-              <Route path="/machines" element={<MachineUtilization />} />
+              <Route path="/units" element={<UnitManagement />} />
               
               {/* Resource Planning */}
               <Route path="/payroll" element={<PayrollAllocation />} />

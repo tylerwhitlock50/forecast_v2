@@ -9,18 +9,24 @@ const navigationModules = {
     icon: "📊",
     routes: {
       "Sales Forecasting": "/sales-forecast",
-      "Product Setup": "/products",
       "Customer Setup": "/customers",
-      
+      "Product Setup": "/products"
+    }
+  },
+  "Manufacturing Setup": {
+    icon: "🏭",
+    routes: {
+      "Machine Management": "/machines",
+      "Work Routing": "/routing",
+      "Bill of Materials": "/bom",
+      "Labor Rates": "/labor-rates"
     }
   },
   "Cost Management": {
     icon: "⚙️",
     routes: {
       "Cost Overview": "/cost-management",
-      "Bill of Materials": "/bom",
-      "Work Routing": "/routing",
-      "Machine Utilization": "/machines"
+      "Unit Management": "/units"
     }
   },
   "Resource Planning": {
@@ -74,7 +80,10 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
     const forecasts = Array.isArray(safeData.forecasts) ? safeData.forecasts : [];
     const products = Array.isArray(safeData.products) ? safeData.products : [];
     const customers = Array.isArray(safeData.customers) ? safeData.customers : [];
+    const machines = Array.isArray(safeData.machines) ? safeData.machines : [];
+    const routers = Array.isArray(safeData.routers) ? safeData.routers : [];
     const bom = Array.isArray(safeData.bom) ? safeData.bom : [];
+    const laborRates = Array.isArray(safeData.labor_rates) ? safeData.labor_rates : [];
     const employees = Array.isArray(safeData.employees) ? safeData.employees : [];
     const payroll = Array.isArray(safeData.payroll) ? safeData.payroll : [];
     const expenses = Array.isArray(safeData.expenses) ? safeData.expenses : [];
@@ -86,6 +95,13 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
       "Revenue Planning": {
         total: products.length + customers.length + forecasts.length,
         completed: forecasts.filter(f => f.customer_id && f.product_id && f.quantity > 0).length
+      },
+      "Manufacturing Setup": {
+        total: machines.length + routers.length + bom.length + laborRates.length,
+        completed: machines.filter(m => m.machine_rate > 0).length + 
+                  routers.filter(r => r.machine_minutes > 0 || r.labor_minutes > 0).length +
+                  bom.filter(b => b.material_cost > 0).length +
+                  laborRates.filter(lr => lr.rate_amount > 0).length
       },
       "Cost Management": {
         total: products.length,

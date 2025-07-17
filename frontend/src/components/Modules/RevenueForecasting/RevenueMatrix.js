@@ -230,7 +230,7 @@ const RevenueMatrix = ({
               fontWeight: '500'
             }}
           >
-            ➕ Add Forecast Line
+            ➕Add Forecast  Line
           </button>
         )}
       </div>

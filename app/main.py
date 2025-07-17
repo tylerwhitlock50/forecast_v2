@@ -141,6 +141,41 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 db_manager.close_connection(conn)
                 raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         
+        # Handle machine creation
+        elif forecast_data.get('table') == 'machines':
+            machine_data = forecast_data.get('data', {})
+            machine_id = machine_data.get('machine_id')
+            
+            if not machine_id:
+                raise HTTPException(status_code=400, detail="Machine ID is required")
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO machines (machine_id, machine_name, machine_description, machine_rate, labor_type, available_minutes_per_month)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    machine_id,
+                    machine_data.get('machine_name', ''),
+                    machine_data.get('machine_description', ''),
+                    machine_data.get('machine_rate', 0),
+                    machine_data.get('labor_type', ''),
+                    machine_data.get('available_minutes_per_month', 0)
+                ))
+                
+                conn.commit()
+                db_manager.close_connection(conn)
+                
+                return ForecastResponse(
+                    status="success",
+                    message="Machine created successfully"
+                )
+            except sqlite3.IntegrityError as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=400, detail=f"Machine ID '{machine_id}' already exists")
+            except Exception as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
         # Handle direct sales data from frontend
         if forecast_data.get('sales'):
             sales = forecast_data['sales']
@@ -343,9 +378,40 @@ async def delete_forecast_record(table_name: str, record_id: str):
                 break
         
         if not primary_key:
-            raise HTTPException(status_code=400, detail="No primary key found for table")
+            # If no primary key found, use common naming conventions
+            if table_name == 'sales':
+                primary_key = 'sale_id'
+            elif table_name == 'customers':
+                primary_key = 'customer_id'
+            elif table_name == 'units':
+                primary_key = 'unit_id'
+            elif table_name == 'machines':
+                primary_key = 'machine_id'
+            elif table_name == 'payroll':
+                primary_key = 'employee_id'
+            elif table_name == 'labor_rates':
+                primary_key = 'rate_id'
+            elif table_name == 'bom':
+                primary_key = 'bom_id'
+            elif table_name == 'routers':
+                primary_key = 'router_id'
+            else:
+                primary_key = 'id'
         
+        # Check if the record exists before deleting
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
+        
+        # Delete the record
         cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+        rows_affected = cursor.rowcount
+        
+        if rows_affected == 0:
+            raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
+        
         conn.commit()
         db_manager.close_connection(conn)
         
@@ -354,6 +420,9 @@ async def delete_forecast_record(table_name: str, record_id: str):
             message=f"Record deleted successfully from {table_name}"
         )
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
 

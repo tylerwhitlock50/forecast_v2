@@ -185,6 +185,7 @@ export const ForecastProvider = ({ children }) => {
           payrollRes,
           bomRes,
           routersRes,
+          laborRatesRes,
           forecastRes
         ] = await Promise.all([
           // Filter sales by forecast_id if we have an active scenario
@@ -195,6 +196,7 @@ export const ForecastProvider = ({ children }) => {
           axios.get(`${API_BASE}/data/payroll`),
           axios.get(`${API_BASE}/data/bom`),
           axios.get(`${API_BASE}/data/routers`),
+          axios.get(`${API_BASE}/data/labor_rates`),
           axios.get(`${API_BASE}/data/forecast`) // Get forecast data directly from forecast table
         ]);
 
@@ -206,6 +208,7 @@ export const ForecastProvider = ({ children }) => {
         const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
         const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
         const routers = routersRes.data.status === 'success' ? routersRes.data.data || [] : [];
+        const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
         const forecast = forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [];
 
         // Transform units to products format
@@ -289,6 +292,8 @@ export const ForecastProvider = ({ children }) => {
           employees,
           payroll,
           bom,
+          routers,
+          labor_rates,
           routing
         };
 
@@ -611,6 +616,255 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error deleting customer:', error);
         toast.error('Failed to delete customer');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Machine Management Functions
+    createMachine: async (machineData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'machines',
+          data: machineData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Machine created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating machine:', error);
+        toast.error('Failed to create machine');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateMachine: async (machineId, machineData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'machines',
+          id: machineId,
+          updates: machineData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Machine updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating machine:', error);
+        toast.error('Failed to update machine');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteMachine: async (machineId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/machines/${machineId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Machine deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting machine:', error);
+        toast.error('Failed to delete machine');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Router Management Functions
+    createRouter: async (routerData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'routers',
+          data: routerData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Router created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating router:', error);
+        toast.error('Failed to create router');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateRouter: async (routerId, routerData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'routers',
+          id: routerId,
+          updates: routerData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Router updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating router:', error);
+        toast.error('Failed to update router');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Labor Rate Management Functions
+    createLaborRate: async (laborRateData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'labor_rates',
+          data: laborRateData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Labor rate created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating labor rate:', error);
+        toast.error('Failed to create labor rate');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateLaborRate: async (laborRateId, laborRateData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'labor_rates',
+          id: laborRateId,
+          updates: laborRateData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Labor rate updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating labor rate:', error);
+        toast.error('Failed to update labor rate');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Unit Management Functions
+    createUnit: async (unitData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'units',
+          data: unitData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Unit created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating unit:', error);
+        toast.error('Failed to create unit');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateUnit: async (unitId, unitData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'units',
+          id: unitId,
+          updates: unitData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Unit updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating unit:', error);
+        toast.error('Failed to update unit');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // BOM Management Functions
+    createBOM: async (bomData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'bom',
+          data: bomData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating BOM:', error);
+        toast.error('Failed to create BOM');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateBOM: async (bomId, bomData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'bom',
+          id: bomId,
+          updates: bomData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating BOM:', error);
+        toast.error('Failed to update BOM');
         throw error;
       } finally {
         actions.setLoading(false);
