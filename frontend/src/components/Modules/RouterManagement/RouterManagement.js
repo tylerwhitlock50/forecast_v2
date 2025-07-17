@@ -3,6 +3,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import RouterTable from './RouterTable';
 import RouterModal from './RouterModal';
+import RouterOperationsModal from './RouterOperationsModal';
 import RouterSummary from './RouterSummary';
 import RouterValidation from './RouterValidation';
 import './RouterManagement.css';
@@ -11,37 +12,32 @@ const RouterManagement = () => {
   const { data, actions, loading } = useForecast();
   const [activeTab, setActiveTab] = useState('table');
   const [showRouterModal, setShowRouterModal] = useState(false);
+  const [showOperationsModal, setShowOperationsModal] = useState(false);
   const [editingRouter, setEditingRouter] = useState(null);
+  const [selectedRouter, setSelectedRouter] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterVersion, setFilterVersion] = useState('all');
-  const [filterUnit, setFilterUnit] = useState('all');
-  const [sortField, setSortField] = useState('router_id');
+  const [sortField, setSortField] = useState('router_name');
   const [sortDirection, setSortDirection] = useState('asc');
   const [selectedRouters, setSelectedRouters] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
-  // Get unique versions and units for filtering
+  // Get unique versions for filtering
   const versions = useMemo(() => {
-    const routers = Array.isArray(data.routers) ? data.routers : [];
+    const routers = Array.isArray(data.router_definitions) ? data.router_definitions : [];
     return [...new Set(routers.map(r => r.version || '1.0'))];
-  }, [data.routers]);
-
-  const units = useMemo(() => {
-    const routers = Array.isArray(data.routers) ? data.routers : [];
-    return [...new Set(routers.map(r => r.unit_id).filter(Boolean))];
-  }, [data.routers]);
+  }, [data.router_definitions]);
 
   // Filter and sort routers
   const filteredRouters = useMemo(() => {
-    let routers = Array.isArray(data.routers) ? data.routers : [];
+    let routers = Array.isArray(data.router_definitions) ? data.router_definitions : [];
     
     // Apply search filter
     if (searchTerm) {
       routers = routers.filter(router => 
+        router.router_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         router.router_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        router.unit_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        router.machine_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        router.labor_type_id?.toLowerCase().includes(searchTerm.toLowerCase())
+        router.router_description?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
     
@@ -49,13 +45,6 @@ const RouterManagement = () => {
     if (filterVersion !== 'all') {
       routers = routers.filter(router => 
         (router.version || '1.0') === filterVersion
-      );
-    }
-    
-    // Apply unit filter
-    if (filterUnit !== 'all') {
-      routers = routers.filter(router => 
-        router.unit_id === filterUnit
       );
     }
     
@@ -76,7 +65,7 @@ const RouterManagement = () => {
     });
     
     return routers;
-  }, [data.routers, searchTerm, filterVersion, filterUnit, sortField, sortDirection]);
+  }, [data.router_definitions, searchTerm, filterVersion, sortField, sortDirection]);
 
   // Handle router creation/editing
   const handleSaveRouter = async (routerData) => {
@@ -86,7 +75,16 @@ const RouterManagement = () => {
         await actions.updateRouter(editingRouter.router_id, routerData);
         toast.success('Router updated successfully');
       } else {
-        // Create new router
+        // Create new router - generate router ID if not provided
+        if (!routerData.router_id) {
+          const routers = Array.isArray(data.router_definitions) ? data.router_definitions : [];
+          const maxId = Math.max(...routers.map(r => {
+            const id = r.router_id?.replace('R', '') || '0';
+            return parseInt(id) || 0;
+          }), 0);
+          routerData.router_id = `R${String(maxId + 1).padStart(4, '0')}`;
+        }
+        
         await actions.createRouter(routerData);
         toast.success('Router created successfully');
       }
@@ -102,39 +100,20 @@ const RouterManagement = () => {
 
   // Handle router deletion
   const handleDeleteRouter = async (routerId) => {
-    if (window.confirm('Are you sure you want to delete this router? This action cannot be undone.')) {
+    if (window.confirm('Are you sure you want to delete this router? This will also delete all associated operations. This action cannot be undone.')) {
       try {
-        await actions.deleteCustomer('routers', routerId);
-        toast.success('Router deleted successfully');
-        await actions.fetchAllData(); // Refresh data
+        await actions.deleteRouter(routerId);
       } catch (error) {
         console.error('Error deleting router:', error);
-        toast.error('Failed to delete router');
+        // Error handling is already done in the deleteRouter function
       }
     }
   };
 
-  // Handle router cloning
-  const handleCloneRouter = async (routerId) => {
-    try {
-      const response = await fetch(`/api/routing/clone`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ router_id: routerId }),
-      });
-      
-      if (response.ok) {
-        toast.success('Router cloned successfully');
-        await actions.fetchAllData();
-      } else {
-        throw new Error('Failed to clone router');
-      }
-    } catch (error) {
-      console.error('Error cloning router:', error);
-      toast.error('Failed to clone router');
-    }
+  // Handle router operations management
+  const handleManageOperations = (router) => {
+    setSelectedRouter(router);
+    setShowOperationsModal(true);
   };
 
   // Handle bulk operations
@@ -148,20 +127,18 @@ const RouterManagement = () => {
       if (window.confirm(`Are you sure you want to delete ${selectedRouters.length} routers? This action cannot be undone.`)) {
         try {
           for (const routerId of selectedRouters) {
-            await actions.deleteCustomer('routers', routerId);
+            await actions.deleteRouter(routerId);
           }
-          toast.success(`${selectedRouters.length} routers deleted successfully`);
           setSelectedRouters([]);
-          await actions.fetchAllData();
         } catch (error) {
           console.error('Error in bulk delete:', error);
-          toast.error('Failed to delete some routers');
+          // Error handling is already done in the deleteRouter function
         }
       }
     } else if (bulkAction === 'export') {
       // Export selected routers to CSV
       const csvData = selectedRouters.map(routerId => {
-        const router = data.routers.find(r => r.router_id === routerId);
+        const router = data.router_definitions.find(r => r.router_id === routerId);
         return router;
       }).filter(Boolean);
 
@@ -179,18 +156,6 @@ const RouterManagement = () => {
         a.click();
         URL.revokeObjectURL(url);
         toast.success(`Exported ${csvData.length} routers`);
-      }
-    } else if (bulkAction === 'clone') {
-      // Clone selected routers
-      try {
-        for (const routerId of selectedRouters) {
-          await handleCloneRouter(routerId);
-        }
-        toast.success(`${selectedRouters.length} routers cloned successfully`);
-        setSelectedRouters([]);
-      } catch (error) {
-        console.error('Error in bulk clone:', error);
-        toast.error('Failed to clone some routers');
       }
     }
   };
@@ -257,16 +222,6 @@ const RouterManagement = () => {
                 <option key={version} value={version}>{version}</option>
               ))}
             </select>
-            <select
-              value={filterUnit}
-              onChange={(e) => setFilterUnit(e.target.value)}
-              className="unit-filter"
-            >
-              <option value="all">All Units</option>
-              {units.map(unit => (
-                <option key={unit} value={unit}>{unit}</option>
-              ))}
-            </select>
           </div>
           
           <div className="action-controls">
@@ -289,7 +244,6 @@ const RouterManagement = () => {
                 >
                   <option value="">Bulk Actions</option>
                   <option value="export">Export Selected</option>
-                  <option value="clone">Clone Selected</option>
                   <option value="delete">Delete Selected</option>
                 </select>
                 <button 
@@ -341,16 +295,15 @@ const RouterManagement = () => {
               setShowRouterModal(true);
             }}
             onDelete={handleDeleteRouter}
-            onClone={handleCloneRouter}
-            machines={data.machines || []}
-            units={data.units || []}
-            laborRates={data.labor_rates || []}
+            onManageOperations={handleManageOperations}
+            routerOperations={data.router_operations || []}
           />
         )}
 
         {activeTab === 'summary' && (
           <RouterSummary 
-            routers={data.routers || []} 
+            routers={data.router_definitions || []} 
+            routerOperations={data.router_operations || []}
             machines={data.machines || []}
             units={data.units || []}
             laborRates={data.labor_rates || []}
@@ -359,7 +312,8 @@ const RouterManagement = () => {
 
         {activeTab === 'validation' && (
           <RouterValidation 
-            routers={data.routers || []} 
+            routers={data.router_definitions || []} 
+            routerOperations={data.router_operations || []}
             machines={data.machines || []}
             units={data.units || []}
             laborRates={data.labor_rates || []}
@@ -375,9 +329,22 @@ const RouterManagement = () => {
         }}
         onSave={handleSaveRouter}
         router={editingRouter}
+      />
+
+      <RouterOperationsModal
+        isOpen={showOperationsModal}
+        onClose={() => {
+          setShowOperationsModal(false);
+          setSelectedRouter(null);
+        }}
+        router={selectedRouter}
+        operations={data.router_operations || []}
         machines={data.machines || []}
-        units={data.units || []}
         laborRates={data.labor_rates || []}
+        onSave={async () => {
+          await actions.fetchAllData();
+          toast.success('Operations updated successfully');
+        }}
       />
     </div>
   );

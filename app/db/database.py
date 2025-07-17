@@ -104,6 +104,38 @@ class DatabaseManager:
         ''')
         
         # Create routers table (updated - new structure with versioning)
+        # Create router_definitions table for router metadata
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS router_definitions (
+                router_id TEXT PRIMARY KEY,
+                router_name TEXT NOT NULL,
+                router_description TEXT,
+                version TEXT DEFAULT '1.0',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create router_operations table for individual operations
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS router_operations (
+                operation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                machine_id TEXT NOT NULL,
+                machine_minutes REAL DEFAULT 0,
+                labor_minutes REAL DEFAULT 0,
+                labor_type_id TEXT,
+                operation_description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (router_id) REFERENCES router_definitions (router_id),
+                FOREIGN KEY (machine_id) REFERENCES machines (machine_id),
+                FOREIGN KEY (labor_type_id) REFERENCES labor_rates (rate_id),
+                UNIQUE(router_id, sequence)
+            )
+        ''')
+        
+        # Keep the old routers table for backward compatibility during migration
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS routers (
                 router_id TEXT,
@@ -211,7 +243,8 @@ class DatabaseManager:
             'units.csv': 'units',
             'sales.csv': 'sales',
             'bom.csv': 'bom',
-            'routers.csv': 'routers',
+            'routers.csv': 'router_definitions',
+            'router_operations.csv': 'router_operations',
             'machines.csv': 'machines',
             'labor_rates.csv': 'labor_rates',
             'payroll.csv': 'payroll',

@@ -176,6 +176,76 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 db_manager.close_connection(conn)
                 raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         
+        # Handle router definition creation
+        elif forecast_data.get('table') == 'router_definitions':
+            router_data = forecast_data.get('data', {})
+            router_id = router_data.get('router_id')
+            
+            if not router_id:
+                raise HTTPException(status_code=400, detail="Router ID is required")
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO router_definitions (router_id, router_name, router_description, version)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    router_id,
+                    router_data.get('router_name', ''),
+                    router_data.get('router_description', ''),
+                    router_data.get('version', '1.0')
+                ))
+                
+                conn.commit()
+                db_manager.close_connection(conn)
+                
+                return ForecastResponse(
+                    status="success",
+                    message="Router created successfully"
+                )
+            except sqlite3.IntegrityError as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=400, detail=f"Router ID '{router_id}' already exists")
+            except Exception as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
+        # Handle router operation creation
+        elif forecast_data.get('table') == 'router_operations':
+            operation_data = forecast_data.get('data', {})
+            router_id = operation_data.get('router_id')
+            sequence = operation_data.get('sequence')
+            
+            if not router_id or not sequence:
+                raise HTTPException(status_code=400, detail="Router ID and sequence are required")
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO router_operations (router_id, sequence, machine_id, machine_minutes, labor_minutes, labor_type_id, operation_description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    router_id,
+                    sequence,
+                    operation_data.get('machine_id', ''),
+                    operation_data.get('machine_minutes', 0),
+                    operation_data.get('labor_minutes', 0),
+                    operation_data.get('labor_type_id', ''),
+                    operation_data.get('operation_description', '')
+                ))
+                
+                conn.commit()
+                db_manager.close_connection(conn)
+                
+                return ForecastResponse(
+                    status="success",
+                    message="Router operation created successfully"
+                )
+            except sqlite3.IntegrityError as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=400, detail=f"Router operation with sequence '{sequence}' already exists for router '{router_id}'")
+            except Exception as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
         # Handle direct sales data from frontend
         if forecast_data.get('sales'):
             sales = forecast_data['sales']
@@ -395,6 +465,10 @@ async def delete_forecast_record(table_name: str, record_id: str):
                 primary_key = 'bom_id'
             elif table_name == 'routers':
                 primary_key = 'router_id'
+            elif table_name == 'router_definitions':
+                primary_key = 'router_id'
+            elif table_name == 'router_operations':
+                primary_key = 'operation_id'
             else:
                 primary_key = 'id'
         

@@ -1,0 +1,10 @@
+router_id,sequence,machine_id,machine_minutes,labor_minutes,labor_type_id,operation_description
+R0001,1,WC004,2.0,2.0,RATE-001,Initial setup and preparation
+R0001,2,WC001,18.2,6.0,RATE-001,Core material processing
+R0001,3,WC001,13.0,4.3,RATE-001,Secondary processing
+R0001,4,WC004,2.0,2.0,RATE-001,Quality check and adjustment
+R0001,5,WC004,2.0,2.0,RATE-001,Final preparation
+R0001,6,WC002,6.0,6.0,RATE-001,Assembly step 1
+R0001,7,WC002,8.0,8.0,RATE-001,Assembly step 2
+R0001,8,WC002,5.0,5.0,RATE-001,Assembly step 3
+R0001,9,WC003,3.0,3.0,RATE-001,Final packaging and shipping prep 

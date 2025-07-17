@@ -1,10 +1,2 @@
-router_id,unit_id,machine_id,machine_minutes,labor_minutes,sequence,labor_type_id
-R0001,PROD-001,WC004,2.0,2.0,1,RATE-001
-R0001,PROD-001,WC001,18.2,6.0,2,RATE-001
-R0001,PROD-001,WC001,13.0,4.3,3,RATE-001
-R0001,PROD-001,WC004,2.0,2.0,4,RATE-001
-R0001,PROD-001,WC004,2.0,2.0,5,RATE-001
-R0001,PROD-001,WC002,6.0,6.0,6,RATE-001
-R0001,PROD-001,WC002,8.0,8.0,7,RATE-001
-R0001,PROD-001,WC002,5.0,5.0,8,RATE-001
-R0001,PROD-001,WC003,3.0,3.0,9,RATE-001
+router_id,router_name,router_description,version
+R0001,Pickleball Paddle Production,Standard production process for pickleball paddles,1.0

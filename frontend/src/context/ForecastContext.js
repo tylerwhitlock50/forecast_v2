@@ -184,7 +184,8 @@ export const ForecastProvider = ({ children }) => {
           machinesRes,
           payrollRes,
           bomRes,
-          routersRes,
+          routerDefinitionsRes,
+          routerOperationsRes,
           laborRatesRes,
           forecastRes
         ] = await Promise.all([
@@ -195,7 +196,8 @@ export const ForecastProvider = ({ children }) => {
           axios.get(`${API_BASE}/data/machines`),
           axios.get(`${API_BASE}/data/payroll`),
           axios.get(`${API_BASE}/data/bom`),
-          axios.get(`${API_BASE}/data/routers`),
+          axios.get(`${API_BASE}/data/router_definitions`),
+          axios.get(`${API_BASE}/data/router_operations`),
           axios.get(`${API_BASE}/data/labor_rates`),
           axios.get(`${API_BASE}/data/forecast`) // Get forecast data directly from forecast table
         ]);
@@ -207,7 +209,8 @@ export const ForecastProvider = ({ children }) => {
         const machines = machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [];
         const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
         const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
-        const routers = routersRes.data.status === 'success' ? routersRes.data.data || [] : [];
+        const router_definitions = routerDefinitionsRes.data.status === 'success' ? routerDefinitionsRes.data.data || [] : [];
+        const router_operations = routerOperationsRes.data.status === 'success' ? routerOperationsRes.data.data || [] : [];
         const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
         const forecast = forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [];
 
@@ -251,14 +254,25 @@ export const ForecastProvider = ({ children }) => {
           end_date: emp.end_date
         }));
 
-        // Transform routers to routing format
-        const routing = routers.map(router => ({
-          id: router.router_id,
-          unit_id: router.unit_id,
-          machine_id: router.machine_id,
-          machine_minutes: router.machine_minutes,
-          labor_minutes: router.labor_minutes,
-          sequence: router.sequence
+        // Transform router definitions and operations to combined format
+        const routers = router_definitions.map(router => {
+          const operations = router_operations.filter(op => op.router_id === router.router_id);
+          return {
+            ...router,
+            operations: operations.sort((a, b) => a.sequence - b.sequence)
+          };
+        });
+
+        // Transform router operations to routing format for backward compatibility
+        const routing = router_operations.map(operation => ({
+          id: operation.operation_id,
+          router_id: operation.router_id,
+          machine_id: operation.machine_id,
+          machine_minutes: operation.machine_minutes,
+          labor_minutes: operation.labor_minutes,
+          sequence: operation.sequence,
+          labor_type_id: operation.labor_type_id,
+          operation_description: operation.operation_description
         }));
 
         // Process forecast data for scenarios
@@ -293,6 +307,8 @@ export const ForecastProvider = ({ children }) => {
           payroll,
           bom,
           routers,
+          router_definitions,
+          router_operations,
           labor_rates,
           routing
         };
@@ -693,7 +709,7 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         
         const response = await axios.post(`${API_BASE}/forecast/create`, { 
-          table: 'routers',
+          table: 'router_definitions',
           data: routerData 
         });
         
@@ -715,7 +731,7 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         
         const response = await axios.post(`${API_BASE}/forecast/update`, {
-          table: 'routers',
+          table: 'router_definitions',
           id: routerId,
           updates: routerData
         });
@@ -727,6 +743,90 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error updating router:', error);
         toast.error('Failed to update router');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteRouter: async (routerId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/router_definitions/${routerId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Router deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting router:', error);
+        toast.error('Failed to delete router');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Router Operation Management Functions
+    createRouterOperation: async (operationData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'router_operations',
+          data: operationData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Router operation created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating router operation:', error);
+        toast.error('Failed to create router operation');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateRouterOperation: async (operationId, operationData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'router_operations',
+          id: operationId,
+          updates: operationData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Router operation updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating router operation:', error);
+        toast.error('Failed to update router operation');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteRouterOperation: async (operationId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/router_operations/${operationId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Router operation deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting router operation:', error);
+        toast.error('Failed to delete router operation');
         throw error;
       } finally {
         actions.setLoading(false);

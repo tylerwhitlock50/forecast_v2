@@ -11,10 +11,8 @@ const RouterTable = ({
   onSelectAll,
   onEdit,
   onDelete,
-  onClone,
-  machines,
-  units,
-  laborRates
+  onManageOperations,
+  routerOperations
 }) => {
   const allSelected = routers.length > 0 && selectedRouters.length === routers.length;
   const someSelected = selectedRouters.length > 0 && selectedRouters.length < routers.length;
@@ -26,39 +24,34 @@ const RouterTable = ({
 
   const formatNumber = (value) => {
     if (value === null || value === undefined) return '-';
-    return Number(value).toFixed(1);
+    return Number(value).toLocaleString();
   };
 
-  const getMachineName = (machineId) => {
-    const machine = machines.find(m => m.machine_id === machineId);
-    return machine ? machine.machine_name : machineId;
+  const getOperationCount = (routerId) => {
+    return routerOperations.filter(op => op.router_id === routerId).length;
   };
 
-  const getUnitName = (unitId) => {
-    const unit = units.find(u => u.unit_id === unitId);
-    return unit ? unit.unit_name : unitId;
+  const getTotalMachineTime = (routerId) => {
+    return routerOperations
+      .filter(op => op.router_id === routerId)
+      .reduce((sum, op) => sum + (op.machine_minutes || 0), 0);
   };
 
-  const getLaborRateName = (rateId) => {
-    const rate = laborRates.find(r => r.rate_id === rateId);
-    return rate ? rate.rate_name : rateId;
+  const getTotalLaborTime = (routerId) => {
+    return routerOperations
+      .filter(op => op.router_id === routerId)
+      .reduce((sum, op) => sum + (op.labor_minutes || 0), 0);
   };
 
   const columns = [
     { key: 'router_id', label: 'Router ID', sortable: true, width: '120px' },
-    { key: 'version', label: 'Version', sortable: true, width: '80px' },
-    { key: 'sequence', label: 'Seq', sortable: true, width: '60px' },
-    { key: 'unit_id', label: 'Unit', sortable: true, width: '150px' },
-    { key: 'machine_id', label: 'Machine', sortable: true, width: '150px' },
-    { key: 'machine_minutes', label: 'Machine Min', sortable: true, width: '100px' },
-    { key: 'labor_minutes', label: 'Labor Min', sortable: true, width: '100px' },
-    { key: 'labor_type_id', label: 'Labor Rate', sortable: true, width: '150px' },
-    { key: 'actions', label: 'Actions', sortable: false, width: '140px' }
+    { key: 'router_name', label: 'Router Name', sortable: true, width: '200px' },
+    { key: 'router_description', label: 'Description', sortable: true, width: '250px' },
+    { key: 'version', label: 'Version', sortable: true, width: '100px' },
+    { key: 'operations', label: 'Operations', sortable: false, width: '120px' },
+    { key: 'total_time', label: 'Total Time (min)', sortable: false, width: '150px' },
+    { key: 'actions', label: 'Actions', sortable: false, width: '200px' }
   ];
-
-  const getRouterKey = (router) => {
-    return `${router.router_id}-${router.version}-${router.sequence}`;
-  };
 
   return (
     <div className="router-table-container">
@@ -102,75 +95,72 @@ const RouterTable = ({
               </td>
             </tr>
           ) : (
-            routers.map(router => (
-              <tr key={getRouterKey(router)} className="router-row">
-                <td className="checkbox-cell">
-                  <input
-                    type="checkbox"
-                    checked={selectedRouters.includes(getRouterKey(router))}
-                    onChange={(e) => onSelect(getRouterKey(router), e.target.checked)}
-                  />
-                </td>
-                <td className="router-id">
-                  <span className="id-badge">{router.router_id}</span>
-                </td>
-                <td className="version">
-                  <span className="version-badge">{router.version || '1.0'}</span>
-                </td>
-                <td className="sequence">
-                  <span className="sequence-badge">{router.sequence}</span>
-                </td>
-                <td className="unit">
-                  <div className="unit-cell">
-                    <span className="unit-id">{router.unit_id}</span>
-                    <span className="unit-name">{getUnitName(router.unit_id)}</span>
-                  </div>
-                </td>
-                <td className="machine">
-                  <div className="machine-cell">
-                    <span className="machine-id">{router.machine_id}</span>
-                    <span className="machine-name">{getMachineName(router.machine_id)}</span>
-                  </div>
-                </td>
-                <td className="machine-minutes">
-                  <span className="minutes-text">{formatNumber(router.machine_minutes)}</span>
-                </td>
-                <td className="labor-minutes">
-                  <span className="minutes-text">{formatNumber(router.labor_minutes)}</span>
-                </td>
-                <td className="labor-rate">
-                  <div className="labor-rate-cell">
-                    <span className="rate-id">{router.labor_type_id}</span>
-                    <span className="rate-name">{getLaborRateName(router.labor_type_id)}</span>
-                  </div>
-                </td>
-                <td className="actions-cell">
-                  <div className="action-buttons">
-                    <button
-                      onClick={() => onEdit(router)}
-                      className="action-btn edit-btn"
-                      title="Edit Router"
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      onClick={() => onClone(router.router_id)}
-                      className="action-btn clone-btn"
-                      title="Clone Router"
-                    >
-                      📋
-                    </button>
-                    <button
-                      onClick={() => onDelete(getRouterKey(router))}
-                      className="action-btn delete-btn"
-                      title="Delete Router"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))
+            routers.map(router => {
+              const operationCount = getOperationCount(router.router_id);
+              const totalMachineTime = getTotalMachineTime(router.router_id);
+              const totalLaborTime = getTotalLaborTime(router.router_id);
+              const totalTime = totalMachineTime + totalLaborTime;
+
+              return (
+                <tr key={router.router_id} className="router-row">
+                  <td className="checkbox-cell">
+                    <input
+                      type="checkbox"
+                      checked={selectedRouters.includes(router.router_id)}
+                      onChange={(e) => onSelect(router.router_id, e.target.checked)}
+                    />
+                  </td>
+                  <td className="router-id">
+                    <span className="id-badge">{router.router_id}</span>
+                  </td>
+                  <td className="router-name">
+                    <div className="name-cell">
+                      <span className="name-text">{router.router_name}</span>
+                      {router.router_name && (
+                        <span className="name-tooltip">{router.router_name}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="router-description">
+                    <span className="description-text">{router.router_description || 'N/A'}</span>
+                  </td>
+                  <td className="version">
+                    <span className="version-badge">{router.version || '1.0'}</span>
+                  </td>
+                  <td className="operations">
+                    <span className="minutes-text">{operationCount}</span>
+                  </td>
+                  <td className="total-time">
+                    <span className="minutes-text">{formatNumber(totalTime)}</span>
+                  </td>
+                  <td className="actions-cell">
+                    <div className="action-buttons">
+                      <button
+                        onClick={() => onEdit(router)}
+                        className="action-btn edit-btn"
+                        title="Edit Router"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => onManageOperations(router)}
+                        className="action-btn clone-btn"
+                        title="Manage Operations"
+                      >
+                        ⚙️
+                      </button>
+                      <button
+                        onClick={() => onDelete(router.router_id)}
+                        className="action-btn delete-btn"
+                        title="Delete Router"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -178,7 +168,7 @@ const RouterTable = ({
       {routers.length > 0 && (
         <div className="table-footer">
           <div className="table-info">
-            <span>Showing {routers.length} of {routers.length} router operations</span>
+            <span>Showing {routers.length} of {routers.length} routers</span>
             {selectedRouters.length > 0 && (
               <span className="selected-info">
                 ({selectedRouters.length} selected)
@@ -186,8 +176,9 @@ const RouterTable = ({
             )}
           </div>
           <div className="table-stats">
-            <span>Total Machine Minutes: {routers.reduce((sum, r) => sum + (r.machine_minutes || 0), 0).toFixed(1)}</span>
-            <span>Total Labor Minutes: {routers.reduce((sum, r) => sum + (r.labor_minutes || 0), 0).toFixed(1)}</span>
+            <span>Total Operations: {routerOperations.length}</span>
+            <span>Total Machine Minutes: {routerOperations.reduce((sum, op) => sum + (op.machine_minutes || 0), 0).toFixed(1)}</span>
+            <span>Total Labor Minutes: {routerOperations.reduce((sum, op) => sum + (op.labor_minutes || 0), 0).toFixed(1)}</span>
           </div>
         </div>
       )}
