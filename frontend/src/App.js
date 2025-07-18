@@ -11,6 +11,7 @@ import CostManagement from './components/Modules/CostManagement/CostManagement';
 import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagement';
 import MachineManagement from './components/Modules/MachineManagement/MachineManagement';
 import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
+import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -58,12 +59,13 @@ const SegmentAnalysis = () => (
   />
 );
 
-const BillOfMaterials = () => (
-  <PlaceholderComponent 
-    title="Bill of Materials" 
-    description="Configure material costs and BOM calculations for your products. Set up component hierarchies and manage cost structures."
-  />
-);
+// BillOfMaterials now uses actual BOMManagement component
+// const BillOfMaterials = () => (
+//   <PlaceholderComponent 
+//     title="Bill of Materials" 
+//     description="Configure material costs and BOM calculations for your products. Set up component hierarchies and manage cost structures."
+//   />
+// );
 
 // Work Routing and Machine Utilization now use actual components
 // const WorkRouting = () => (
@@ -223,7 +225,7 @@ function App() {
               {/* Manufacturing Setup */}
               <Route path="/machines" element={<MachineManagement />} />
               <Route path="/routing" element={<RouterManagement />} />
-              <Route path="/bom" element={<BillOfMaterials />} />
+              <Route path="/bom" element={<BOMManagement />} />
               <Route path="/labor-rates" element={<LaborRates />} />
               
               {/* Cost Management */}

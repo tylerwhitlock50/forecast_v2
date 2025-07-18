@@ -288,8 +288,46 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (sale_id, revenue['customer'], revenue['product'], period, 1, amount, amount))
         
-        # Handle BOM entries
-        if forecast_data.get('bom'):
+        # Handle BOM creation
+        elif forecast_data.get('table') == 'bom':
+            bom_data = forecast_data.get('data', {})
+            bom_id = bom_data.get('bom_id')
+            
+            if not bom_id:
+                raise HTTPException(status_code=400, detail="BOM ID is required")
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO bom (bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    bom_id,
+                    bom_data.get('version', '1.0'),
+                    bom_data.get('bom_line', 1),
+                    bom_data.get('material_description', ''),
+                    bom_data.get('qty', 0),
+                    bom_data.get('unit', 'each'),
+                    bom_data.get('unit_price', 0),
+                    bom_data.get('material_cost', 0),
+                    bom_data.get('target_cost', 0)
+                ))
+                
+                conn.commit()
+                db_manager.close_connection(conn)
+                
+                return ForecastResponse(
+                    status="success",
+                    message="BOM item created successfully"
+                )
+            except sqlite3.IntegrityError as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=400, detail=f"BOM item already exists: {str(e)}")
+            except Exception as e:
+                db_manager.close_connection(conn)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
+        # Handle legacy BOM entries for backwards compatibility
+        elif forecast_data.get('bom'):
             bom = forecast_data['bom']
             if bom.get('product') and bom.get('materialCost'):
                 bom_id = str(uuid.uuid4())
@@ -410,11 +448,29 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             else:
                 primary_key = 'id'
         
-        # Build update query dynamically
-        set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
-        values = list(updates.values()) + [record_id]
-        
-        cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = ?", values)
+        # Special handling for BOM table with composite keys
+        if table_name == 'bom' and '-' in record_id:
+            # Handle composite key format: bom_id-version-bom_line
+            parts = record_id.split('-')
+            if len(parts) >= 3:
+                bom_id = parts[0]
+                version = parts[1] 
+                bom_line = parts[2]
+                
+                # Build update query for composite key
+                set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+                values = list(updates.values()) + [bom_id, version, bom_line]
+                
+                cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE bom_id = ? AND version = ? AND bom_line = ?", values)
+            else:
+                raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        else:
+            # Standard single-key update
+            # Build update query dynamically
+            set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+            values = list(updates.values()) + [record_id]
+            
+            cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = ?", values)
         conn.commit()
         db_manager.close_connection(conn)
         
@@ -462,6 +518,7 @@ async def delete_forecast_record(table_name: str, record_id: str):
             elif table_name == 'labor_rates':
                 primary_key = 'rate_id'
             elif table_name == 'bom':
+                # BOM uses composite key handling
                 primary_key = 'bom_id'
             elif table_name == 'routers':
                 primary_key = 'router_id'
@@ -472,16 +529,39 @@ async def delete_forecast_record(table_name: str, record_id: str):
             else:
                 primary_key = 'id'
         
-        # Check if the record exists before deleting
-        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE {primary_key} = ?", (record_id,))
-        count = cursor.fetchone()[0]
-        
-        if count == 0:
-            raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
-        
-        # Delete the record
-        cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
-        rows_affected = cursor.rowcount
+        # Special handling for BOM table with composite keys
+        if table_name == 'bom' and '-' in record_id:
+            # Handle composite key format: bom_id-version-bom_line
+            parts = record_id.split('-')
+            if len(parts) >= 3:
+                bom_id = parts[0]
+                version = parts[1]
+                bom_line = parts[2]
+                
+                # Check if the record exists
+                cursor.execute("SELECT COUNT(*) FROM bom WHERE bom_id = ? AND version = ? AND bom_line = ?", (bom_id, version, bom_line))
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    raise HTTPException(status_code=404, detail=f"BOM record '{record_id}' not found")
+                
+                # Delete the record
+                cursor.execute("DELETE FROM bom WHERE bom_id = ? AND version = ? AND bom_line = ?", (bom_id, version, bom_line))
+                rows_affected = cursor.rowcount
+            else:
+                raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        else:
+            # Standard single-key deletion
+            # Check if the record exists before deleting
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
+            
+            # Delete the record
+            cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+            rows_affected = cursor.rowcount
         
         if rows_affected == 0:
             raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
@@ -1438,6 +1518,310 @@ async def update_product_routing_version(product_id: str, routing_version: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating routing version: {str(e)}")
+
+# =============================================================================
+# BOM MANAGEMENT API ENDPOINTS
+# =============================================================================
+
+@app.get("/api/bom", response_model=ForecastResponse)
+async def get_all_bom_items():
+    """Get all BOM items for the frontend"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT bom_id, version, bom_line, material_description, qty, unit, 
+                   unit_price, material_cost, target_cost, created_at
+            FROM bom 
+            ORDER BY bom_id, version, bom_line
+        """)
+        
+        bom_data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        bom_list = [dict(zip(columns, row)) for row in bom_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"bom": bom_list},
+            message=f"Retrieved {len(bom_list)} BOM items"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving BOM items: {str(e)}")
+
+@app.post("/api/bom", response_model=ForecastResponse)
+async def create_bom_item(bom_data: Dict[str, Any]):
+    """Create a new BOM item"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Validate required fields
+        bom_id = bom_data.get('bom_id')
+        if not bom_id:
+            raise HTTPException(status_code=400, detail="BOM ID is required")
+        
+        # Insert BOM item
+        cursor.execute("""
+            INSERT INTO bom (bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            bom_id,
+            bom_data.get('version', '1.0'),
+            bom_data.get('bom_line', 1),
+            bom_data.get('material_description', ''),
+            bom_data.get('qty', 0),
+            bom_data.get('unit', 'each'),
+            bom_data.get('unit_price', 0),
+            bom_data.get('material_cost', 0),
+            bom_data.get('target_cost', 0)
+        ))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message="BOM item created successfully"
+        )
+        
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(status_code=400, detail=f"BOM item already exists: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating BOM item: {str(e)}")
+
+@app.put("/api/bom/{record_id}", response_model=ForecastResponse)
+async def update_bom_item(record_id: str, bom_data: Dict[str, Any]):
+    """Update an existing BOM item using composite key"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Parse composite key: bom_id-version-bom_line
+        parts = record_id.split('-')
+        if len(parts) < 3:
+            raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        
+        bom_id = parts[0]
+        version = parts[1]
+        bom_line = parts[2]
+        
+        # Build update query
+        update_fields = []
+        values = []
+        
+        for key, value in bom_data.items():
+            if key not in ['bom_id', 'version', 'bom_line']:  # Don't update key fields
+                update_fields.append(f"{key} = ?")
+                values.append(value)
+        
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        set_clause = ", ".join(update_fields)
+        values.extend([bom_id, version, bom_line])
+        
+        cursor.execute(f"UPDATE bom SET {set_clause} WHERE bom_id = ? AND version = ? AND bom_line = ?", values)
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"BOM item '{record_id}' not found")
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message="BOM item updated successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating BOM item: {str(e)}")
+
+@app.delete("/api/bom/{record_id}", response_model=ForecastResponse)
+async def delete_bom_item(record_id: str):
+    """Delete a BOM item using composite key"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Parse composite key: bom_id-version-bom_line
+        parts = record_id.split('-')
+        if len(parts) < 3:
+            raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        
+        bom_id = parts[0]
+        version = parts[1]
+        bom_line = parts[2]
+        
+        # Check if record exists
+        cursor.execute("SELECT COUNT(*) FROM bom WHERE bom_id = ? AND version = ? AND bom_line = ?", (bom_id, version, bom_line))
+        if cursor.fetchone()[0] == 0:
+            raise HTTPException(status_code=404, detail=f"BOM item '{record_id}' not found")
+        
+        # Delete the record
+        cursor.execute("DELETE FROM bom WHERE bom_id = ? AND version = ? AND bom_line = ?", (bom_id, version, bom_line))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            message="BOM item deleted successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting BOM item: {str(e)}")
+
+@app.get("/api/machines", response_model=ForecastResponse)
+async def get_all_machines():
+    """Get all machines for the frontend"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT machine_id, machine_name, machine_description, machine_rate, 
+                   labor_type, available_minutes_per_month, created_at
+            FROM machines 
+            ORDER BY machine_id
+        """)
+        
+        machine_data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        machine_list = [dict(zip(columns, row)) for row in machine_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"machines": machine_list},
+            message=f"Retrieved {len(machine_list)} machines"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving machines: {str(e)}")
+
+@app.get("/api/routers", response_model=ForecastResponse)
+async def get_all_routers():
+    """Get all router operations for the frontend"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get router operations if they exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='router_operations'")
+        if cursor.fetchone():
+            cursor.execute("""
+                SELECT router_id, sequence, machine_id, machine_minutes, labor_minutes, 
+                       labor_type_id, operation_description, created_at
+                FROM router_operations 
+                ORDER BY router_id, sequence
+            """)
+            router_data = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            router_list = [dict(zip(columns, row)) for row in router_data]
+        else:
+            # Fallback to legacy routers table
+            cursor.execute("""
+                SELECT router_id, version, unit_id, machine_id, machine_minutes, 
+                       labor_minutes, labor_type_id, sequence
+                FROM routers 
+                ORDER BY router_id, sequence
+            """)
+            router_data = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            router_list = [dict(zip(columns, row)) for row in router_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"routers": router_list},
+            message=f"Retrieved {len(router_list)} router operations"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving routers: {str(e)}")
+
+@app.get("/api/router_definitions", response_model=ForecastResponse)
+async def get_router_definitions():
+    """Get all router definitions for the frontend"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if router_definitions table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='router_definitions'")
+        if cursor.fetchone():
+            cursor.execute("""
+                SELECT router_id, router_name, router_description, version, created_at
+                FROM router_definitions 
+                ORDER BY router_id
+            """)
+            router_data = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            router_list = [dict(zip(columns, row)) for row in router_data]
+        else:
+            # Return empty list if table doesn't exist
+            router_list = []
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"router_definitions": router_list},
+            message=f"Retrieved {len(router_list)} router definitions"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving router definitions: {str(e)}")
+
+@app.get("/api/labor_rates", response_model=ForecastResponse)
+async def get_all_labor_rates():
+    """Get all labor rates for the frontend"""
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT rate_id, rate_name, rate_description, rate_amount, created_at
+            FROM labor_rates 
+            ORDER BY rate_id
+        """)
+        
+        labor_data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        labor_list = [dict(zip(columns, row)) for row in labor_data]
+        
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"labor_rates": labor_list},
+            message=f"Retrieved {len(labor_list)} labor rates"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving labor rates: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
