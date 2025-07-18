@@ -198,13 +198,13 @@ const AppLayout = ({ children }) => {
         }}
       >
         {children}
-        
-        {/* Chat Panel */}
-        <ChatPanel 
-          expanded={chatExpanded}
-          onToggle={() => setChatExpanded(!chatExpanded)}
-        />
       </div>
+      
+      {/* Chat Panel - positioned as fixed overlay */}
+      <ChatPanel 
+        expanded={chatExpanded}
+        onToggle={() => setChatExpanded(!chatExpanded)}
+      />
     </div>
   );
 };

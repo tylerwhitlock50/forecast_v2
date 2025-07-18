@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 # Import database functions and models
 from db import (
@@ -564,6 +565,76 @@ async def delete_saved_database(filename: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete database: {str(e)}")
+
+# OpenAI Agents API endpoints
+from services.openai_agents_service_new import (
+    AgentChatRequest, 
+    AgentResponse, 
+    process_agent_chat,
+    get_conversation_history,
+    clear_conversation,
+    get_available_agents
+)
+
+@app.post("/agents/chat", response_model=AgentResponse)
+async def chat_with_agents(request: AgentChatRequest):
+    """
+    Chat with the AI agents system
+    """
+    try:
+        response = await process_agent_chat(request)
+        return response
+    except Exception as e:
+        return AgentResponse(
+            content=f"Error processing chat: {str(e)}",
+            agent="error_handler",
+            timestamp=datetime.now().isoformat(),
+            session_id=request.session_id or f"error_session_{datetime.now().timestamp()}",
+            error=True,
+            metadata={"error_type": type(e).__name__}
+        )
+
+@app.get("/agents/history")
+async def get_agents_conversation_history():
+    """
+    Get conversation history
+    """
+    try:
+        history = get_conversation_history()
+        return {
+            "status": "success",
+            "data": history
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation history: {str(e)}")
+
+@app.post("/agents/clear")
+async def clear_agents_conversation():
+    """
+    Clear conversation history
+    """
+    try:
+        clear_conversation()
+        return {
+            "status": "success",
+            "message": "Conversation history cleared"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear conversation: {str(e)}")
+
+@app.get("/agents/available")
+async def get_agents_list():
+    """
+    Get list of available agents
+    """
+    try:
+        agents = get_available_agents()
+        return {
+            "status": "success",
+            "data": agents
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get agents list: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

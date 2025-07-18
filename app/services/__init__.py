@@ -1,3 +1,4 @@
 # Business logic, transformers, and recalculation services
 
-from .plan_execute_service import plan_execute_service
+# Temporarily comment out to avoid langgraph dependency
+# from .plan_execute_service import plan_execute_service

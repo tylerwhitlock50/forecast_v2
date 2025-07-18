@@ -46,4 +46,35 @@
 .loading p {
   color: var(--text-secondary);
   font-size: 16px;
+}
+
+/* Chat panel layout adjustments */
+.app-layout {
+  position: relative;
+  min-height: 100vh;
+}
+
+.main-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ensure chat panel doesn't interfere with other components */
+.chat-panel {
+  z-index: 1000;
+}
+
+.chat-toggle {
+  z-index: 1001;
+}
+
+/* Responsive adjustments for chat panel */
+@media (max-width: 768px) {
+  .chat-panel.expanded {
+    width: 100vw;
+  }
+  
+  .main-content {
+    margin-left: 0 !important;
+  }
 } 
