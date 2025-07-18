@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useForecast } from '../../context/ForecastContext';
+import { toast } from 'react-hot-toast';
 import ScenarioSelector from './ScenarioSelector';
+import DatabaseSaveModal from '../DatabaseModals/DatabaseSaveModal';
+import DatabaseLoadModal from '../DatabaseModals/DatabaseLoadModal';
 import './MainNavigation.css';
 
 const navigationModules = {
@@ -59,7 +62,9 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [expandedModules, setExpandedModules] = useState({});
-  const { data, loading, error } = useForecast();
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showLoadModal, setShowLoadModal] = useState(false);
+  const { data, loading, error, actions } = useForecast();
 
   // Ensure data is always an object with expected properties
   const safeData = data || {};
@@ -140,6 +145,56 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
     }
   };
 
+  // Handle database save
+  const handleSaveDatabase = async (name) => {
+    try {
+      const response = await fetch('/api/database/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name }),
+      });
+
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        toast.success(data.message);
+      } else {
+        toast.error('Failed to save database');
+      }
+    } catch (error) {
+      console.error('Error saving database:', error);
+      toast.error('Failed to save database');
+    }
+  };
+
+  // Handle database load
+  const handleLoadDatabase = async (filename) => {
+    try {
+      const response = await fetch('/api/database/load', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ filename }),
+      });
+
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        toast.success(data.message);
+        // Refresh all data after loading a new database
+        await actions.fetchAllData();
+      } else {
+        toast.error('Failed to load database');
+      }
+    } catch (error) {
+      console.error('Error loading database:', error);
+      toast.error('Failed to load database');
+    }
+  };
+
   return (
     <nav className={`main-navigation ${isCollapsed ? 'collapsed' : ''}`}>
       <div className="nav-header">
@@ -214,15 +269,15 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
           </button>
           <button 
             className="quick-action"
-            onClick={() => navigate('/bulk-import')}
+            onClick={() => setShowLoadModal(true)}
           >
-            📥 Bulk Import
+            📥 Load Database
           </button>
           <button 
             className="quick-action"
-            onClick={() => navigate('/export')}
+            onClick={() => setShowSaveModal(true)}
           >
-            📤 Export
+            💾 Save Database
           </button>
         </div>
       )}
@@ -244,6 +299,19 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
           </div>
         </div>
       )}
+
+      {/* Database Modals */}
+      <DatabaseSaveModal
+        isOpen={showSaveModal}
+        onClose={() => setShowSaveModal(false)}
+        onSave={handleSaveDatabase}
+      />
+      
+      <DatabaseLoadModal
+        isOpen={showLoadModal}
+        onClose={() => setShowLoadModal(false)}
+        onLoad={handleLoadDatabase}
+      />
     </nav>
   );
 };

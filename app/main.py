@@ -377,6 +377,194 @@ async def export_snapshot():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# =============================================================================
+# DATABASE SAVE/LOAD ENDPOINTS
+# =============================================================================
+
+@app.post("/database/save")
+async def save_database(request: dict):
+    """
+    Save a copy of the current database to the app/data folder
+    """
+    try:
+        import os
+        import shutil
+        from datetime import datetime
+        from db.database import db_manager
+        
+        # Get the save name from request
+        save_name = request.get("name", "")
+        if not save_name:
+            save_name = f"database_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Ensure the save name is safe (no path traversal)
+        save_name = "".join(c for c in save_name if c.isalnum() or c in ('-', '_', ' ')).strip()
+        if not save_name:
+            save_name = f"database_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Get current database path
+        current_db_path = db_manager.database_path
+        
+        # Create the data directory if it doesn't exist
+        data_dir = os.path.join(os.path.dirname(current_db_path), "saved_databases")
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # Create the backup file path
+        backup_filename = f"{save_name}.db"
+        backup_path = os.path.join(data_dir, backup_filename)
+        
+        # Copy the current database
+        shutil.copy2(current_db_path, backup_path)
+        
+        return {
+            "status": "success",
+            "message": f"Database saved as {backup_filename}",
+            "data": {
+                "filename": backup_filename,
+                "path": backup_path,
+                "size": os.path.getsize(backup_path)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save database: {str(e)}")
+
+@app.get("/database/list")
+async def list_saved_databases():
+    """
+    List all saved databases in the app/data folder
+    """
+    try:
+        import os
+        from datetime import datetime
+        from db.database import db_manager
+        
+        # Get the saved databases directory
+        current_db_path = db_manager.database_path
+        data_dir = os.path.join(os.path.dirname(current_db_path), "saved_databases")
+        
+        if not os.path.exists(data_dir):
+            return {
+                "status": "success",
+                "data": {
+                    "databases": [],
+                    "count": 0
+                }
+            }
+        
+        # List all .db files in the directory
+        databases = []
+        for filename in os.listdir(data_dir):
+            if filename.endswith('.db'):
+                file_path = os.path.join(data_dir, filename)
+                stat_info = os.stat(file_path)
+                
+                databases.append({
+                    "filename": filename,
+                    "name": filename[:-3],  # Remove .db extension
+                    "size": stat_info.st_size,
+                    "created": datetime.fromtimestamp(stat_info.st_ctime).isoformat(),
+                    "modified": datetime.fromtimestamp(stat_info.st_mtime).isoformat()
+                })
+        
+        # Sort by modification time (newest first)
+        databases.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return {
+            "status": "success",
+            "data": {
+                "databases": databases,
+                "count": len(databases)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list databases: {str(e)}")
+
+@app.post("/database/load")
+async def load_database(request: dict):
+    """
+    Load a saved database from the app/data folder
+    """
+    try:
+        import os
+        import shutil
+        from db.database import db_manager
+        
+        # Get the filename from request
+        filename = request.get("filename", "")
+        if not filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        
+        # Ensure the filename is safe
+        if not filename.endswith('.db'):
+            filename += '.db'
+        
+        # Get paths
+        current_db_path = db_manager.database_path
+        data_dir = os.path.join(os.path.dirname(current_db_path), "saved_databases")
+        backup_path = os.path.join(data_dir, filename)
+        
+        # Check if the backup file exists
+        if not os.path.exists(backup_path):
+            raise HTTPException(status_code=404, detail=f"Database file {filename} not found")
+        
+        # Create a backup of the current database before loading
+        import datetime
+        current_backup_name = f"current_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        current_backup_path = os.path.join(data_dir, current_backup_name)
+        shutil.copy2(current_db_path, current_backup_path)
+        
+        # Close any existing connections
+        db_manager.close_all_connections()
+        
+        # Replace the current database with the backup
+        shutil.copy2(backup_path, current_db_path)
+        
+        # Reinitialize the database connection
+        initialize_database()
+        
+        return {
+            "status": "success",
+            "message": f"Database loaded from {filename}",
+            "data": {
+                "loaded_filename": filename,
+                "backup_created": current_backup_name
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load database: {str(e)}")
+
+@app.delete("/database/delete/{filename}")
+async def delete_saved_database(filename: str):
+    """
+    Delete a saved database file
+    """
+    try:
+        import os
+        from db.database import db_manager
+        
+        # Ensure the filename is safe
+        if not filename.endswith('.db'):
+            filename += '.db'
+        
+        # Get paths
+        current_db_path = db_manager.database_path
+        data_dir = os.path.join(os.path.dirname(current_db_path), "saved_databases")
+        file_path = os.path.join(data_dir, filename)
+        
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"Database file {filename} not found")
+        
+        # Delete the file
+        os.remove(file_path)
+        
+        return {
+            "status": "success",
+            "message": f"Database {filename} deleted successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete database: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -30,6 +30,12 @@ class DatabaseManager:
         if conn:
             conn.close()
     
+    def close_all_connections(self):
+        """Close all database connections - placeholder for SQLite"""
+        # SQLite doesn't need explicit connection pooling management
+        # This method is here for API compatibility
+        pass
+    
     def create_tables(self):
         """Create database tables"""
         conn = self.get_connection()
