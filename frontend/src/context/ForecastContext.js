@@ -2,8 +2,8 @@ import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
 
-// Use relative path for Docker nginx proxy, fallback to localhost for development
-const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
+// Use relative path for proxy configuration (both development and production)
+const API_BASE = '/api';
 
 // Initial state
 const initialState = {
@@ -209,6 +209,7 @@ export const ForecastProvider = ({ children }) => {
         const machines = machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [];
         const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
         const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
+        console.log('Raw BOM data from API:', bom);
         const router_definitions = routerDefinitionsRes.data.status === 'success' ? routerDefinitionsRes.data.data || [] : [];
         const router_operations = routerOperationsRes.data.status === 'success' ? routerOperationsRes.data.data || [] : [];
         const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
@@ -952,14 +953,20 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
+        console.log('updateBOM called with:', { bomId, bomData });
+        
         const response = await axios.post(`${API_BASE}/forecast/update`, {
           table: 'bom',
           id: bomId,
           updates: bomData
         });
         
+        console.log('updateBOM response:', response.data);
+        
         if (response.data.status === 'success') {
           toast.success('BOM updated successfully');
+          // Add a small delay to ensure database transaction is committed
+          await new Promise(resolve => setTimeout(resolve, 100));
           await actions.fetchAllData();
         }
       } catch (error) {

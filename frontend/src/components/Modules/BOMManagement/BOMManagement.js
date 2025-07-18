@@ -31,12 +31,32 @@ const BOMManagement = () => {
   // Transform BOM data to definitions format
   const bomDefinitions = useMemo(() => {
     const boms = Array.isArray(data.bom) ? data.bom : [];
+    console.log('Raw BOM data for transformation:', boms);
+    
     const groupedBOMs = boms.reduce((acc, bomItem) => {
       const key = `${bomItem.bom_id}-${bomItem.version || '1.0'}`;
       if (!acc[key]) {
+        // Try to get the BOM name from the header entry (bom_line = 1)
+        const headerEntry = boms.find(item => 
+          item.bom_id === bomItem.bom_id && 
+          item.version === bomItem.version && 
+          item.bom_line === 1
+        );
+        
+        const bomName = headerEntry && headerEntry.material_description && 
+                       headerEntry.material_description !== 'BOM Header' 
+                       ? headerEntry.material_description 
+                       : `BOM ${bomItem.bom_id}`;
+        
+        console.log(`Creating BOM definition for ${key}:`, { 
+          bom_id: bomItem.bom_id, 
+          bom_name: bomName, 
+          headerEntry: headerEntry?.material_description 
+        });
+        
         acc[key] = {
           bom_id: bomItem.bom_id,
-          bom_name: `BOM ${bomItem.bom_id}`,
+          bom_name: bomName,
           bom_description: `Bill of Materials for ${bomItem.bom_id}`,
           version: bomItem.version || '1.0',
           created_at: bomItem.created_at,
@@ -49,7 +69,9 @@ const BOMManagement = () => {
       return acc;
     }, {});
     
-    return Object.values(groupedBOMs);
+    const result = Object.values(groupedBOMs);
+    console.log('Final BOM definitions:', result);
+    return result;
   }, [data.bom]);
 
   // Filter and sort BOMs
@@ -95,9 +117,35 @@ const BOMManagement = () => {
   const handleSaveBOM = async (bomData) => {
     try {
       if (editingBOM) {
-        // Update existing BOM definition
-        await actions.updateBOM(editingBOM.bom_id, bomData);
-        toast.success('BOM updated successfully');
+        console.log('Updating BOM:', editingBOM, 'with data:', bomData);
+        
+        // Update existing BOM definition - find the header entry and update it
+        const bomItems = Array.isArray(data.bom) ? data.bom : [];
+        const headerEntry = bomItems.find(item => 
+          item.bom_id === editingBOM.bom_id && 
+          (item.version || '1.0') === (editingBOM.version || '1.0') && 
+          item.bom_line === 1
+        );
+        
+        console.log('Found header entry:', headerEntry);
+        
+        if (headerEntry) {
+          // Update the header entry with the new BOM name
+          const updateData = {
+            material_description: bomData.bom_name || `BOM ${editingBOM.bom_id}`
+          };
+          console.log('Updating with data:', updateData);
+          
+          const recordId = `${headerEntry.bom_id}-${headerEntry.version || '1.0'}-${headerEntry.bom_line}`;
+          console.log('Record ID for update:', recordId);
+          
+          await actions.updateBOM(recordId, updateData);
+          toast.success('BOM updated successfully');
+        } else {
+          console.error('Header entry not found for BOM:', editingBOM);
+          toast.error('Could not find BOM header entry to update');
+          return;
+        }
       } else {
         // Create new BOM definition - generate BOM ID if not provided
         if (!bomData.bom_id) {
@@ -109,13 +157,13 @@ const BOMManagement = () => {
           bomData.bom_id = `BOM-${String(maxId + 1).padStart(3, '0')}`;
         }
         
-        // Create a placeholder BOM entry
+        // Create a BOM entry with the actual name and description from the form
         const bomEntry = {
           bom_id: bomData.bom_id,
           version: bomData.version || '1.0',
           bom_line: 1,
-          material_description: 'Placeholder - Add materials in BOM Items',
-          qty: 0,
+          material_description: bomData.bom_name || 'BOM Header', // Use the actual BOM name
+          qty: 1, // Set to 1 for the header entry
           unit: 'each',
           unit_price: 0,
           material_cost: 0,
