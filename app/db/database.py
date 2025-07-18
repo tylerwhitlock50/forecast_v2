@@ -215,16 +215,22 @@ class DatabaseManager:
             )
         ''')
         
-        # Create payroll table (keep existing structure for now)
+        # Create enhanced payroll table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS payroll (
                 employee_id TEXT PRIMARY KEY,
                 employee_name TEXT NOT NULL,
+                department TEXT,
                 weekly_hours INTEGER,
                 hourly_rate REAL,
+                rate_type TEXT DEFAULT 'hourly',
                 labor_type TEXT,
                 start_date TEXT,
-                end_date TEXT
+                end_date TEXT,
+                next_review_date TEXT,
+                expected_raise REAL DEFAULT 0.0,
+                benefits_eligible BOOLEAN DEFAULT 1,
+                allocations TEXT  -- JSON string for business unit allocations
             )
         ''')
         
@@ -271,6 +277,53 @@ class DatabaseManager:
         conn.commit()
         conn.close()
     
+    def migrate_payroll_table(self):
+        """Migrate existing payroll table to new schema"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Check if new columns exist
+            cursor.execute("PRAGMA table_info(payroll)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            # Add missing columns
+            if 'department' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN department TEXT')
+            if 'rate_type' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN rate_type TEXT DEFAULT "hourly"')
+            if 'next_review_date' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN next_review_date TEXT')
+            if 'expected_raise' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN expected_raise REAL DEFAULT 0.0')
+            if 'benefits_eligible' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN benefits_eligible BOOLEAN DEFAULT 1')
+            if 'allocations' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN allocations TEXT')
+            
+            # Update department field with labor_type if empty
+            cursor.execute('''
+                UPDATE payroll 
+                SET department = labor_type 
+                WHERE department IS NULL OR department = ""
+            ''')
+            
+            # Set default allocations for existing employees
+            cursor.execute('''
+                UPDATE payroll 
+                SET allocations = '{"Customer-Centric Brands": 100}' 
+                WHERE allocations IS NULL OR allocations = ""
+            ''')
+            
+            conn.commit()
+            print("Payroll table migration completed successfully")
+            
+        except Exception as e:
+            print(f"Error migrating payroll table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
     def load_csv_data(self):
         """Load data from CSV files into the database"""
         conn = self.get_connection()
@@ -733,6 +786,8 @@ class DatabaseManager:
         print(f"Data directory: {self.data_dir}")
         self.create_tables()
         print("Tables created successfully")
+        self.migrate_payroll_table()
+        print("Payroll table migration completed")
         self.load_csv_data()
         print("Database initialization complete")
 

@@ -128,19 +128,41 @@ class LaborRate(LaborRateBase):
 class LaborRateCreate(LaborRateBase):
     pass
 
-# Payroll Models
+# Enhanced Payroll Models
 class PayrollBase(BaseModel):
     employee_name: str
+    department: str
     weekly_hours: int
     hourly_rate: float
+    rate_type: str = "hourly"  # "hourly" or "salary"
     labor_type: str
     start_date: str
-    end_date: str
+    end_date: Optional[str] = None
+    next_review_date: Optional[str] = None
+    expected_raise: float = 0.0
+    benefits_eligible: bool = True
+    allocations: Optional[Dict[str, float]] = None  # Business unit allocations
 
 class Payroll(PayrollBase):
     employee_id: str
 
 class PayrollCreate(PayrollBase):
+    pass
+
+# Payroll Configuration Models
+class PayrollConfigBase(BaseModel):
+    federal_tax_rate: float = 0.22
+    state_tax_rate: float = 0.06
+    social_security_rate: float = 0.062
+    medicare_rate: float = 0.0145
+    unemployment_rate: float = 0.006
+    benefits_rate: float = 0.25
+    workers_comp_rate: float = 0.015
+
+class PayrollConfig(PayrollConfigBase):
+    config_id: str
+
+class PayrollConfigCreate(PayrollConfigBase):
     pass
 
 # API Request/Response Models
