@@ -184,6 +184,7 @@ export const ForecastProvider = ({ children }) => {
           machinesRes,
           payrollRes,
           bomRes,
+          bomDefinitionsRes,
           routerDefinitionsRes,
           routerOperationsRes,
           laborRatesRes,
@@ -196,6 +197,7 @@ export const ForecastProvider = ({ children }) => {
           axios.get(`${API_BASE}/data/machines`),
           axios.get(`${API_BASE}/data/payroll`),
           axios.get(`${API_BASE}/data/bom`),
+          axios.get(`${API_BASE}/forecast/bom_definitions`),
           axios.get(`${API_BASE}/data/router_definitions`),
           axios.get(`${API_BASE}/data/router_operations`),
           axios.get(`${API_BASE}/data/labor_rates`),
@@ -210,6 +212,7 @@ export const ForecastProvider = ({ children }) => {
         const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
         const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
         console.log('Raw BOM data from API:', bom);
+        const bom_definitions = bomDefinitionsRes.data.status === 'success' ? bomDefinitionsRes.data.data?.bom_definitions || [] : [];
         const router_definitions = routerDefinitionsRes.data.status === 'success' ? routerDefinitionsRes.data.data || [] : [];
         const router_operations = routerOperationsRes.data.status === 'success' ? routerOperationsRes.data.data || [] : [];
         const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
@@ -307,6 +310,7 @@ export const ForecastProvider = ({ children }) => {
           employees,
           payroll,
           bom,
+          bom_definitions,
           routers,
           router_definitions,
           router_operations,
@@ -1013,6 +1017,70 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error creating BOM:', error);
         toast.error('Failed to create BOM');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    createBOMDefinition: async (bomData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'bom_definitions',
+          data: bomData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM definition created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating BOM definition:', error);
+        toast.error('Failed to create BOM definition');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateBOMDefinition: async (bomId, bomData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'bom_definitions',
+          id: bomId,
+          updates: bomData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM definition updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating BOM definition:', error);
+        toast.error('Failed to update BOM definition');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteBOMDefinition: async (bomId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/bom_definitions/${bomId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM definition deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting BOM definition:', error);
+        toast.error('Failed to delete BOM definition');
         throw error;
       } finally {
         actions.setLoading(false);

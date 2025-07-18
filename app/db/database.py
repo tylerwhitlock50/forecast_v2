@@ -22,8 +22,26 @@ class DatabaseManager:
         os.makedirs(self.data_dir, exist_ok=True)
     
     def get_connection(self):
-        """Get a new database connection"""
-        return sqlite3.connect(self.database_path)
+        """Get a new database connection with timeout and proper settings"""
+        import time
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.database_path, timeout=30.0)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=10000")
+                conn.execute("PRAGMA temp_store=MEMORY")
+                return conn
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    raise
     
     def close_connection(self, conn):
         """Close a database connection"""
@@ -91,6 +109,18 @@ class DatabaseManager:
                 FOREIGN KEY (customer_id) REFERENCES customers (customer_id),
                 FOREIGN KEY (unit_id) REFERENCES units (unit_id),
                 FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
+            )
+        ''')
+        
+        # Create BOM definitions table for BOM metadata
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bom_definitions (
+                bom_id TEXT PRIMARY KEY,
+                bom_name TEXT NOT NULL,
+                bom_description TEXT,
+                version TEXT DEFAULT '1.0',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -297,6 +327,41 @@ class DatabaseManager:
                     print(f"Error loading {csv_file}: {str(e)}")
             else:
                 print(f"CSV file not found: {csv_path}")
+        
+        # Create BOM definitions from existing BOM data
+        try:
+            cursor = conn.cursor()
+            
+            # Get unique BOM IDs from the bom table
+            cursor.execute("SELECT DISTINCT bom_id, version FROM bom ORDER BY bom_id")
+            bom_entries = cursor.fetchall()
+            
+            for bom_id, version in bom_entries:
+                # Check if BOM definition already exists
+                cursor.execute("SELECT COUNT(*) FROM bom_definitions WHERE bom_id = ?", (bom_id,))
+                if cursor.fetchone()[0] == 0:
+                    # Get the header entry (bom_line = 1) to extract the name
+                    cursor.execute("""
+                        SELECT material_description 
+                        FROM bom 
+                        WHERE bom_id = ? AND bom_line = 1
+                    """, (bom_id,))
+                    header_result = cursor.fetchone()
+                    
+                    bom_name = "BOM Header"
+                    if header_result and header_result[0] and header_result[0] != 'BOM Header':
+                        bom_name = header_result[0]
+                    
+                    # Insert BOM definition
+                    cursor.execute("""
+                        INSERT INTO bom_definitions (bom_id, bom_name, bom_description, version)
+                        VALUES (?, ?, ?, ?)
+                    """, (bom_id, bom_name, f"Bill of Materials for {bom_id}", version or '1.0'))
+            
+            conn.commit()
+            print("Created BOM definitions from existing BOM data")
+        except Exception as e:
+            print(f"Error creating BOM definitions: {str(e)}")
         
         conn.close()
     

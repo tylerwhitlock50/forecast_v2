@@ -22,11 +22,13 @@ const ProductTable = ({
   // Helper function to get BOM display name
   const getBOMDisplayName = (bomId) => {
     if (!bomId) return 'N/A';
+    
     // Look for BOM definition with bom_name
-    const bomDefinition = bomData.find(item => item.bom_id === bomId && item.bom_name);
-    if (bomDefinition) {
+    const bomDefinition = bomData.find(item => item.bom_id === bomId);
+    if (bomDefinition && bomDefinition.bom_name) {
       return `${bomId} - ${bomDefinition.bom_name}`;
     }
+    
     // Fallback to counting materials
     const bomItems = bomData.filter(item => item.bom_id === bomId);
     if (bomItems.length > 0) {

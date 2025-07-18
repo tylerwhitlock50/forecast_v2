@@ -54,11 +54,13 @@ const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData })
   // Get BOM and Router names for display
   const getBOMDisplayName = (bomId) => {
     if (!bomId) return '';
+    
     // Look for BOM definition with bom_name
-    const bomDefinition = bomData.find(item => item.bom_id === bomId && item.bom_name);
-    if (bomDefinition) {
+    const bomDefinition = bomData.find(item => item.bom_id === bomId);
+    if (bomDefinition && bomDefinition.bom_name) {
       return `${bomId} - ${bomDefinition.bom_name}`;
     }
+    
     // Fallback to counting materials
     const bomItems = bomData.filter(item => item.bom_id === bomId);
     if (bomItems.length > 0) {
@@ -81,10 +83,10 @@ const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData })
   const validateForm = () => {
     const newErrors = {};
     
-    // Only require Product ID for new products (when product is null)
-    if (!product && !formData.unit_id.trim()) {
-      newErrors.unit_id = 'Product ID is required';
-    }
+    // Remove Product ID validation requirement for new products - it will be auto-generated
+    // if (!product && !formData.unit_id.trim()) {
+    //   newErrors.unit_id = 'Product ID is required';
+    // }
     
     if (!formData.unit_name.trim()) {
       newErrors.unit_name = 'Product name is required';
@@ -156,7 +158,7 @@ const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData })
             <h3>Product Information</h3>
             <div className="form-row">
               <div className="form-group">
-                <label>Product ID *</label>
+                <label>Product ID</label>
                 <input
                   type="text"
                   value={formData.unit_id}

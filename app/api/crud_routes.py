@@ -226,6 +226,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
     """
     Create new forecast data
     """
+    conn = None
     try:
         from db.database import db_manager
         
@@ -251,7 +252,6 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
             ))
             
             conn.commit()
-            db_manager.close_connection(conn)
             
             return ForecastResponse(
                 status="success",
@@ -282,7 +282,6 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
             cursor.execute(f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})", values)
             
             conn.commit()
-            db_manager.close_connection(conn)
             
             return ForecastResponse(
                 status="success",
@@ -295,17 +294,21 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
     except HTTPException:
         raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating forecast: {str(e)}")
+    finally:
+        if conn:
+            db_manager.close_connection(conn)
 
 @router.post("/update", response_model=ForecastResponse)
 async def update_forecast_endpoint(update_data: Dict[str, Any]):
     """
     Update existing forecast data
     """
+    conn = None
     try:
         from db.database import db_manager
-        
-
         
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -400,7 +403,6 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = ?", values)
         
         conn.commit()
-        db_manager.close_connection(conn)
         
         return ForecastResponse(
             status="success",
@@ -408,13 +410,19 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
         )
         
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Error updating forecast: {str(e)}")
+    finally:
+        if conn:
+            db_manager.close_connection(conn)
 
 @router.delete("/delete/{table_name}/{record_id}", response_model=ForecastResponse)
 async def delete_forecast_record(table_name: str, record_id: str):
     """
     Delete a specific record from a table
     """
+    conn = None
     try:
         from db.database import db_manager
         
@@ -515,7 +523,6 @@ async def delete_forecast_record(table_name: str, record_id: str):
             raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
         
         conn.commit()
-        db_manager.close_connection(conn)
         
         return ForecastResponse(
             status="success",
@@ -526,4 +533,46 @@ async def delete_forecast_record(table_name: str, record_id: str):
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Error deleting record: {str(e)}")
+    finally:
+        if conn:
+            db_manager.close_connection(conn)
+
+@router.get("/bom_definitions", response_model=ForecastResponse)
+async def get_bom_definitions():
+    """Get all BOM definitions for the frontend"""
+    conn = None
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Check if bom_definitions table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bom_definitions'")
+        if cursor.fetchone():
+            cursor.execute("""
+                SELECT bom_id, bom_name, bom_description, version, created_at
+                FROM bom_definitions 
+                ORDER BY bom_id
+            """)
+            bom_data = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            bom_list = [dict(zip(columns, row)) for row in bom_data]
+        else:
+            # Return empty list if table doesn't exist
+            bom_list = []
+        
+        return ForecastResponse(
+            status="success",
+            data={"bom_definitions": bom_list},
+            message=f"Retrieved {len(bom_list)} BOM definitions"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving BOM definitions: {str(e)}")
+    finally:
+        if conn:
+            db_manager.close_connection(conn)

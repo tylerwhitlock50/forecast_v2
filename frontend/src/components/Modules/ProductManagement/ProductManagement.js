@@ -281,8 +281,8 @@ const ProductManagement = () => {
               setShowProductModal(true);
             }}
             onDelete={handleDeleteProduct}
-            bomData={data.bom || []}
-            routerData={data.routers || []}
+            bomData={data.bom_definitions || []}
+            routerData={data.router_definitions || []}
           />
         )}
 
@@ -303,8 +303,8 @@ const ProductManagement = () => {
         }}
         onSave={handleSaveProduct}
         product={editingProduct}
-        bomData={data.bom || []}
-        routerData={data.routing || []}
+        bomData={data.bom_definitions || []}
+        routerData={data.router_definitions || []}
       />
     </div>
   );
