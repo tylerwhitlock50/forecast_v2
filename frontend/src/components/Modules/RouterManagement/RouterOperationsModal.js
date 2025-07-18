@@ -94,8 +94,10 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
         operation_description: formData.operation_description || ''
       };
       
-      if (editingOperation) {
-        await actions.updateRouterOperation(editingOperation.operation_id, dataToSave);
+      if (editingOperation && editingOperation.router_id && editingOperation.sequence) {
+        // Create compound key: router_id-sequence
+        const compoundKey = `${editingOperation.router_id}-${editingOperation.sequence}`;
+        await actions.updateRouterOperation(compoundKey, dataToSave);
         toast.success('Operation updated successfully');
       } else {
         await actions.createRouterOperation(dataToSave);
@@ -249,7 +251,7 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
                           ✏️ Edit
                         </button>
                         <button
-                          onClick={() => handleDeleteOperation(operation.operation_id)}
+                          onClick={() => handleDeleteOperation(`${operation.router_id}-${operation.sequence}`)}
                           className="action-btn delete-btn"
                           style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}
                         >
