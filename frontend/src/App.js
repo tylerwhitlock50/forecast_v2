@@ -13,6 +13,7 @@ import ProductManagement from './components/Modules/ProductManagement/ProductMan
 import MachineManagement from './components/Modules/MachineManagement/MachineManagement';
 import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
 import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
+import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -104,12 +105,13 @@ const LaborAnalysis = () => (
   />
 );
 
-const LaborRates = () => (
-  <PlaceholderComponent 
-    title="Labor Rates Management" 
-    description="Manage labor rates and categories. Define hourly rates, overtime policies, and labor cost structures for accurate costing."
-  />
-);
+// LaborRates now uses actual LaborRateManagement component
+// const LaborRates = () => (
+//   <PlaceholderComponent 
+//     title="Labor Rates Management" 
+//     description="Manage labor rates and categories. Define hourly rates, overtime policies, and labor cost structures for accurate costing."
+//   />
+// );
 
 const UnitManagement = () => (
   <PlaceholderComponent 
@@ -228,7 +230,7 @@ function App() {
               <Route path="/machines" element={<MachineManagement />} />
               <Route path="/routing" element={<RouterManagement />} />
               <Route path="/bom" element={<BOMManagement />} />
-              <Route path="/labor-rates" element={<LaborRates />} />
+              <Route path="/labor-rates" element={<LaborRateManagement />} />
               
               {/* Cost Management */}
               <Route path="/cost-management" element={<CostManagement />} />

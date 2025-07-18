@@ -931,6 +931,25 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
+    deleteLaborRate: async (tableName, laborRateId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${laborRateId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Labor rate deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting labor rate:', error);
+        toast.error('Failed to delete labor rate');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
     // Unit Management Functions
     createUnit: async (unitData) => {
       try {
