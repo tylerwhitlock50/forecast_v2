@@ -24,7 +24,7 @@ const CostManagement = () => {
     try {
       setLoading(true);
       if (!activeScenario) {
-        toast.info('Please select a forecast scenario first');
+        toast('Please select a forecast scenario first', { icon: 'ℹ️' });
         setLoading(false);
         return;
       }

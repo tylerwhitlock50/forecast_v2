@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../context/ForecastContext';
 import './ScenarioSelector.css';
 
 const ScenarioSelector = () => {
   const { scenarios, activeScenario, actions } = useForecast();
   const [isOpen, setIsOpen] = useState(false);
-
 
 
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
@@ -42,9 +41,12 @@ const ScenarioSelector = () => {
     return icons[scenarioId] || '📊';
   };
 
+  // Memoize the scenarios to prevent unnecessary re-renders
+  const memoizedScenarios = useMemo(() => scenarios || {}, [scenarios]);
+  const scenarioEntries = useMemo(() => Object.entries(memoizedScenarios), [memoizedScenarios]);
+
   return (
     <div className="scenario-selector">
-      {console.log('Rendering ScenarioSelector with scenarios:', scenarios)}
       <div className="scenario-button-container">
         <button
           className="scenario-button"
@@ -55,8 +57,8 @@ const ScenarioSelector = () => {
             {getScenarioIcon(activeScenario)}
           </span>
           <span className="scenario-name">
-            {scenarios[activeScenario] ? 
-              `${activeScenario} | ${scenarios[activeScenario].name || 'Unnamed Scenario'}` : 
+            {memoizedScenarios[activeScenario] ? 
+              `${activeScenario} | ${memoizedScenarios[activeScenario].name || 'Unnamed Scenario'}` : 
               'Select Scenario'
             }
           </span>
@@ -78,7 +80,7 @@ const ScenarioSelector = () => {
 
       {isOpen && (
         <div className="scenario-dropdown">
-          {Object.entries(scenarios).map(([id, scenario]) => (
+          {scenarioEntries.map(([id, scenario]) => (
             <button
               key={id}
               className={`scenario-option ${id === activeScenario ? 'active' : ''}`}

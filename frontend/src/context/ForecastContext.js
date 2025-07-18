@@ -969,21 +969,40 @@ export const ForecastProvider = ({ children }) => {
       } finally {
         actions.setLoading(false);
       }
+    },
+
+    deleteBOM: async (bomId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/bom/${bomId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('BOM deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting BOM:', error);
+        toast.error('Failed to delete BOM');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
     }
   };
 
-  // Load data on mount
+  // Load data on mount and when active scenario changes
   useEffect(() => {
-    actions.fetchAllData(); // This will also fetch scenarios if needed
-  }, []);
-
-  // Load data when active scenario changes
-  useEffect(() => {
-    if (state.activeScenario) {
-      // Fetch data filtered by the active scenario
-      actions.fetchAllData(state.activeScenario);
-    }
-  }, [state.activeScenario]);
+    const loadData = async () => {
+      try {
+        await actions.fetchAllData(state.activeScenario);
+      } catch (error) {
+        console.error('Error loading data:', error);
+      }
+    };
+    
+    loadData();
+  }, [state.activeScenario]); // Only depend on activeScenario, not state changes
 
 
 
