@@ -9,6 +9,8 @@ from .database import (
     get_execution_logs,
     replay_execution_logs,
     reset_to_initial_state,
+    switch_database,
+    get_current_database_path,
     DatabaseManager
 )
 
@@ -40,6 +42,8 @@ __all__ = [
     'get_execution_logs',
     'replay_execution_logs',
     'reset_to_initial_state',
+    'switch_database',
+    'get_current_database_path',
     'DatabaseManager',
     
     # Base models

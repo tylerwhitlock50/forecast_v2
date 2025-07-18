@@ -15,7 +15,7 @@ class DatabaseManager:
                 self.data_dir = './data'
         else:
             self.database_path = database_path
-            self.data_dir = data_dir
+            self.data_dir = data_dir if data_dir is not None else os.path.dirname(database_path)
         
         # Ensure data directory exists
         os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
@@ -34,6 +34,8 @@ class DatabaseManager:
         """Close all database connections - placeholder for SQLite"""
         # SQLite doesn't need explicit connection pooling management
         # This method is here for API compatibility
+        # For SQLite, we can't force close all connections, but we can
+        # ensure any cached connections are cleared
         pass
     
     def create_tables(self):
@@ -862,6 +864,38 @@ db_manager = DatabaseManager()
 def initialize_database():
     """Initialize the database"""
     db_manager.initialize()
+
+def switch_database(new_database_path: str):
+    """Switch to a different database file"""
+    global db_manager
+    
+    # Close all existing connections
+    db_manager.close_all_connections()
+    
+    # Determine appropriate data directory
+    # For saved databases, we don't want to look for CSV files
+    # Use the original data directory (where CSV files are located)
+    if db_manager.data_dir and os.path.exists(db_manager.data_dir):
+        data_dir = db_manager.data_dir
+    else:
+        # Default to the directory containing the database file
+        data_dir = os.path.dirname(new_database_path)
+    
+    # Create new database manager with new path
+    db_manager = DatabaseManager(database_path=new_database_path, data_dir=data_dir)
+    
+    # Only create tables if the database doesn't exist
+    if not os.path.exists(new_database_path):
+        db_manager.create_tables()
+        print(f"Created new database: {new_database_path}")
+    else:
+        # Just ensure we can connect to the existing database
+        db_manager.create_tables()  # This will create tables if they don't exist
+        print(f"Switched to existing database: {new_database_path}")
+
+def get_current_database_path() -> str:
+    """Get the current database path"""
+    return db_manager.database_path
 
 def get_table_data(table_name: str, forecast_id: str = None) -> Dict[str, Any]:
     """Get data from a specific table"""
