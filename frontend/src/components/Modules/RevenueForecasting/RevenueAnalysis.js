@@ -20,10 +20,11 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
     
     products.forEach(product => {
       customers.forEach(customer => {
+        const productId = product.unit_id || product.id;
         const baseRow = {
-          id: `${product.id}-${customer.customer_id}`,
-          product_id: product.id,
-          product_name: product.name || product.unit_name,
+          id: `${productId}-${customer.customer_id}`,
+          product_id: productId,
+          product_name: product.unit_name || product.name,
           customer_id: customer.customer_id,
           customer_name: customer.customer_name,
           segment: customer.customer_type || customer.region || 'General',
@@ -33,8 +34,9 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
 
         // Add time period columns
         timePeriods.forEach(period => {
+          // Find existing sale with flexible matching (by ID or name)
           const existingSale = sales.find(s => 
-            s.unit_id === product.id && 
+            (s.unit_id === productId || s.unit_id === product.unit_name) && 
             s.customer_id === customer.customer_id && 
             s.period === period.key &&
             s.forecast_id === (activeScenario || 'F001')
