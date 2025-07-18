@@ -775,9 +775,11 @@ enhanced_openai_agents_service = EnhancedOpenAIAgentsService()
 
 # API models remain the same
 class AgentChatRequest(BaseModel):
-    message: str = Field(..., description="User message")
+    current_message: str = Field(..., description="Current user message")
+    prior_messages: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Previous conversation messages")
     session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
     user_id: Optional[str] = Field(None, description="User ID for tracking")
+    agent: Optional[str] = Field(None, description="Specific agent to use")
 
 class AgentResponse(BaseModel):
     content: str = Field(..., description="Agent response")
@@ -789,8 +791,22 @@ class AgentResponse(BaseModel):
 
 # Enhanced endpoint handler
 async def process_agent_chat(request: AgentChatRequest) -> AgentResponse:
+    # Combine prior messages with current message for context
+    full_message = request.current_message
+    
+    # Add prior messages as context if available
+    if request.prior_messages:
+        context_messages = []
+        for msg in request.prior_messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            context_messages.append(f"{role}: {content}")
+        
+        if context_messages:
+            full_message = f"Previous conversation:\n" + "\n".join(context_messages) + f"\n\nCurrent message: {request.current_message}"
+    
     result = await enhanced_openai_agents_service.process_message(
-        request.message,
+        full_message,
         session_id=request.session_id,
         user_id=request.user_id
     )

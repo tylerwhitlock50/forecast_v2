@@ -305,6 +305,8 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
     try:
         from db.database import db_manager
         
+
+        
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
@@ -314,6 +316,12 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
         
         if not table_name or not record_id:
             raise HTTPException(status_code=400, detail="Table name and record ID are required")
+        
+        # Handle router_operations compound key (router_id + sequence)
+        if table_name == 'router_operations' and record_id:
+            # For router_operations, record_id should be in format "router_id-sequence"
+            if '-' not in str(record_id):
+                raise HTTPException(status_code=400, detail=f"Invalid router_operations record_id: {record_id}. Expected format: router_id-sequence")
         
         # Get the primary key column name for the table
         cursor.execute(f"PRAGMA table_info({table_name})")
@@ -337,8 +345,20 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
                 primary_key = 'machine_id'
             elif table_name == 'payroll':
                 primary_key = 'employee_id'
+            elif table_name == 'labor_rates':
+                primary_key = 'rate_id'
+            elif table_name == 'router_definitions':
+                primary_key = 'router_id'
+            elif table_name == 'router_operations':
+                primary_key = 'operation_id'
             else:
                 primary_key = 'id'
+        
+        # Validate that update columns exist in the table
+        column_names = [col[1] for col in columns]
+        invalid_columns = [col for col in updates.keys() if col not in column_names]
+        if invalid_columns:
+            raise HTTPException(status_code=400, detail=f"Invalid columns for table {table_name}: {invalid_columns}. Valid columns: {column_names}")
         
         # Special handling for BOM table with composite keys
         if table_name == 'bom' and '-' in record_id:
@@ -356,6 +376,21 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
                 cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE bom_id = ? AND version = ? AND bom_line = ?", values)
             else:
                 raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        # Special handling for router_operations table with compound key (router_id + sequence)
+        elif table_name == 'router_operations' and '-' in str(record_id):
+            # Handle compound key format: router_id-sequence
+            parts = str(record_id).split('-')
+            if len(parts) >= 2:
+                router_id = parts[0]
+                sequence = parts[1]
+                
+                # Build update query for compound key
+                set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+                values = list(updates.values()) + [router_id, sequence]
+                
+                cursor.execute(f"UPDATE {table_name} SET {set_clause} WHERE router_id = ? AND sequence = ?", values)
+            else:
+                raise HTTPException(status_code=400, detail="Invalid router_operations record ID format. Expected: router_id-sequence")
         else:
             # Standard single-key update
             # Build update query dynamically
@@ -443,6 +478,26 @@ async def delete_forecast_record(table_name: str, record_id: str):
                 rows_affected = cursor.rowcount
             else:
                 raise HTTPException(status_code=400, detail="Invalid BOM record ID format. Expected: bom_id-version-bom_line")
+        # Special handling for router_operations table with compound key (router_id + sequence)
+        elif table_name == 'router_operations' and '-' in str(record_id):
+            # Handle compound key format: router_id-sequence
+            parts = str(record_id).split('-')
+            if len(parts) >= 2:
+                router_id = parts[0]
+                sequence = parts[1]
+                
+                # Check if the record exists
+                cursor.execute("SELECT COUNT(*) FROM router_operations WHERE router_id = ? AND sequence = ?", (router_id, sequence))
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    raise HTTPException(status_code=404, detail=f"Router operation '{record_id}' not found")
+                
+                # Delete the record
+                cursor.execute("DELETE FROM router_operations WHERE router_id = ? AND sequence = ?", (router_id, sequence))
+                rows_affected = cursor.rowcount
+            else:
+                raise HTTPException(status_code=400, detail="Invalid router_operations record ID format. Expected: router_id-sequence")
         else:
             # Standard single-key deletion
             # Check if the record exists before deleting

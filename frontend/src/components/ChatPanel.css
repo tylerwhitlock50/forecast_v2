@@ -78,59 +78,35 @@
 }
 
 .service-selector {
-  padding: 16px 20px;
+  padding: 12px 20px;
   border-bottom: 1px solid #e5e7eb;
   background-color: #f9fafb;
-}
-
-.service-selector h4 {
-  margin: 0 0 12px 0;
-  font-size: 14px;
-  color: #374151;
-  font-weight: 600;
-}
-
-.service-options {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
 }
 
-.service-option {
-  display: flex;
-  align-items: center;
+.service-dropdown {
+  flex: 1;
   padding: 8px 12px;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid transparent;
-}
-
-.service-option:hover {
-  background-color: #f3f4f6;
-}
-
-.service-option.selected {
-  background-color: #dbeafe;
-  border-color: #3b82f6;
-}
-
-.service-option input[type="radio"] {
-  margin-right: 8px;
-  accent-color: #3b82f6;
-}
-
-.service-option label {
+  background-color: white;
   font-size: 14px;
   color: #374151;
   cursor: pointer;
-  flex: 1;
+  transition: border-color 0.2s ease;
 }
 
-.service-option .description {
-  font-size: 12px;
-  color: #6b7280;
-  margin-top: 2px;
+.service-dropdown:focus {
+  outline: none;
+  border-color: #10a37f;
+  box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.1);
+}
+
+.service-dropdown option {
+  padding: 8px;
+  font-size: 14px;
 }
 
 .chat-messages {

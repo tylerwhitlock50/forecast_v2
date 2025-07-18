@@ -31,7 +31,7 @@ const ChatPanel = ({ expanded, onToggle }) => {
 
   const loadAvailableAgents = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/agents/available`);
+      const response = await axios.get(`${API_BASE}/chat/agents/available`);
       if (response.data.status === 'success') {
         setAvailableAgents(response.data.data);
       }
@@ -57,10 +57,17 @@ const ChatPanel = ({ expanded, onToggle }) => {
     try {
       let response;
       
+      // Get last 5 messages for context (excluding the current message we just added)
+      const recentMessages = messages.slice(-5).map(msg => ({
+        role: msg.sender === 'user' ? 'user' : 'assistant',
+        content: msg.text
+      }));
+      
       if (serviceType === 'agents') {
         // Use the new OpenAI agents service
-        response = await axios.post(`${API_BASE}/agents/chat`, {
-          message: inputMessage,
+        response = await axios.post(`${API_BASE}/chat/agents`, {
+          current_message: inputMessage,
+          prior_messages: recentMessages,
           user_id: 'user_' + Date.now(),
           agent: currentAgent,
           session_id: sessionId
@@ -87,7 +94,9 @@ const ChatPanel = ({ expanded, onToggle }) => {
         // Use legacy services
         response = await axios.post(`${API_BASE}/${serviceType}`, {
           message: inputMessage,
-          context: {}
+          context: {
+            prior_messages: recentMessages
+          }
         });
 
         const aiMessage = {
@@ -137,7 +146,7 @@ const ChatPanel = ({ expanded, onToggle }) => {
   const clearConversation = async () => {
     try {
       if (serviceType === 'agents') {
-        await axios.post(`${API_BASE}/agents/clear`);
+        await axios.post(`${API_BASE}/chat/agents/clear`);
       }
       setMessages([]);
       setSessionId(`session_${Date.now()}`); // Generate new session ID
@@ -187,76 +196,16 @@ const ChatPanel = ({ expanded, onToggle }) => {
         </div>
 
         <div className="service-selector">
-          <h4>Choose Service</h4>
-          <div className="service-options">
-            <div 
-              className={`service-option ${serviceType === 'agents' ? 'selected' : ''}`}
-              onClick={() => setServiceType('agents')}
-            >
-              <input
-                type="radio"
-                name="service"
-                value="agents"
-                checked={serviceType === 'agents'}
-                onChange={() => setServiceType('agents')}
-              />
-              <div>
-                <label>AI Agents (Recommended)</label>
-                <div className="description">Multi-agent system with specialized capabilities</div>
-              </div>
-            </div>
-            
-            <div 
-              className={`service-option ${serviceType === 'chat' ? 'selected' : ''}`}
-              onClick={() => setServiceType('chat')}
-            >
-              <input
-                type="radio"
-                name="service"
-                value="chat"
-                checked={serviceType === 'chat'}
-                onChange={() => setServiceType('chat')}
-              />
-              <div>
-                <label>Chat (LLM)</label>
-                <div className="description">Simple chat with language model</div>
-              </div>
-            </div>
-            
-            <div 
-              className={`service-option ${serviceType === 'agent' ? 'selected' : ''}`}
-              onClick={() => setServiceType('agent')}
-            >
-              <input
-                type="radio"
-                name="service"
-                value="agent"
-                checked={serviceType === 'agent'}
-                onChange={() => setServiceType('agent')}
-              />
-              <div>
-                <label>Agent (LangChain)</label>
-                <div className="description">LangChain agent system</div>
-              </div>
-            </div>
-            
-            <div 
-              className={`service-option ${serviceType === 'plan_execute' ? 'selected' : ''}`}
-              onClick={() => setServiceType('plan_execute')}
-            >
-              <input
-                type="radio"
-                name="service"
-                value="plan_execute"
-                checked={serviceType === 'plan_execute'}
-                onChange={() => setServiceType('plan_execute')}
-              />
-              <div>
-                <label>Plan & Execute</label>
-                <div className="description">Planning and execution workflow</div>
-              </div>
-            </div>
-          </div>
+          <select 
+            value={serviceType} 
+            onChange={(e) => setServiceType(e.target.value)}
+            className="service-dropdown"
+          >
+            <option value="agents">🤖 AI Agents (Recommended)</option>
+            <option value="chat">💬 Chat (LLM)</option>
+            <option value="agent">🔗 Agent (LangChain)</option>
+            <option value="plan_execute">📋 Plan & Execute</option>
+          </select>
         </div>
 
         {serviceType === 'agents' && (
