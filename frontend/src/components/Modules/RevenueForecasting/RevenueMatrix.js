@@ -28,6 +28,11 @@ const RevenueMatrix = ({
       sampleSales: data.sales_forecast?.slice(0, 2)
     });
     
+    // Debug: Log all sales for the active scenario
+    const activeSales = Array.isArray(data.sales_forecast) ? 
+      data.sales_forecast.filter(s => s.forecast_id === (activeScenario || 'F001')) : [];
+    console.log('Active sales for scenario', activeScenario || 'F001', ':', activeSales);
+    
     const matrix = [];
     
     const products = Array.isArray(data.products) ? data.products : [];
@@ -38,21 +43,40 @@ const RevenueMatrix = ({
     const forecastCombinations = new Set();
     sales.forEach(sale => {
       if (sale.forecast_id === (activeScenario || 'F001')) {
-        forecastCombinations.add(`${sale.unit_id}-${sale.customer_id}`);
+        const combinationKey = `${sale.unit_id}-${sale.customer_id}`;
+        forecastCombinations.add(combinationKey);
+        console.log('Added combination:', combinationKey, 'from sale:', sale);
+      }
+    });
+    
+    console.log('All forecast combinations:', Array.from(forecastCombinations));
+    
+    // Create a mapping from product names to product IDs for flexible matching
+    const productNameToId = {};
+    products.forEach(product => {
+      if (product.unit_name) {
+        productNameToId[product.unit_name] = product.unit_id || product.id;
       }
     });
     
     // Only create matrix rows for combinations that have forecast data
     products.forEach(product => {
       customers.forEach(customer => {
-        const combinationKey = `${product.id}-${customer.customer_id}`;
+        const productId = product.unit_id || product.id;
+        const combinationKey = `${productId}-${customer.customer_id}`;
         
-        // Only include this combination if it has forecast data
-        if (forecastCombinations.has(combinationKey)) {
+        console.log('Checking combination:', combinationKey, 'for product:', productId, 'customer:', customer.customer_id);
+        
+        // Check if this combination has forecast data (direct match or name-based match)
+        const hasDirectMatch = forecastCombinations.has(combinationKey);
+        const hasNameMatch = product.unit_name && forecastCombinations.has(`${product.unit_name}-${customer.customer_id}`);
+        
+        if (hasDirectMatch || hasNameMatch) {
+          console.log('Found matching combination:', combinationKey);
           const baseRow = {
             id: combinationKey,
-            product_id: product.id,
-            product_name: product.name || product.unit_name,
+            product_id: product.unit_id || product.id,
+            product_name: product.unit_name || product.name,
             customer_id: customer.customer_id,
             customer_name: customer.customer_name,
             segment: customer.customer_type || customer.region || 'General',
@@ -62,8 +86,9 @@ const RevenueMatrix = ({
 
           // Add time period columns
           timePeriods.forEach(period => {
+            // Find existing sale with flexible matching (by ID or name)
             const existingSale = sales.find(s => 
-              s.unit_id === product.id && 
+              (s.unit_id === productId || s.unit_id === product.unit_name) && 
               s.customer_id === customer.customer_id && 
               s.period === period.key &&
               s.forecast_id === (activeScenario || 'F001')

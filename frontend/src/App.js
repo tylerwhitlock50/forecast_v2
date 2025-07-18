@@ -9,6 +9,7 @@ import ChatPanel from './components/ChatPanel';
 import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecasting';
 import CostManagement from './components/Modules/CostManagement/CostManagement';
 import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagement';
+import ProductManagement from './components/Modules/ProductManagement/ProductManagement';
 import MachineManagement from './components/Modules/MachineManagement/MachineManagement';
 import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
 import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
@@ -219,6 +220,7 @@ function App() {
               {/* Revenue Planning */}
               <Route path="/products-customers" element={<ProductCustomerSetup />} />
               <Route path="/customers" element={<CustomerManagement />} />
+              <Route path="/products" element={<ProductManagement />} />
               <Route path="/sales-forecast" element={<RevenueForecasting />} />
               <Route path="/segments" element={<SegmentAnalysis />} />
               

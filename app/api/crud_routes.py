@@ -258,6 +258,37 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 message="Sales data created successfully"
             )
         
+        # Handle general table creation
+        elif forecast_data.get('table') and forecast_data.get('data'):
+            table_name = forecast_data['table']
+            data = forecast_data['data']
+            
+            # Get table columns
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = cursor.fetchall()
+            column_names = [col[1] for col in columns]
+            
+            # Filter data to only include valid columns
+            valid_data = {k: v for k, v in data.items() if k in column_names}
+            
+            if not valid_data:
+                raise HTTPException(status_code=400, detail=f"No valid columns found for table {table_name}")
+            
+            # Build INSERT query
+            columns_str = ", ".join(valid_data.keys())
+            placeholders = ", ".join(["?" for _ in valid_data])
+            values = list(valid_data.values())
+            
+            cursor.execute(f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})", values)
+            
+            conn.commit()
+            db_manager.close_connection(conn)
+            
+            return ForecastResponse(
+                status="success",
+                message=f"Record created successfully in {table_name}"
+            )
+        
         else:
             raise HTTPException(status_code=400, detail="Invalid or missing data structure")
         

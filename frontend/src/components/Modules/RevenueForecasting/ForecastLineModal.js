@@ -185,8 +185,8 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
                 >
                   <option value="">Select Product</option>
                   {(data.products || []).map(product => (
-                    <option key={product.id} value={product.id}>
-                      {product.name || product.unit_name}
+                    <option key={product.unit_id || product.id} value={product.unit_id || product.id}>
+                      {product.unit_name || product.name}
                     </option>
                   ))}
                 </select>

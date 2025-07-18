@@ -215,11 +215,11 @@ export const ForecastProvider = ({ children }) => {
         const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
         const forecast = forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [];
 
-        // Transform units to products format
+        // Transform units to products format - keep original field names for consistency
         const products = units.map(unit => ({
-          id: unit.unit_id,
-          name: unit.unit_name,
-          description: unit.unit_description,
+          unit_id: unit.unit_id,
+          unit_name: unit.unit_name,
+          unit_description: unit.unit_description,
           base_price: unit.base_price,
           unit_type: unit.unit_type,
           bom: unit.bom,
@@ -325,6 +325,9 @@ export const ForecastProvider = ({ children }) => {
           sampleCustomers: customers.slice(0, 2),
           sampleForecast: forecast.slice(0, 2)
         });
+        
+        console.log('Sample products data:', products.slice(0, 2));
+        console.log('Sample units data:', units.slice(0, 2));
 
         console.log('Setting data in context:', {
           salesCount: data.sales_forecast?.length || 0,
@@ -800,6 +803,82 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error deleting router operation:', error);
         toast.error('Failed to delete router operation');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Product Management Functions
+    createProduct: async (productData) => {
+      try {
+        actions.setLoading(true);
+        
+        // Generate a unique product ID if not provided
+        if (!productData.unit_id || productData.unit_id.trim() === '') {
+          const products = Array.isArray(state.data.products) ? state.data.products : [];
+          const maxId = Math.max(...products.map(p => {
+            const id = p.unit_id?.replace('PROD-', '') || '0';
+            return parseInt(id) || 0;
+          }), 0);
+          productData.unit_id = `PROD-${String(maxId + 1).padStart(3, '0')}`;
+          console.log('Auto-generated product ID:', productData.unit_id);
+        }
+
+        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+          table: 'units',
+          data: productData 
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Product created successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error creating product:', error);
+        toast.error('Failed to create product');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateProduct: async (productId, productData) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.post(`${API_BASE}/forecast/update`, {
+          table: 'units',
+          id: productId,
+          updates: productData
+        });
+        
+        if (response.data.status === 'success') {
+          toast.success('Product updated successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error updating product:', error);
+        toast.error('Failed to update product');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteProduct: async (tableName, productId) => {
+      try {
+        actions.setLoading(true);
+        
+        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${productId}`);
+        
+        if (response.data.status === 'success') {
+          toast.success('Product deleted successfully');
+          await actions.fetchAllData();
+        }
+      } catch (error) {
+        console.error('Error deleting product:', error);
+        toast.error('Failed to delete product');
         throw error;
       } finally {
         actions.setLoading(false);
