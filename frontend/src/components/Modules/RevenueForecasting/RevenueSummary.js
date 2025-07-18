@@ -1,21 +1,26 @@
 import React, { useMemo } from 'react';
+import { useForecast } from '../../../context/ForecastContext';
 import './RevenueForecasting.css';
 
 const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
+  const { activeScenario } = useForecast();
+  
   // Calculate summary statistics
   const summaryStats = useMemo(() => {
     const products = Array.isArray(data.products) ? data.products : [];
     const customers = Array.isArray(data.customers) ? data.customers : [];
     const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
     
-    // Filter by segment if needed
-    let filteredSales = sales;
+    // Filter sales by active scenario first
+    let filteredSales = sales.filter(sale => sale.forecast_id === (activeScenario || 'F001'));
+    
+    // Then filter by segment if needed
     if (selectedSegment !== 'all') {
       const segmentCustomers = customers.filter(c => 
         (c.customer_type || c.region || 'General') === selectedSegment
       );
       const segmentCustomerIds = segmentCustomers.map(c => c.customer_id);
-      filteredSales = sales.filter(s => segmentCustomerIds.includes(s.customer_id));
+      filteredSales = filteredSales.filter(s => segmentCustomerIds.includes(s.customer_id));
     }
     
     const totalQuantity = filteredSales.reduce((sum, sale) => sum + (sale.quantity || 0), 0);
@@ -30,7 +35,7 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
       customerCount,
       averagePrice: totalQuantity > 0 ? totalRevenue / totalQuantity : 0
     };
-  }, [data.products, data.customers, data.sales_forecast, selectedSegment]);
+  }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario]);
 
   return (
     <div className="revenue-summary">

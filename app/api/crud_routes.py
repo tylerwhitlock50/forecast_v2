@@ -1,15 +1,39 @@
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
-from db.models import ForecastResponse
+from fastapi import APIRouter, HTTPException, Query
+from typing import Optional, Dict, Any, List
+from db import get_forecast_data, get_saved_forecast_results
+from db.models import ForecastResponse, SQLApplyRequest
+from db import execute_sql
 import uuid
 import sqlite3
+from datetime import datetime
 
-router = APIRouter(prefix="/forecast", tags=["crud"])
+router = APIRouter(prefix="/forecast", tags=["forecast"])
 
-@router.post("/create", response_model=ForecastResponse)
-async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
+@router.get("", response_model=ForecastResponse)
+async def get_forecast(forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")):
     """
-    Create a new forecast using the wizard data or direct sales data
+    Returns computed forecast state with joined data
+    """
+    result = get_forecast_data()
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    # If forecast_id is provided, filter the sales data
+    if forecast_id and result["data"].get("sales_forecast"):
+        result["data"]["sales_forecast"] = [
+            sale for sale in result["data"]["sales_forecast"] 
+            if sale.get("forecast_id") == forecast_id
+        ]
+    
+    return ForecastResponse(
+        status="success",
+        data=result["data"]
+    )
+
+@router.get("/scenarios", response_model=ForecastResponse)
+async def get_forecast_scenarios():
+    """
+    Get all available forecast scenarios
     """
     try:
         from db.database import db_manager
@@ -17,184 +41,199 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
-        # Handle customer creation
-        if forecast_data.get('table') == 'customers':
-            customer_data = forecast_data.get('data', {})
-            customer_id = customer_data.get('customer_id')
-            
-            if not customer_id:
-                raise HTTPException(status_code=400, detail="Customer ID is required")
-            
-            try:
-                cursor.execute("""
-                    INSERT INTO customers (customer_id, customer_name, customer_type, region)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    customer_id,
-                    customer_data.get('customer_name', ''),
-                    customer_data.get('customer_type', ''),
-                    customer_data.get('region', '')
-                ))
-                
-                conn.commit()
-                db_manager.close_connection(conn)
-                
-                return ForecastResponse(
-                    status="success",
-                    message="Customer created successfully"
-                )
-            except sqlite3.IntegrityError as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=400, detail=f"Customer ID '{customer_id}' already exists")
-            except Exception as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        cursor.execute("SELECT * FROM forecast ORDER BY name")
+        forecasts = cursor.fetchall()
         
-        # Handle machine creation
-        elif forecast_data.get('table') == 'machines':
-            machine_data = forecast_data.get('data', {})
-            machine_id = machine_data.get('machine_id')
-            
-            if not machine_id:
-                raise HTTPException(status_code=400, detail="Machine ID is required")
-            
-            try:
-                cursor.execute("""
-                    INSERT INTO machines (machine_id, machine_name, machine_description, machine_rate, labor_type, available_minutes_per_month)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    machine_id,
-                    machine_data.get('machine_name', ''),
-                    machine_data.get('machine_description', ''),
-                    machine_data.get('machine_rate', 0),
-                    machine_data.get('labor_type', ''),
-                    machine_data.get('available_minutes_per_month', 0)
-                ))
-                
-                conn.commit()
-                db_manager.close_connection(conn)
-                
-                return ForecastResponse(
-                    status="success",
-                    message="Machine created successfully"
-                )
-            except sqlite3.IntegrityError as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=400, detail=f"Machine ID '{machine_id}' already exists")
-            except Exception as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        # Convert to dictionaries
+        columns = [description[0] for description in cursor.description]
+        forecast_list = [dict(zip(columns, row)) for row in forecasts]
         
-        # Handle router definition creation
-        elif forecast_data.get('table') == 'router_definitions':
-            router_data = forecast_data.get('data', {})
-            router_id = router_data.get('router_id')
-            
-            if not router_id:
-                raise HTTPException(status_code=400, detail="Router ID is required")
-            
-            try:
-                cursor.execute("""
-                    INSERT INTO router_definitions (router_id, router_name, router_description, version)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    router_id,
-                    router_data.get('router_name', ''),
-                    router_data.get('router_description', ''),
-                    router_data.get('version', '1.0')
-                ))
-                
-                conn.commit()
-                db_manager.close_connection(conn)
-                
-                return ForecastResponse(
-                    status="success",
-                    message="Router created successfully"
-                )
-            except sqlite3.IntegrityError as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=400, detail=f"Router ID '{router_id}' already exists")
-            except Exception as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        db_manager.close_connection(conn)
         
-        # Handle router operation creation
-        elif forecast_data.get('table') == 'router_operations':
-            operation_data = forecast_data.get('data', {})
-            router_id = operation_data.get('router_id')
-            sequence = operation_data.get('sequence')
-            
-            if not router_id or not sequence:
-                raise HTTPException(status_code=400, detail="Router ID and sequence are required")
-            
-            try:
-                cursor.execute("""
-                    INSERT INTO router_operations (router_id, sequence, machine_id, machine_minutes, labor_minutes, labor_type_id, operation_description)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    router_id,
-                    sequence,
-                    operation_data.get('machine_id', ''),
-                    operation_data.get('machine_minutes', 0),
-                    operation_data.get('labor_minutes', 0),
-                    operation_data.get('labor_type_id', ''),
-                    operation_data.get('operation_description', '')
-                ))
-                
-                conn.commit()
-                db_manager.close_connection(conn)
-                
-                return ForecastResponse(
-                    status="success",
-                    message="Router operation created successfully"
-                )
-            except sqlite3.IntegrityError as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=400, detail=f"Router operation with sequence '{sequence}' already exists for router '{router_id}'")
-            except Exception as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        return ForecastResponse(
+            status="success",
+            data={"scenarios": forecast_list},
+            message=f"Retrieved {len(forecast_list)} forecast scenarios"
+        )
         
-        # Handle BOM creation
-        elif forecast_data.get('table') == 'bom':
-            bom_data = forecast_data.get('data', {})
-            bom_id = bom_data.get('bom_id')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving forecast scenarios: {str(e)}")
+
+@router.post("/scenario", response_model=ForecastResponse)
+async def create_forecast_scenario(scenario_data: Dict[str, Any]):
+    """
+    Create a new forecast scenario with auto-generated FXXX ID
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        # Get the next available FXXX ID
+        cursor.execute("SELECT forecast_id FROM forecast WHERE forecast_id LIKE 'F%' ORDER BY forecast_id DESC LIMIT 1")
+        last_forecast = cursor.fetchone()
+        
+        if last_forecast:
+            # Extract the number from the last forecast_id (e.g., "F003" -> 3)
+            last_number = int(last_forecast[0][1:])
+            next_number = last_number + 1
+        else:
+            next_number = 1
+        
+        # Generate new forecast_id with FXXX format
+        forecast_id = f"F{next_number:03d}"  # F001, F002, F003, etc.
+        
+        name = scenario_data.get('name', 'New Scenario')
+        description = scenario_data.get('description', '')
+        
+        cursor.execute("""
+            INSERT INTO forecast (forecast_id, name, description)
+            VALUES (?, ?, ?)
+        """, (forecast_id, name, description))
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"forecast_id": forecast_id, "name": name, "description": description},
+            message=f"Forecast scenario {forecast_id} created successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating forecast scenario: {str(e)}")
+
+@router.post("/bulk_update", response_model=ForecastResponse)
+async def bulk_update_forecast(bulk_data: Dict[str, Any]):
+    """
+    Bulk update forecast data with operations: add, subtract, replace
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        forecasts = bulk_data.get('forecasts', [])
+        operation = bulk_data.get('operation', 'replace')  # Default to replace
+        
+        if not forecasts:
+            raise HTTPException(status_code=400, detail="No forecast data provided")
+        
+        updated_count = 0
+        
+        for forecast in forecasts:
+            # Check if record exists
+            cursor.execute("""
+                SELECT quantity, unit_price, total_revenue
+                FROM sales 
+                WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
+            """, (
+                forecast.get('customer_id'),
+                forecast.get('unit_id'),
+                forecast.get('period'),
+                forecast.get('forecast_id', 'F001')
+            ))
             
-            if not bom_id:
-                raise HTTPException(status_code=400, detail="BOM ID is required")
+            existing_record = cursor.fetchone()
             
-            try:
+            if existing_record:
+                # Record exists - apply operation
+                existing_quantity, existing_price, existing_revenue = existing_record
+                new_quantity = existing_quantity
+                new_price = existing_price
+                
+                if operation == 'add':
+                    new_quantity = existing_quantity + forecast.get('quantity', 0)
+                    new_price = forecast.get('unit_price', existing_price)  # Use new price if provided
+                elif operation == 'subtract':
+                    new_quantity = max(0, existing_quantity - forecast.get('quantity', 0))
+                    new_price = existing_price  # Keep existing price
+                elif operation == 'replace':
+                    new_quantity = forecast.get('quantity', 0)
+                    new_price = forecast.get('unit_price', 0)
+                
+                new_revenue = new_quantity * new_price
+                
                 cursor.execute("""
-                    INSERT INTO bom (bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost, target_cost)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
+                    WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
                 """, (
-                    bom_id,
-                    bom_data.get('version', '1.0'),
-                    bom_data.get('bom_line', 1),
-                    bom_data.get('material_description', ''),
-                    bom_data.get('qty', 0),
-                    bom_data.get('unit', 'each'),
-                    bom_data.get('unit_price', 0),
-                    bom_data.get('material_cost', 0),
-                    bom_data.get('target_cost', 0)
+                    new_quantity,
+                    new_price,
+                    new_revenue,
+                    forecast.get('customer_id'),
+                    forecast.get('unit_id'),
+                    forecast.get('period'),
+                    forecast.get('forecast_id', 'F001')
                 ))
-                
-                conn.commit()
-                db_manager.close_connection(conn)
-                
-                return ForecastResponse(
-                    status="success",
-                    message="BOM item created successfully"
-                )
-            except sqlite3.IntegrityError as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=400, detail=f"BOM item already exists: {str(e)}")
-            except Exception as e:
-                db_manager.close_connection(conn)
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            else:
+                # Record doesn't exist - insert new one
+                sale_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    sale_id,
+                    forecast.get('customer_id'),
+                    forecast.get('unit_id'),
+                    forecast.get('period'),
+                    forecast.get('quantity', 0),
+                    forecast.get('unit_price', 0),
+                    forecast.get('total_revenue', 0),
+                    forecast.get('forecast_id', 'F001')
+                ))
+            
+            updated_count += 1
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={"updated_count": updated_count},
+            message=f"Bulk updated {updated_count} forecast records using {operation} operation"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error bulk updating forecast: {str(e)}")
+
+@router.get("/results", response_model=ForecastResponse)
+async def get_saved_forecast_results_endpoint(
+    period: Optional[str] = Query(None, description="Filter by period (e.g., '2024-01')"),
+    limit: Optional[int] = Query(None, description="Limit number of results")
+):
+    """
+    Get saved forecast results from the database
+    """
+    result = get_saved_forecast_results(period=period, limit=limit)
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    return ForecastResponse(
+        status="success",
+        data={
+            "results": result["data"],
+            "columns": result.get("columns"),
+            "summary": result.get("summary"),
+        },
+        message=f"Retrieved {len(result['data'])} forecast results"
+    )
+
+@router.post("/create", response_model=ForecastResponse)
+async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
+    """
+    Create new forecast data
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
         
         # Handle direct sales data from frontend
-        elif forecast_data.get('sales'):
+        if forecast_data.get('sales'):
             sales = forecast_data['sales']
             sale_id = str(uuid.uuid4())
             cursor.execute("""

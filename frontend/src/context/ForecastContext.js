@@ -431,35 +431,7 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    updateSalesRecord: async (salesData) => {
-      try {
-        actions.setLoading(true);
-        
-        // Transform sales data to the format expected by the backend forecast/bulk_update endpoint
-        const forecasts = salesData.map(sale => ({
-          product_id: sale.unit_id, // Map unit_id to product_id for backend
-          customer_id: sale.customer_id,
-          period: sale.period ? `${sale.period}-01` : sale.period, // Convert 2025-09 back to 2025-09-01 for backend
-          quantity: sale.quantity,
-          price: sale.unit_price, // Map unit_price to price for backend
-          total_revenue: sale.total_revenue,
-          forecast_id: sale.forecast_id || 'F001' // Default forecast ID
-        }));
-        
-        // Use the existing forecast/bulk_update endpoint
-        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { forecasts });
-        if (response.data.status === 'success') {
-          toast.success(`Updated ${response.data.data.updated_count} sales records`);
-          await actions.fetchAllData(); // Refresh data
-        }
-      } catch (error) {
-        console.error('Error updating sales records:', error);
-        toast.error('Failed to update sales records');
-        throw error; // Re-throw so the component can handle it
-      } finally {
-        actions.setLoading(false);
-      }
-    },
+    // Removed updateSalesRecord function - use bulkUpdateForecast instead
 
     saveForecast: async (forecastData) => {
       try {

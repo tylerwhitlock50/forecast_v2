@@ -16,12 +16,13 @@ const RevenueMatrix = ({
   const [editingCell, setEditingCell] = useState(null);
   const [editModal, setEditModal] = useState(null);
 
-  // Generate product-customer matrix data
+  // Generate product-customer matrix data - ONLY for combinations that have actual forecast data
   const matrixData = useMemo(() => {
     console.log('RevenueMatrix data:', {
       products: data.products?.length || 0,
       customers: data.customers?.length || 0,
       sales: data.sales_forecast?.length || 0,
+      activeScenario: activeScenario,
       sampleProducts: data.products?.slice(0, 2),
       sampleCustomers: data.customers?.slice(0, 2),
       sampleSales: data.sales_forecast?.slice(0, 2)
@@ -33,41 +34,55 @@ const RevenueMatrix = ({
     const customers = Array.isArray(data.customers) ? data.customers : [];
     const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
     
+    // Create a map of product-customer combinations that have actual forecast data
+    const forecastCombinations = new Set();
+    sales.forEach(sale => {
+      if (sale.forecast_id === (activeScenario || 'F001')) {
+        forecastCombinations.add(`${sale.unit_id}-${sale.customer_id}`);
+      }
+    });
+    
+    // Only create matrix rows for combinations that have forecast data
     products.forEach(product => {
       customers.forEach(customer => {
-        const baseRow = {
-          id: `${product.id}-${customer.customer_id}`,
-          product_id: product.id,
-          product_name: product.name || product.unit_name,
-          customer_id: customer.customer_id,
-          customer_name: customer.customer_name,
-          segment: customer.customer_type || customer.region || 'General',
-          total_quantity: 0,
-          total_revenue: 0
-        };
+        const combinationKey = `${product.id}-${customer.customer_id}`;
+        
+        // Only include this combination if it has forecast data
+        if (forecastCombinations.has(combinationKey)) {
+          const baseRow = {
+            id: combinationKey,
+            product_id: product.id,
+            product_name: product.name || product.unit_name,
+            customer_id: customer.customer_id,
+            customer_name: customer.customer_name,
+            segment: customer.customer_type || customer.region || 'General',
+            total_quantity: 0,
+            total_revenue: 0
+          };
 
-        // Add time period columns
-        timePeriods.forEach(period => {
-          const existingSale = sales.find(s => 
-            s.unit_id === product.id && 
-            s.customer_id === customer.customer_id && 
-            s.period === period.key &&
-            s.forecast_id === (activeScenario || 'F001')
-          );
-          
-          const quantity = existingSale?.quantity || 0;
-          const price = existingSale?.unit_price || 0;
-          const revenue = quantity * price;
-          
-          baseRow[`quantity_${period.key}`] = quantity;
-          baseRow[`price_${period.key}`] = price;
-          baseRow[`revenue_${period.key}`] = revenue;
-          
-          baseRow.total_quantity += quantity;
-          baseRow.total_revenue += revenue;
-        });
+          // Add time period columns
+          timePeriods.forEach(period => {
+            const existingSale = sales.find(s => 
+              s.unit_id === product.id && 
+              s.customer_id === customer.customer_id && 
+              s.period === period.key &&
+              s.forecast_id === (activeScenario || 'F001')
+            );
+            
+            const quantity = existingSale?.quantity || 0;
+            const price = existingSale?.unit_price || 0;
+            const revenue = quantity * price;
+            
+            baseRow[`quantity_${period.key}`] = quantity;
+            baseRow[`price_${period.key}`] = price;
+            baseRow[`revenue_${period.key}`] = revenue;
+            
+            baseRow.total_quantity += quantity;
+            baseRow.total_revenue += revenue;
+          });
 
-        matrix.push(baseRow);
+          matrix.push(baseRow);
+        }
       });
     });
 
@@ -130,7 +145,7 @@ const RevenueMatrix = ({
       // Update the context data
       onDataChange(updatedData);
 
-      // Update the database record
+      // Update the database record using the correct API endpoint
       const saleRecord = {
         unit_id: rowData.product_id,
         customer_id: rowData.customer_id,
@@ -141,22 +156,8 @@ const RevenueMatrix = ({
         forecast_id: activeScenario || 'F001' // Use active scenario or default
       };
 
-      // Check if record exists
-      const existingSale = data.sales_forecast?.find(s => 
-        s.unit_id === rowData.product_id && 
-        s.customer_id === rowData.customer_id && 
-        s.period === periodKey &&
-        s.forecast_id === (activeScenario || 'F001')
-      );
-
-      if (existingSale) {
-        // Update existing record
-        const updatedSale = { ...existingSale, ...saleRecord };
-        await actions.updateSalesRecord([updatedSale]);
-      } else {
-        // Create new record
-        await actions.updateSalesRecord([saleRecord]);
-      }
+      // Use the bulkUpdateForecast function instead of updateSalesRecord
+      await actions.bulkUpdateForecast([saleRecord], 'replace');
 
       setEditModal(null);
       toast.success('Revenue updated successfully');
@@ -235,16 +236,31 @@ const RevenueMatrix = ({
         )}
       </div>
 
-      <EditableGrid
-        data={filteredMatrixData}
-        columns={matrixColumns}
-        onDataChange={onDataChange}
-        onCellChange={onCellChange}
-        enableDragFill={true}
-        enableBulkEdit={true}
-        enableKeyboardNavigation={true}
-        className="revenue-matrix"
-      />
+      {filteredMatrixData.length === 0 ? (
+        <div style={{ 
+          textAlign: 'center', 
+          padding: '2rem', 
+          color: '#6c757d',
+          backgroundColor: '#f8f9fa',
+          borderRadius: '8px',
+          border: '1px solid #dee2e6'
+        }}>
+          <h4>No forecast data found</h4>
+          <p>No revenue forecast data exists for the current scenario ({activeScenario || 'F001'}).</p>
+          <p>Click "Add Forecast Line" to create your first forecast entry.</p>
+        </div>
+      ) : (
+        <EditableGrid
+          data={filteredMatrixData}
+          columns={matrixColumns}
+          onDataChange={onDataChange}
+          onCellChange={onCellChange}
+          enableDragFill={true}
+          enableBulkEdit={true}
+          enableKeyboardNavigation={true}
+          className="revenue-matrix"
+        />
+      )}
 
       {/* Edit Modal */}
       {editModal && (
