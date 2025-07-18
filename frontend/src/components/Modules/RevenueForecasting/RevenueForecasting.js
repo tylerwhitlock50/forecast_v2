@@ -19,6 +19,7 @@ const RevenueForecasting = () => {
   const [bulkImportMode, setBulkImportMode] = useState(false);
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
+  const [showDataDebugger, setShowDataDebugger] = useState(false); // Testing parameter to control DataDebugger visibility
 
   // Generate time periods
   const timePeriods = useMemo(() => {
@@ -305,8 +306,13 @@ const RevenueForecasting = () => {
             <button onClick={handleSaveChanges} style={{ backgroundColor: '#28a745', color: 'white', borderColor: '#28a745' }}>
               💾 Save Changes
             </button>
-            <button onClick={logDataStructure} style={{ backgroundColor: '#6c757d', color: 'white', borderColor: '#6c757d' }}>
-              🐛 Debug Data
+            {showDataDebugger && (
+              <button onClick={logDataStructure} style={{ backgroundColor: '#6c757d', color: 'white', borderColor: '#6c757d' }}>
+                🐛 Debug Data
+              </button>
+            )}
+            <button onClick={() => setShowDataDebugger(!showDataDebugger)} style={{ backgroundColor: '#ffc107', color: 'black', borderColor: '#ffc107' }}>
+              {showDataDebugger ? '🔒 Hide Debugger' : '🔓 Show Debugger'}
             </button>
           </div>
         </div>
@@ -388,7 +394,7 @@ const RevenueForecasting = () => {
         </button>
       </div>
 
-      <DataDebugger data={data} />
+      {showDataDebugger && <DataDebugger data={data} />}
 
       <RevenueSummary 
         data={data} 

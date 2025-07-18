@@ -180,7 +180,7 @@
 }
 
 .product-id .id-badge {
-  background: #e9ecef;
+  background: none;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.8rem;

@@ -47,9 +47,9 @@
   padding: 0.5rem 1rem;
   border: 1px solid #ced4da;
   border-radius: 6px;
-  background: white;
+  background: rgb(209, 209, 209);
   font-size: 0.9rem;
-  color: #495057;
+  color: #fff7f7;
   transition: all 0.2s ease;
   min-width: 150px;
 }
