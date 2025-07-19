@@ -1,11 +1,11 @@
-employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date
-EMP-001,John Doe,40,35.00,Heavy Equipment,2024-01-01,2024-12-31
-EMP-002,Jane Smith,40,28.00,Light Equipment,2024-01-01,2024-12-31
-EMP-003,Mike Johnson,40,22.00,Manual Labor,2024-01-01,2024-12-31
-EMP-004,Sarah Wilson,40,45.00,Supervisor,2024-01-01,2024-12-31
-EMP-005,Tom Brown,40,65.00,Manager,2024-01-01,2024-12-31
-EMP-006,Lisa Davis,40,40.00,Machinist,2024-01-01,2024-12-31
-EMP-007,David Miller,40,38.00,Technician,2024-01-01,2024-12-31
-EMP-008,Amy Garcia,40,55.00,Engineer,2024-01-01,2024-12-31
-EMP-009,Chris Rodriguez,40,32.00,Quality Control,2024-01-01,2024-12-31
-EMP-010,Karen Martinez,40,25.00,Administrative,2024-01-01,2024-12-31
+employee_id,employee_name,department,weekly_hours,hourly_rate,rate_type,labor_type,start_date,end_date,next_review_date,expected_raise,benefits_eligible,allocations
+EMP-001,John Doe,Manufacturing,40,35.00,hourly,Heavy Equipment,2024-01-01,2024-12-31,2025-01-01,0.05,TRUE,"{""Customer-Centric Brands"": 70, ""OEM Work"": 30}"
+EMP-002,Jane Smith,Manufacturing,40,28.00,hourly,Light Equipment,2024-01-01,2024-12-31,2025-01-01,0.04,TRUE,"{""Customer-Centric Brands"": 80, ""OEM Work"": 20}"
+EMP-003,Mike Johnson,Manufacturing,40,22.00,hourly,Manual Labor,2024-01-01,2024-12-31,2025-01-01,2.00,TRUE,"{""Customer-Centric Brands"": 90, ""Internal Operations"": 10}"
+EMP-004,Sarah Wilson,Management,40,45.00,hourly,Supervisor,2024-01-01,2024-12-31,2025-01-01,3.00,TRUE,"{""Customer-Centric Brands"": 60, ""OEM Work"": 25, ""Internal Operations"": 15}"
+EMP-005,Tom Brown,Management,40,65.00,salary,Manager,2024-01-01,2024-12-31,2025-01-01,5000,TRUE,"{""Customer-Centric Brands"": 40, ""OEM Work"": 40, ""Internal Operations"": 20}"
+EMP-006,Lisa Davis,Manufacturing,40,40.00,hourly,Machinist,2024-01-01,2024-12-31,2025-01-01,0.06,TRUE,"{""Customer-Centric Brands"": 75, ""OEM Work"": 25}"
+EMP-007,David Miller,Engineering,40,38.00,hourly,Technician,2024-01-01,2024-12-31,2025-01-01,2.50,TRUE,"{""Customer-Centric Brands"": 85, ""Internal Operations"": 15}"
+EMP-008,Amy Garcia,Engineering,40,55.00,salary,Engineer,2024-01-01,2024-12-31,2025-01-01,4000,TRUE,"{""Customer-Centric Brands"": 100}"
+EMP-009,Chris Rodriguez,Quality Control,40,32.00,hourly,Quality Control,2024-01-01,2024-12-31,2025-01-01,0.04,TRUE,"{""Customer-Centric Brands"": 70, ""OEM Work"": 30}"
+EMP-010,Karen Martinez,Administrative,40,25.00,hourly,Administrative,2024-01-01,2024-12-31,2025-01-01,2.00,TRUE,"{""Internal Operations"": 100}"

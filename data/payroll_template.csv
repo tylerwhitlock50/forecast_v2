@@ -1,0 +1,6 @@
+employee_id,employee_name,department,weekly_hours,hourly_rate,rate_type,labor_type,start_date,end_date,next_review_date,expected_raise,benefits_eligible,allocations
+EMP-001,John Smith,Manufacturing,40,35.00,hourly,Heavy Equipment,2024-01-15,,2025-01-15,0.05,TRUE,"{""Customer-Centric Brands"": 80, ""OEM Work"": 20}"
+EMP-002,Sarah Johnson,Engineering,40,65.00,salary,Engineer,2024-02-01,,2025-02-01,5000,TRUE,"{""Customer-Centric Brands"": 100}"
+EMP-003,Mike Rodriguez,Quality Control,40,32.00,hourly,Quality Control,2024-01-10,,2025-01-10,0.03,TRUE,"{""Customer-Centric Brands"": 60, ""Internal Operations"": 40}"
+EMP-004,Lisa Chen,Administrative,40,28.00,hourly,Administrative,2024-03-01,,2025-03-01,2.00,TRUE,"{""Internal Operations"": 100}"
+EMP-005,David Brown,Management,40,85.00,salary,Manager,2023-06-15,,2024-06-15,8000,TRUE,"{""Customer-Centric Brands"": 50, ""OEM Work"": 30, ""Internal Operations"": 20}"

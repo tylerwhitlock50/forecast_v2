@@ -1,0 +1,2 @@
+config_id,federal_tax_rate,state_tax_rate,social_security_rate,medicare_rate,unemployment_rate,benefits_rate,workers_comp_rate
+CONFIG-2024-001,0.22,0.06,0.062,0.0145,0.006,0.25,0.015
