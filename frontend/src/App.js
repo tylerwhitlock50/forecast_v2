@@ -14,6 +14,7 @@ import MachineManagement from './components/Modules/MachineManagement/MachineMan
 import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
 import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
 import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagement';
+import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -84,12 +85,7 @@ const SegmentAnalysis = () => (
 //   />
 // );
 
-const PayrollAllocation = () => (
-  <PlaceholderComponent 
-    title="Payroll Allocation" 
-    description="Allocate employee costs across different cost centers. Manage overhead, direct labor, and SG&A assignments."
-  />
-);
+// PayrollAllocation is now implemented as PayrollManagement
 
 const DepartmentManagement = () => (
   <PlaceholderComponent 
@@ -237,7 +233,7 @@ function App() {
               <Route path="/units" element={<UnitManagement />} />
               
               {/* Resource Planning */}
-              <Route path="/payroll" element={<PayrollAllocation />} />
+              <Route path="/payroll" element={<PayrollManagement />} />
               <Route path="/departments" element={<DepartmentManagement />} />
               <Route path="/labor" element={<LaborAnalysis />} />
               
