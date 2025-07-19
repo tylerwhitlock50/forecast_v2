@@ -25,6 +25,12 @@ from .models import (
     LaborRateBase, LaborRate, LaborRateCreate,
     PayrollBase, Payroll, PayrollCreate,
     
+    # Expense Management models
+    ExpenseCategory, ExpenseCategoryCreate,
+    ExpenseBase, Expense, ExpenseCreate, ExpenseUpdate,
+    ExpenseAllocation, ExpenseAllocationCreate,
+    ExpenseForecast, ExpenseWithDetails, ExpenseReportSummary,
+    
     # API models
     ChatRequest, SQLApplyRequest, ForecastResponse,
     
@@ -55,6 +61,12 @@ __all__ = [
     'MachineBase', 'Machine', 'MachineCreate',
     'LaborRateBase', 'LaborRate', 'LaborRateCreate',
     'PayrollBase', 'Payroll', 'PayrollCreate',
+    
+    # Expense Management models
+    'ExpenseCategory', 'ExpenseCategoryCreate',
+    'ExpenseBase', 'Expense', 'ExpenseCreate', 'ExpenseUpdate',
+    'ExpenseAllocation', 'ExpenseAllocationCreate',
+    'ExpenseForecast', 'ExpenseWithDetails', 'ExpenseReportSummary',
     
     # API models
     'ChatRequest', 'SQLApplyRequest', 'ForecastResponse',

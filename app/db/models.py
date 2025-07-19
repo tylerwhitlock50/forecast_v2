@@ -268,4 +268,139 @@ class COGSBreakdown(BaseModel):
     total_material_cost: float
     total_labor_cost: float
     total_machine_cost: float
-    total_cogs: float 
+    total_cogs: float
+
+# Expense Management Models
+
+class ExpenseCategory(BaseModel):
+    category_id: str
+    category_name: str
+    category_type: str  # 'factory_overhead', 'admin_expense', 'cogs'
+    parent_category_id: Optional[str] = None
+    account_code: Optional[str] = None
+    description: Optional[str] = None
+
+class ExpenseCategoryCreate(BaseModel):
+    category_name: str
+    category_type: str  # 'factory_overhead', 'admin_expense', 'cogs'
+    parent_category_id: Optional[str] = None
+    account_code: Optional[str] = None
+    description: Optional[str] = None
+
+class ExpenseBase(BaseModel):
+    expense_name: str
+    category_id: str
+    amount: float
+    frequency: str  # 'monthly', 'quarterly', 'biannually', 'annually', 'one_time', 'weekly'
+    start_date: str
+    end_date: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    payment_method: Optional[str] = None
+    approval_required: bool = False
+    approved_by: Optional[str] = None
+    approval_date: Optional[str] = None
+    expense_allocation: str = 'immediate'  # 'immediate', 'amortized'
+    amortization_months: Optional[int] = None
+    department: Optional[str] = None
+    cost_center: Optional[str] = None
+    is_active: bool = True
+
+class Expense(ExpenseBase):
+    expense_id: str
+    created_date: str
+    updated_date: str
+
+class ExpenseCreate(ExpenseBase):
+    pass
+
+class ExpenseUpdate(BaseModel):
+    expense_name: Optional[str] = None
+    category_id: Optional[str] = None
+    amount: Optional[float] = None
+    frequency: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    payment_method: Optional[str] = None
+    approval_required: Optional[bool] = None
+    approved_by: Optional[str] = None
+    approval_date: Optional[str] = None
+    expense_allocation: Optional[str] = None
+    amortization_months: Optional[int] = None
+    department: Optional[str] = None
+    cost_center: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ExpenseAllocation(BaseModel):
+    allocation_id: str
+    expense_id: str
+    period: str  # YYYY-MM format
+    allocated_amount: float
+    allocation_type: str  # 'scheduled', 'amortized', 'one_time'
+    payment_status: str  # 'pending', 'scheduled', 'paid', 'overdue'
+    payment_date: Optional[str] = None
+    actual_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+class ExpenseAllocationCreate(BaseModel):
+    expense_id: str
+    period: str
+    allocated_amount: float
+    allocation_type: str
+    payment_status: str = 'pending'
+    payment_date: Optional[str] = None
+    actual_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+class ExpenseForecast(BaseModel):
+    period: str  # YYYY-MM format
+    category_id: str
+    category_name: str
+    category_type: str
+    total_scheduled: float
+    total_amortized: float
+    total_one_time: float
+    total_amount: float
+    expense_count: int
+
+class ExpenseWithDetails(BaseModel):
+    expense_id: str
+    expense_name: str
+    category_id: str
+    category_name: str
+    category_type: str
+    amount: float
+    frequency: str
+    start_date: str
+    end_date: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    payment_method: Optional[str] = None
+    approval_required: bool
+    approved_by: Optional[str] = None
+    approval_date: Optional[str] = None
+    expense_allocation: str
+    amortization_months: Optional[int] = None
+    department: Optional[str] = None
+    cost_center: Optional[str] = None
+    is_active: bool
+    created_date: str
+    updated_date: str
+    next_payment_date: Optional[str] = None
+    next_payment_amount: Optional[float] = None
+    total_annual_cost: Optional[float] = None
+
+class ExpenseReportSummary(BaseModel):
+    total_monthly: float
+    total_quarterly: float
+    total_annual: float
+    total_one_time: float
+    factory_overhead_total: float
+    admin_expense_total: float
+    cogs_total: float
+    upcoming_payments: List[Dict[str, Any]]
+    overdue_payments: List[Dict[str, Any]]
+    top_categories: List[Dict[str, Any]]
+    monthly_forecast: List[ExpenseForecast] 
