@@ -15,6 +15,7 @@ import RouterManagement from './components/Modules/RouterManagement/RouterManage
 import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
 import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagement';
 import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagement';
+import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented

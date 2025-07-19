@@ -289,6 +289,62 @@ class DatabaseManager:
             )
         ''')
         
+        # Create expense_categories table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS expense_categories (
+                category_id TEXT PRIMARY KEY,
+                category_name TEXT NOT NULL,
+                category_type TEXT NOT NULL CHECK (category_type IN ('factory_overhead', 'admin_expense', 'cogs')),
+                parent_category_id TEXT,
+                account_code TEXT,
+                description TEXT,
+                FOREIGN KEY (parent_category_id) REFERENCES expense_categories (category_id)
+            )
+        ''')
+        
+        # Create expenses table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS expenses (
+                expense_id TEXT PRIMARY KEY,
+                expense_name TEXT NOT NULL,
+                category_id TEXT NOT NULL,
+                amount REAL NOT NULL,
+                frequency TEXT NOT NULL CHECK (frequency IN ('weekly', 'monthly', 'quarterly', 'biannually', 'annually', 'one_time')),
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                vendor TEXT,
+                description TEXT,
+                payment_method TEXT,
+                approval_required BOOLEAN DEFAULT 0,
+                approved_by TEXT,
+                approval_date TEXT,
+                expense_allocation TEXT DEFAULT 'immediate' CHECK (expense_allocation IN ('immediate', 'amortized')),
+                amortization_months INTEGER,
+                department TEXT,
+                cost_center TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (category_id) REFERENCES expense_categories (category_id)
+            )
+        ''')
+        
+        # Create expense_allocations table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS expense_allocations (
+                allocation_id TEXT PRIMARY KEY,
+                expense_id TEXT NOT NULL,
+                period TEXT NOT NULL,
+                allocated_amount REAL NOT NULL,
+                allocation_type TEXT NOT NULL CHECK (allocation_type IN ('scheduled', 'amortized', 'one_time')),
+                payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN ('pending', 'scheduled', 'paid', 'overdue')),
+                payment_date TEXT,
+                actual_amount REAL,
+                notes TEXT,
+                FOREIGN KEY (expense_id) REFERENCES expenses (expense_id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -355,7 +411,10 @@ class DatabaseManager:
             'labor_rates.csv': 'labor_rates',
             'payroll.csv': 'payroll',
             'payroll_config.csv': 'payroll_config',
-            'forecast.csv': 'forecast'
+            'forecast.csv': 'forecast',
+            'expense_categories.csv': 'expense_categories',
+            'expenses.csv': 'expenses',
+            'expense_allocations.csv': 'expense_allocations'
         }
         
         for csv_file, table_name in csv_mappings.items():

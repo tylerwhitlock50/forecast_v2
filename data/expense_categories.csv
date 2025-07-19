@@ -1,0 +1,28 @@
+category_id,category_name,category_type,parent_category_id,account_code,description
+CAT-FLRSUP,Floor Supplies,factory_overhead,,6100,General floor supplies and consumables
+CAT-WELDSP,Welding Supplies,factory_overhead,,6110,Welding rods electrodes and consumables
+CAT-CUTTLS,Cutting Tools,factory_overhead,,6120,Cutting tools and tooling supplies
+CAT-LUBRIC,Lubricants & Oils,factory_overhead,,6130,Machine lubricants and hydraulic oils
+CAT-SAFETY,Safety Equipment,factory_overhead,,6140,PPE and safety equipment
+CAT-MAINT,Equipment Maintenance,factory_overhead,,6200,Equipment repair and maintenance
+CAT-UTLITY,Utilities,factory_overhead,,6300,Electricity gas and water for manufacturing
+CAT-RENT,Facility Rent,factory_overhead,,6400,Manufacturing facility rent
+CAT-INSUR,Insurance,factory_overhead,,6500,Manufacturing facility and equipment insurance
+CAT-DEPREC,Depreciation,factory_overhead,,6600,Equipment and facility depreciation
+CAT-QATEST,Quality Testing,factory_overhead,,6700,Quality assurance and testing expenses
+CAT-SHIPPING,Shipping Supplies,factory_overhead,,6800,Packaging and shipping materials
+CAT-OFFSUP,Office Supplies,admin_expense,,7100,General office supplies and materials
+CAT-SWLIC,Software Licenses,admin_expense,,7200,Software subscriptions and licenses
+CAT-PHONE,Communications,admin_expense,,7300,Phone internet and communications
+CAT-TRAVEL,Travel & Entertainment,admin_expense,,7400,Business travel and entertainment
+CAT-LEGAL,Legal & Professional,admin_expense,,7500,Legal accounting and consulting fees
+CAT-MARKET,Marketing & Advertising,admin_expense,,7600,Marketing and promotional expenses
+CAT-TRAIN,Training & Development,admin_expense,,7700,Employee training and development
+CAT-BANK,Banking & Finance,admin_expense,,7800,Bank fees and financial services
+CAT-TAXES,Taxes & Licenses,admin_expense,,7900,Business taxes and licensing fees
+CAT-OFFREN,Office Rent,admin_expense,,8100,Administrative office rent
+CAT-OFFINS,Office Insurance,admin_expense,,8200,Office and liability insurance
+CAT-RAWMAT,Raw Materials,cogs,,5100,Direct materials for production
+CAT-SUBCON,Subcontractor Services,cogs,,5200,Outsourced manufacturing services
+CAT-DIRECT,Direct Labor,cogs,,5300,Direct labor costs
+CAT-FREIGHT,Freight In,cogs,,5400,Incoming freight and shipping costs

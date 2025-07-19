@@ -16,6 +16,7 @@ from api.cost_routes import router as cost_router
 from api.chat_routes import router as chat_router
 from api.database_routes import router as database_router
 from api.payroll_routes import router as payroll_router
+from api.expense_routes import router as expense_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +56,7 @@ app.include_router(cost_router)
 app.include_router(chat_router)
 app.include_router(database_router)
 app.include_router(payroll_router)
+app.include_router(expense_router)
 
 @app.get("/")
 async def root():
