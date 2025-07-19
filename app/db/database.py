@@ -234,6 +234,21 @@ class DatabaseManager:
             )
         ''')
         
+        # Create payroll configuration table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payroll_config (
+                config_id TEXT PRIMARY KEY,
+                federal_tax_rate REAL DEFAULT 0.22,
+                state_tax_rate REAL DEFAULT 0.06,
+                social_security_rate REAL DEFAULT 0.062,
+                medicare_rate REAL DEFAULT 0.0145,
+                unemployment_rate REAL DEFAULT 0.006,
+                benefits_rate REAL DEFAULT 0.25,
+                workers_comp_rate REAL DEFAULT 0.015,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # Create forecast_results table to store computed forecasts
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS forecast_results (
@@ -339,6 +354,7 @@ class DatabaseManager:
             'machines.csv': 'machines',
             'labor_rates.csv': 'labor_rates',
             'payroll.csv': 'payroll',
+            'payroll_config.csv': 'payroll_config',
             'forecast.csv': 'forecast'
         }
         
