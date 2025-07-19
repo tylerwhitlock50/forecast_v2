@@ -68,7 +68,7 @@ CORE BUSINESS PURPOSE:
 
 KEY DATABASE TABLES AND RELATIONSHIPS:
 1. SALES/REVENUE DATA:
-   - sales: Main revenue forecast data (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue)
+   - sales: Main revenue forecast data (sale_id, customer_id, unit_id, period [FORMAT: YYYY-MM-DD], quantity, unit_price, total_revenue)
    - forecast: Forecast scenario definitions and metadata
 
 2. MASTER DATA:
@@ -78,7 +78,7 @@ KEY DATABASE TABLES AND RELATIONSHIPS:
 3. MANUFACTURING & COSTS:
    - bom: Bill of materials with versioning (bom_id, version, bom_line, material_description, qty, unit, unit_price, material_cost)
    - router_definitions: Manufacturing routers (router_id, router_name, router_description)
-   - router_operations: Router operation steps (router_id, operation_id, operation_description, machine_id, setup_time, cycle_time)
+   - router_operations: Router operation steps (operation_id, router_id, sequence, machine_id, machine_minutes, labor_minutes, labor_type_id, operation_description)
    - machines: Manufacturing equipment (machine_id, machine_name, machine_rate, available_minutes_per_month)
 
 4. LABOR & PAYROLL:
@@ -88,7 +88,7 @@ KEY DATABASE TABLES AND RELATIONSHIPS:
 COMMON BUSINESS OPERATIONS:
 - Creating customers (use format: CUST-XXX)
 - Adding products/units (use format: UNIT-XXX or PROD-XXX)
-- Recording sales forecasts by period (typically quarterly: 2024-Q1, 2024-Q2, etc.)
+- Recording sales forecasts by period (use YYYY-MM-DD format, e.g., 2024-03-01, 2024-06-01)
 - Managing BOMs and manufacturing costs
 - Analyzing profitability and capacity
 

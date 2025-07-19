@@ -21,7 +21,7 @@ def test_bom_structure():
     all_data = db_manager.get_all_data()
     
     print(f"BOM Definitions: {len(all_data.get('bom_definitions', []))}")
-    print(f"BOM Lines: {len(all_data.get('bom_lines', []))}")
+    print(f"BOM Items: {len(all_data.get('bom', []))}")
     print(f"Combined BOM: {len(all_data.get('bom', []))}")
     
     # Test BOM definition creation
@@ -54,7 +54,7 @@ def test_bom_structure():
     # Get updated data
     all_data = db_manager.get_all_data()
     print(f"After creation - BOM Definitions: {len(all_data.get('bom_definitions', []))}")
-    print(f"After creation - BOM Lines: {len(all_data.get('bom_lines', []))}")
+    print(f"After creation - BOM Items: {len(all_data.get('bom', []))}")
     print(f"After creation - Combined BOM: {len(all_data.get('bom', []))}")
     
     # Test deletion
@@ -64,7 +64,7 @@ def test_bom_structure():
     # Get final data
     all_data = db_manager.get_all_data()
     print(f"After deletion - BOM Definitions: {len(all_data.get('bom_definitions', []))}")
-    print(f"After deletion - BOM Lines: {len(all_data.get('bom_lines', []))}")
+    print(f"After deletion - BOM Items: {len(all_data.get('bom', []))}")
     
     print("BOM structure test completed!")
 

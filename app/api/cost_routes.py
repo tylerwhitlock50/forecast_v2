@@ -58,12 +58,13 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
             machine_cost = 0
             if router_id:
                 cursor.execute("""
-                    SELECT r.labor_minutes, r.machine_minutes, m.machine_rate, lr.rate_amount
-                    FROM routers r
-                    JOIN machines m ON r.machine_id = m.machine_id
-                    LEFT JOIN labor_rates lr ON r.labor_type_id = lr.rate_id
-                    WHERE r.router_id = ? AND r.version = ?
-                """, (router_id, router_version))
+                    SELECT ro.labor_minutes, ro.machine_minutes, m.machine_rate, lr.rate_amount
+                    FROM router_operations ro
+                    JOIN machines m ON ro.machine_id = m.machine_id
+                    LEFT JOIN labor_rates lr ON ro.labor_type_id = lr.rate_id
+                    WHERE ro.router_id = ?
+                    ORDER BY ro.sequence
+                """, (router_id,))
                 routing_data = cursor.fetchall()
                 
                 for route in routing_data:
@@ -166,12 +167,12 @@ async def get_machines_utilization(forecast_id: Optional[str] = Query(None)):
         # Get machine utilization by joining sales forecast with routing
         utilization_query = """
             SELECT m.machine_id, m.machine_name, m.available_minutes_per_month, m.machine_rate,
-                   SUM(s.quantity * r.machine_minutes) as total_minutes_required,
-                   SUM(s.quantity * r.machine_minutes * m.machine_rate / 60) as total_cost
+                   SUM(s.quantity * ro.machine_minutes) as total_minutes_required,
+                   SUM(s.quantity * ro.machine_minutes * m.machine_rate / 60) as total_cost
             FROM sales s
             JOIN units u ON s.unit_id = u.unit_id
-            JOIN routers r ON u.router_id = r.router_id AND u.router_version = r.version
-            JOIN machines m ON r.machine_id = m.machine_id
+            JOIN router_operations ro ON u.router_id = ro.router_id
+            JOIN machines m ON ro.machine_id = m.machine_id
         """
         
         params = []
@@ -225,13 +226,13 @@ async def get_labor_utilization(forecast_id: Optional[str] = Query(None)):
         # Get labor utilization by joining sales forecast with routing and labor rates
         utilization_query = """
             SELECT lr.rate_id, lr.rate_name, lr.rate_amount,
-                   SUM(s.quantity * r.labor_minutes) as total_minutes_required,
-                   SUM(s.quantity * r.labor_minutes * lr.rate_amount / 60) as total_cost,
+                   SUM(s.quantity * ro.labor_minutes) as total_minutes_required,
+                   SUM(s.quantity * ro.labor_minutes * lr.rate_amount / 60) as total_cost,
                    GROUP_CONCAT(DISTINCT u.unit_name) as products_involved
             FROM sales s
             JOIN units u ON s.unit_id = u.unit_id
-            JOIN routers r ON u.router_id = r.router_id AND u.router_version = r.version
-            JOIN labor_rates lr ON r.labor_type_id = lr.rate_id
+            JOIN router_operations ro ON u.router_id = ro.router_id
+            JOIN labor_rates lr ON ro.labor_type_id = lr.rate_id
         """
         
         params = []
