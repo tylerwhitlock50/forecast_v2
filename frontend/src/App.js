@@ -6,17 +6,17 @@ import MainNavigation from './components/Navigation/MainNavigation';
 import ChatPanel from './components/ChatPanel';
 
 // Module components
-import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecasting';
-import CostManagement from './components/Modules/CostManagement/CostManagement';
-import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagement';
-import ProductManagement from './components/Modules/ProductManagement/ProductManagement';
-import MachineManagement from './components/Modules/MachineManagement/MachineManagement';
-import RouterManagement from './components/Modules/RouterManagement/RouterManagement';
-import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
-import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagement';
-import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagement';
-import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagement';
-import LoanManagement from './components/Modules/LoanManagement/LoanManagement';
+import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecastingNew';
+import CostManagement from './components/Modules/CostManagement/CostManagementNew';
+import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagementNew';
+import ProductManagement from './components/Modules/ProductManagement/ProductManagementNew';
+import MachineManagement from './components/Modules/MachineManagement/MachineManagementNew';
+import RouterManagement from './components/Modules/RouterManagement/RouterManagementNew';
+import BOMManagement from './components/Modules/BOMManagement/BOMManagementNew';
+import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagementNew';
+import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagementNew';
+import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagementNew';
+import LoanManagement from './components/Modules/LoanManagement/LoanManagementNew';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
-import LoanTable from './LoanTable';
-import LoanModal from './LoanModal';
-import LoanSummary from './LoanSummary';
-import AmortizationScheduleModal from './AmortizationScheduleModal';
-import './LoanManagement.css';
+import { PageHeader } from '../../ui/page-header';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
+import LoanTableNew from './LoanTableNew';
+import LoanSummaryNew from './LoanSummaryNew';
+import LoanModalNew from './LoanModalNew';
+import AmortizationScheduleModalNew from './AmortizationScheduleModalNew';
 
 const LoanManagement = () => {
     const { actions, loading } = useForecast();
@@ -26,15 +27,11 @@ const LoanManagement = () => {
     const loadLoans = async () => {
         actions.setLoading(true);
         try {
-            console.log('Loading loans...');
             const response = await fetch('/api/loans/');
-            console.log('Loans response:', response);
             const data = await response.json();
-            console.log('Loans data:', data);
             
             if (data.status === 'success') {
                 setLoans(data.data.loans || []);
-                console.log('Loans set:', data.data.loans || []);
             } else {
                 actions.setError('Failed to load loans');
             }
@@ -48,17 +45,11 @@ const LoanManagement = () => {
 
     const loadLoanSummary = async () => {
         try {
-            console.log('Loading loan summary...');
             const response = await fetch('/api/loans/summary');
-            console.log('Summary response:', response);
             const data = await response.json();
-            console.log('Summary data:', data);
             
             if (data.status === 'success') {
                 setLoanSummary(data.data);
-                console.log('Loan summary set:', data.data);
-            } else {
-                console.error('Failed to load loan summary:', data);
             }
         } catch (error) {
             console.error('Error loading loan summary:', error);
@@ -157,72 +148,49 @@ const LoanManagement = () => {
         }
     };
 
+    const headerActions = [
+        {
+            label: 'Add New Loan',
+            onClick: handleCreateLoan,
+            variant: 'default'
+        }
+    ];
+
     return (
-        <div className="loan-management">
-            <div className="loan-header">
-                <h1>Loan Management</h1>
-                <div className="loan-actions">
-                    <button 
-                        className="btn btn-primary"
-                        onClick={handleCreateLoan}
-                    >
-                        Add New Loan
-                    </button>
-                </div>
-            </div>
+        <div className="container mx-auto px-6 py-8">
+            <PageHeader
+                title="Loan Management"
+                description="Manage your loan portfolio, view amortization schedules, and track payment obligations"
+                actions={headerActions}
+            />
 
-            <div className="loan-tabs">
-                <button 
-                    className={`tab-button ${activeTab === 'overview' ? 'active' : ''}`}
-                    onClick={() => {
-                        console.log('Switching to overview tab');
-                        setActiveTab('overview');
-                    }}
-                >
-                    Portfolio Overview
-                </button>
-                <button 
-                    className={`tab-button ${activeTab === 'loans' ? 'active' : ''}`}
-                    onClick={() => {
-                        console.log('Switching to loans tab');
-                        setActiveTab('loans');
-                    }}
-                >
-                    Loan Details
-                </button>
-            </div>
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+                <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="overview">Portfolio Overview</TabsTrigger>
+                    <TabsTrigger value="loans">Loan Details</TabsTrigger>
+                </TabsList>
 
-            <div className="loan-content">
-                <div style={{ marginBottom: '10px', padding: '10px', background: '#f0f0f0', borderRadius: '4px' }}>
-                    <strong>Debug Info:</strong> Active Tab: {activeTab} | Loans Count: {loans.length} | Summary: {loanSummary ? 'Loaded' : 'Not loaded'}
-                </div>
-                
-                {activeTab === 'overview' && loanSummary && (
-                    <LoanSummary 
-                        summary={loanSummary}
-                        onRefresh={loadLoanSummary}
-                    />
-                )}
-                
-                {activeTab === 'overview' && !loanSummary && (
-                    <div className="no-data">
-                        <p>Loading loan summary...</p>
-                        <button onClick={loadLoanSummary}>Retry Load Summary</button>
-                    </div>
-                )}
-                
-                {activeTab === 'loans' && (
-                    <LoanTable
+                <TabsContent value="overview" className="space-y-6">
+                    {loanSummary && (
+                        <LoanSummaryNew 
+                            summary={loanSummary}
+                            onRefresh={loadLoanSummary}
+                        />
+                    )}
+                </TabsContent>
+
+                <TabsContent value="loans" className="space-y-6">
+                    <LoanTableNew
                         loans={loans}
                         onEdit={handleEditLoan}
                         onDelete={handleDeleteLoan}
                         onViewSchedule={handleViewSchedule}
                     />
-                )}
-            </div>
+                </TabsContent>
+            </Tabs>
 
             {isModalOpen && (
-                <LoanModal
+                <LoanModalNew
                     loan={selectedLoan}
                     onSave={handleSaveLoan}
                     onClose={() => setIsModalOpen(false)}
@@ -230,7 +198,7 @@ const LoanManagement = () => {
             )}
 
             {isScheduleModalOpen && amortizationSchedule && (
-                <AmortizationScheduleModal
+                <AmortizationScheduleModalNew
                     schedule={amortizationSchedule}
                     onClose={() => setIsScheduleModalOpen(false)}
                 />
