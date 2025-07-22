@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './LaborRateManagement.css';
+
 
 const LaborRateSummary = ({ laborRates }) => {
   const stats = useMemo(() => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
-import './CustomerManagement.css';
+
 
 const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
   const [formData, setFormData] = useState({

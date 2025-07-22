@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './CustomerManagement.css';
+
 
 const CustomerValidation = ({ customers }) => {
   const validationResults = useMemo(() => {

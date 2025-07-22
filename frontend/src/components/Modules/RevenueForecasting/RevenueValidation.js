@@ -1,6 +1,6 @@
 import React from 'react';
 import ValidationIndicator from '../../Common/ValidationIndicator';
-import './RevenueForecasting.css';
+
 
 const RevenueValidation = ({ data }) => {
   return (

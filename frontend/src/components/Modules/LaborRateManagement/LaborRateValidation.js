@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './LaborRateManagement.css';
+
 
 const LaborRateValidation = ({ laborRates }) => {
   const validationResults = useMemo(() => {

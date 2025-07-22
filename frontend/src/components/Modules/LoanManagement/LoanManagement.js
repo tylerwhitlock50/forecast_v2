@@ -5,7 +5,7 @@ import LoanTable from './LoanTable';
 import LoanModal from './LoanModal';
 import LoanSummary from './LoanSummary';
 import AmortizationScheduleModal from './AmortizationScheduleModal';
-import './LoanManagement.css';
+
 
 const LoanManagement = () => {
     const { actions, loading } = useForecast();

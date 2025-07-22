@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { useForecast } from '../../../context/ForecastContext';
-import './RouterManagement.css';
+
 
 const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, laborRates, onSave }) => {
   const { actions } = useForecast();

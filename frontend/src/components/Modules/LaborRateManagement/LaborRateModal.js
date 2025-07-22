@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
-import './LaborRateManagement.css';
+
 
 const LaborRateModal = ({ isOpen, onClose, onSave, laborRate }) => {
   const [formData, setFormData] = useState({

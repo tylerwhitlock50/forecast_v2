@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { useForecast } from '../../../context/ForecastContext';
-import './MachineManagement.css';
+
 
 const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
   const { data } = useForecast();

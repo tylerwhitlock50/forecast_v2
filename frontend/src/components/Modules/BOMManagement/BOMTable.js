@@ -1,5 +1,5 @@
 import React from 'react';
-import './BOMManagement.css';
+
 
 const BOMTable = ({
   boms,

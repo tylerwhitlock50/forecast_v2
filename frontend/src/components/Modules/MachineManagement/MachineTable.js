@@ -1,5 +1,5 @@
 import React from 'react';
-import './MachineManagement.css';
+
 
 const MachineTable = ({
   machines,

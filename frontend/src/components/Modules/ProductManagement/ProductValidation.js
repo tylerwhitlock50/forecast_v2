@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './ProductManagement.css';
+
 
 const ProductValidation = ({ products }) => {
   const validationResults = useMemo(() => {

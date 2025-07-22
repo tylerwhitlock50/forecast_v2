@@ -1,5 +1,5 @@
 import React from 'react';
-import './CustomerManagement.css';
+
 
 const CustomerTable = ({
   customers,

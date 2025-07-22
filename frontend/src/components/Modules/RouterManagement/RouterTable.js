@@ -1,5 +1,5 @@
 import React from 'react';
-import './RouterManagement.css';
+
 
 const RouterTable = ({
   routers,

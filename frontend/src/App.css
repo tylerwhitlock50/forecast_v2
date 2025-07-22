@@ -33,7 +33,7 @@
   width: 40px;
   height: 40px;
   border: 4px solid var(--border-color);
-  border-top: 4px solid var(--primary-color);
+  border-top: 4px solid #c2410c; /* orange-700 */
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -52,11 +52,13 @@
 .app-layout {
   position: relative;
   min-height: 100vh;
+  background-color: #f8fafc; /* Light gray background like the screenshots */
 }
 
 .main-content {
   position: relative;
   z-index: 1;
+  background-color: #f8fafc;
 }
 
 /* Ensure chat panel doesn't interfere with other components */
@@ -66,6 +68,11 @@
 
 .chat-toggle {
   z-index: 1001;
+  background: #c2410c; /* orange-700 */
+}
+
+.chat-toggle:hover {
+  background: #9a3412; /* orange-800 */
 }
 
 /* Responsive adjustments for chat panel */
@@ -85,6 +92,7 @@
   min-height: 100vh;
   position: relative;
   overflow-x: hidden;
+  background-color: #f8fafc;
 }
 
 /* Override any conflicting styles from index.css */
@@ -94,8 +102,9 @@
   transition: margin-left 0.3s ease;
   min-height: 100vh;
   position: relative;
-  background-color: #f8f9fa;
+  background-color: #f8fafc;
   overflow-x: auto;
+  padding: 24px;
 }
 
 .app-layout .main-content.nav-collapsed {
@@ -103,9 +112,11 @@
 }
 
 /* Responsive adjustments */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .app-layout .main-content {
     margin-left: 0;
+    padding: 16px;
+    padding-top: 80px; /* Make room for floating hamburger button */
   }
   
   .app-layout .main-content.nav-collapsed {
@@ -121,6 +132,9 @@
   height: 100vh;
   z-index: 40;
   transition: width 0.3s ease;
+  background-color: white;
+  border-right: 1px solid #e2e8f0;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
 }
 
 /* Smooth transitions for layout elements */
@@ -134,12 +148,132 @@
 }
 
 .app-layout nav button[onClick]:hover {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: rgba(194, 65, 12, 0.1); /* orange-700 with opacity */
   transform: scale(1.05);
+}
+
+/* Floating hamburger menu button */
+.app-layout .floating-hamburger {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 50;
+  background: #c2410c;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(194, 65, 12, 0.3);
+  transition: all 0.2s ease;
+}
+
+.app-layout .floating-hamburger:hover {
+  background: #9a3412;
+  transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(194, 65, 12, 0.4);
 }
 
 /* Ensure content doesn't get cut off */
 .app-layout .main-content > * {
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* Card styling improvements */
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  border: 1px solid #e2e8f0;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+/* Button styling improvements */
+.btn-primary {
+  background-color: #c2410c; /* orange-700 */
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background-color: #9a3412; /* orange-800 */
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background-color: white;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background-color: #f9fafb;
+  border-color: #9ca3af;
+}
+
+/* Input styling improvements */
+.input {
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: all 0.2s ease;
+  background-color: white;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #c2410c; /* orange-700 */
+  box-shadow: 0 0 0 3px rgba(194, 65, 12, 0.1);
+}
+
+/* Table styling improvements */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  background-color: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+}
+
+.data-table th,
+.data-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.data-table th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  color: #374151;
+  font-size: 14px;
+}
+
+.data-table tr:hover {
+  background-color: #f9fafb;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
 } 

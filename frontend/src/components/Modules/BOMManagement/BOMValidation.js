@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './BOMManagement.css';
+
 
 const BOMValidation = ({ boms, bomItems, units }) => {
   // Ensure arrays are defined and not null

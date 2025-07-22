@@ -268,116 +268,94 @@ const EditableGrid = ({
     }));
   }, []);
 
-  // Cell renderer
+  // Cell component for rendering individual cells
   const Cell = ({ columnIndex, rowIndex, style }) => {
     const column = columns[columnIndex];
     const rowData = sortedData[rowIndex];
-    const value = rowData[column.key] || '';
-    const isEditing = editingCell && editingCell.row === rowIndex && editingCell.col === columnIndex;
+    const value = rowData[column.key];
+    const isEditing = editingCell?.row === rowIndex && editingCell?.col === columnIndex;
     const isSelected = selectedCells.some(([r, c]) => r === rowIndex && c === columnIndex);
-    const errorKey = `${rowIndex}-${columnIndex}`;
-    const hasError = validationErrors.has(errorKey);
+    const hasError = validationErrors.has(`${rowIndex}-${columnIndex}`);
 
     const handleClick = (e) => {
-      console.log('Cell clicked:', { rowIndex, columnIndex, column: column.key, hasOnClick: !!column.onClick, event: e.type });
+      e.stopPropagation();
       
-      // Visual feedback
-      const target = e.currentTarget;
-      target.style.backgroundColor = '#ffeb3b';
-      setTimeout(() => {
-        target.style.backgroundColor = '';
-      }, 200);
-      
-      setSelectedCells([[rowIndex, columnIndex]]);
-      
-      // Handle custom onClick if defined
       if (column.onClick) {
-        console.log('Calling custom onClick for column:', column.key);
         column.onClick(rowIndex, columnIndex, rowData);
+        return;
+      }
+
+      if (enableKeyboardNavigation) {
+        setSelectedCells([[rowIndex, columnIndex]]);
+        startEditing(rowIndex, columnIndex);
+      }
+    };
+
+    const handleDoubleClick = () => {
+      if (enableKeyboardNavigation) {
+        startEditing(rowIndex, columnIndex);
       }
     };
 
     return (
-      <div 
+      <div
+        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''}`}
         style={{
           ...style,
           width: column.width || columnWidth,
           minWidth: column.width || columnWidth,
-          height: rowHeight,
-          padding: 0,
-          border: '1px solid #dee2e6',
-          borderTop: 'none',
-          borderLeft: columnIndex === 0 ? '1px solid #dee2e6' : 'none',
-          cursor: column.onClick ? 'pointer' : 'default'
+          display: 'flex',
+          alignItems: 'center',
+          padding: '0 8px',
+          cursor: 'pointer',
+          borderRight: '1px solid #f3f4f6',
+          backgroundColor: isSelected ? '#fef3c7' : 'white',
+          position: 'relative'
         }}
-        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''} ${column.onClick ? 'clickable' : ''}`}
-        onDoubleClick={() => startEditing(rowIndex, columnIndex)}
-        onDragStart={() => handleDragStart(rowIndex, columnIndex)}
-        onDragEnd={handleDragEnd}
+        onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
       >
         {isEditing ? (
           <input
             ref={editInputRef}
             type={column.type === 'number' ? 'number' : 'text'}
-            value={value}
-            onChange={(e) => handleCellChange(rowIndex, columnIndex, e.target.value)}
+            value={value || ''}
+            onChange={(e) => {
+              const newValue = column.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value;
+              handleCellChange(rowIndex, columnIndex, newValue);
+            }}
             onBlur={stopEditing}
-            onKeyDown={handleKeyDown}
-            className="cell-input"
-            style={{ 
-              width: '100%', 
-              height: '100%', 
-              border: 'none', 
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                stopEditing();
+              } else if (e.key === 'Escape') {
+                stopEditing();
+              }
+            }}
+            style={{
+              width: '100%',
+              border: 'none',
               outline: 'none',
-              padding: '0 8px',
+              background: 'transparent',
               fontSize: '14px'
             }}
           />
         ) : (
-          <div 
-            className="cell-content"
-            onClick={column.onClick ? handleClick : undefined}
-            style={{ cursor: column.onClick ? 'pointer' : 'default' }}
-          >
-            <span className="cell-value">
-              {column.format ? column.format(value) : value}
-            </span>
-            {hasError && (
-              <ValidationIndicator 
-                type="error" 
-                message={validationErrors.get(errorKey)} 
-              />
-            )}
-          </div>
+          <span style={{ fontSize: '14px', color: '#374151' }}>
+            {column.format ? column.format(value) : value || ''}
+          </span>
+        )}
+        
+        {hasError && (
+          <ValidationIndicator 
+            type="error" 
+            size="small" 
+            className="absolute top-1 right-1"
+          />
         )}
       </div>
     );
   };
-
-  // Header renderer
-  const Header = ({ columns, onSort, sortConfig }) => (
-    <div className="grid-header" style={{ height: headerHeight }}>
-      {columns.map((column, index) => (
-        <div
-          key={column.key}
-          className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''}`}
-          style={{ 
-            width: column.width || columnWidth, 
-            minWidth: column.width || columnWidth
-          }}
-          onClick={() => onSort(column.key)}
-        >
-          {column.title}
-          {sortConfig.key === column.key && (
-            <span className="sort-indicator">
-              {sortConfig.direction === 'asc' ? '↑' : '↓'}
-            </span>
-          )}
-          {column.required && <span className="required-indicator">*</span>}
-        </div>
-      ))}
-    </div>
-  );
 
   // Add keyboard event listener
   useEffect(() => {
@@ -399,34 +377,72 @@ const EditableGrid = ({
         outline: 'none'
       }}
     >
-      <Header 
-        columns={columns} 
-        onSort={handleSort} 
-        sortConfig={sortConfig} 
-      />
-      
+      {/* Single scrollable container for both header and data */}
       <div className="grid-container" style={{ height: '400px', overflow: 'auto' }}>
-        <div className="grid-rows" style={{ width: totalWidth }}>
-          {sortedData.map((rowData, rowIndex) => (
-            <div 
-              key={rowIndex} 
-              className="grid-row"
-              style={{ 
-                height: rowHeight,
-                display: 'flex',
-                width: totalWidth
-              }}
-            >
-              {columns.map((column, colIndex) => (
-                <Cell 
-                  key={colIndex}
-                  columnIndex={colIndex} 
-                  rowIndex={rowIndex} 
-                  style={{ height: '100%' }}
-                />
-              ))}
-            </div>
-          ))}
+        <div className="grid-content" style={{ width: totalWidth }}>
+          {/* Header that scrolls with the data */}
+          <div className="grid-header" style={{ 
+            height: headerHeight,
+            display: 'flex',
+            width: totalWidth,
+            position: 'sticky',
+            top: 0,
+            backgroundColor: 'white',
+            zIndex: 10,
+            borderBottom: '1px solid #e2e8f0'
+          }}>
+            {columns.map((column, index) => (
+              <div
+                key={column.key}
+                className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''}`}
+                style={{ 
+                  width: column.width || columnWidth, 
+                  minWidth: column.width || columnWidth,
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '0 8px',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  color: '#374151',
+                  borderRight: '1px solid #e2e8f0'
+                }}
+                onClick={() => handleSort(column.key)}
+              >
+                {column.title}
+                {sortConfig.key === column.key && (
+                  <span className="sort-indicator ml-1">
+                    {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                  </span>
+                )}
+                {column.required && <span className="required-indicator ml-1 text-red-500">*</span>}
+              </div>
+            ))}
+          </div>
+          
+          {/* Data rows */}
+          <div className="grid-rows">
+            {sortedData.map((rowData, rowIndex) => (
+              <div 
+                key={rowIndex} 
+                className="grid-row"
+                style={{ 
+                  height: rowHeight,
+                  display: 'flex',
+                  width: totalWidth,
+                  borderBottom: '1px solid #f3f4f6'
+                }}
+              >
+                {columns.map((column, colIndex) => (
+                  <Cell 
+                    key={colIndex}
+                    columnIndex={colIndex} 
+                    rowIndex={rowIndex} 
+                    style={{ height: '100%' }}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
       

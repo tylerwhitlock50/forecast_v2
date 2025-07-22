@@ -27,6 +27,7 @@ const PageHeader = ({
                 variant={action.variant || "default"}
                 size={action.size || "default"}
                 onClick={action.onClick}
+                className={action.className}
               >
                 {action.label}
               </Button>

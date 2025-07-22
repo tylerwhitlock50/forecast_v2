@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './BOMManagement.css';
+
 
 const BOMSummary = ({ boms, bomItems, units }) => {
   const summaryData = useMemo(() => {

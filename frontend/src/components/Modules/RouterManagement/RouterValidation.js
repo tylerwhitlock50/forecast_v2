@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './RouterManagement.css';
+
 
 const RouterValidation = ({ routers, routerOperations, machines, units, laborRates }) => {
   const validationResults = useMemo(() => {

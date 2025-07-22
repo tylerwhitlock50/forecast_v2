@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './CustomerManagement.css';
+
 
 const CustomerSummary = ({ customers }) => {
   const summaryData = useMemo(() => {

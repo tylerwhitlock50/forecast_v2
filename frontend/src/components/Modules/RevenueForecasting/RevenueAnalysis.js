@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
-import './RevenueForecasting.css';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Badge } from '../../ui/badge';
 
 const RevenueAnalysis = ({ data, timePeriods }) => {
   const { activeScenario } = useForecast();
@@ -58,28 +59,71 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
   }, [data.products, data.customers, data.sales_forecast, timePeriods, activeScenario]);
 
   return (
-    <div className="analysis-tab">
-      <h3>Segment Analysis</h3>
-      <div className="segment-charts">
-        {segments.map(segment => {
-          const segmentData = matrixData.filter(row => row.segment === segment);
-          const segmentRevenue = segmentData.reduce((sum, row) => sum + row.total_revenue, 0);
-          const segmentQuantity = segmentData.reduce((sum, row) => sum + row.total_quantity, 0);
-          
-          return (
-            <div key={segment} className="segment-card">
-              <h4>{segment}</h4>
-              <div className="segment-metrics">
-                <p>Revenue: ${segmentRevenue.toLocaleString()}</p>
-                <p>Quantity: {segmentQuantity.toLocaleString()}</p>
-                <p>Products: {new Set(segmentData.map(row => row.product_id)).size}</p>
-                <p>Customers: {new Set(segmentData.map(row => row.customer_id)).size}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          📈 Segment Analysis
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {segments.map(segment => {
+            const segmentData = matrixData.filter(row => row.segment === segment);
+            const segmentRevenue = segmentData.reduce((sum, row) => sum + row.total_revenue, 0);
+            const segmentQuantity = segmentData.reduce((sum, row) => sum + row.total_quantity, 0);
+            const uniqueProducts = new Set(segmentData.map(row => row.product_id)).size;
+            const uniqueCustomers = new Set(segmentData.map(row => row.customer_id)).size;
+            
+            return (
+              <Card key={segment} className="hover:shadow-lg transition-shadow">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <span className="text-orange-600">📊</span>
+                    {segment}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Revenue:</span>
+                    <span className="font-semibold text-green-600">
+                      ${segmentRevenue.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Quantity:</span>
+                    <span className="font-semibold text-blue-600">
+                      {segmentQuantity.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Products:</span>
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                      {uniqueProducts}
+                    </Badge>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Customers:</span>
+                    <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                      {uniqueCustomers}
+                    </Badge>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+        
+        {segments.length === 0 && (
+          <div className="text-center py-8">
+            <div className="text-4xl mb-4">📊</div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">No segments found</h3>
+            <p className="text-gray-600">
+              No customer segments are available for analysis.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 

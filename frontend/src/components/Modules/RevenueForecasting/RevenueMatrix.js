@@ -2,7 +2,9 @@ import React, { useMemo, useState } from 'react';
 import EditableGrid from '../../Common/EditableGrid';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
-import './RevenueForecasting.css';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Button } from '../../ui/button';
+import { Badge } from '../../ui/badge';
 
 const RevenueMatrix = ({ 
   data, 
@@ -237,130 +239,132 @@ const RevenueMatrix = ({
   }, [timePeriods]);
 
   return (
-    <div className="matrix-tab">
-      <div className="matrix-header">
-        <h3>Revenue Matrix</h3>
-        {onAddForecastLine && (
-          <button 
-            onClick={onAddForecastLine}
-            className="add-forecast-line-btn"
-            style={{ 
-              backgroundColor: '#007bff', 
-              color: 'white', 
-              borderColor: '#007bff',
-              padding: '0.5rem 1rem',
-              borderRadius: '6px',
-              border: '1px solid',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-              fontWeight: '500'
-            }}
-          >
-            ➕Add Forecast  Line
-          </button>
-        )}
-      </div>
-
-      {filteredMatrixData.length === 0 ? (
-        <div style={{ 
-          textAlign: 'center', 
-          padding: '2rem', 
-          color: '#6c757d',
-          backgroundColor: '#f8f9fa',
-          borderRadius: '8px',
-          border: '1px solid #dee2e6'
-        }}>
-          <h4>No forecast data found</h4>
-          <p>No revenue forecast data exists for the current scenario ({activeScenario || 'F001'}).</p>
-          <p>Click "Add Forecast Line" to create your first forecast entry.</p>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            📊 Revenue Matrix
+            <Badge variant="secondary" className="bg-orange-100 text-orange-800">
+              {filteredMatrixData.length} entries
+            </Badge>
+          </CardTitle>
+          {onAddForecastLine && (
+            <Button 
+              onClick={onAddForecastLine}
+              className="bg-orange-600 hover:bg-orange-700 text-white"
+            >
+              ➕ Add Forecast Line
+            </Button>
+          )}
         </div>
-      ) : (
-        <EditableGrid
-          data={filteredMatrixData}
-          columns={matrixColumns}
-          onDataChange={onDataChange}
-          onCellChange={onCellChange}
-          enableDragFill={true}
-          enableBulkEdit={true}
-          enableKeyboardNavigation={true}
-          className="revenue-matrix"
-        />
-      )}
-
-      {/* Edit Modal */}
-      {editModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h3>Edit Revenue</h3>
-            <div className="edit-form">
-              <div className="form-group">
-                <label>Product:</label>
-                <span>{editModal.rowData.product_name}</span>
-              </div>
-              <div className="form-group">
-                <label>Customer:</label>
-                <span>{editModal.rowData.customer_name}</span>
-              </div>
-              <div className="form-group">
-                <label>Period:</label>
-                <span>{editModal.periodKey}</span>
-              </div>
-              <div className="form-group">
-                <label>Quantity:</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={editModal.quantity}
-                  onChange={(e) => {
-                    const newQty = parseInt(e.target.value) || 0;
-                    const newRevenue = newQty * editModal.price;
-                    setEditModal(prev => ({
-                      ...prev,
-                      quantity: newQty,
-                      revenue: newRevenue
-                    }));
-                  }}
-                />
-              </div>
-              <div className="form-group">
-                <label>Unit Price:</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={editModal.price}
-                  onChange={(e) => {
-                    const newPrice = parseFloat(e.target.value) || 0;
-                    const newRevenue = editModal.quantity * newPrice;
-                    setEditModal(prev => ({
-                      ...prev,
-                      price: newPrice,
-                      revenue: newRevenue
-                    }));
-                  }}
-                />
-              </div>
-              <div className="form-group">
-                <label>Total Revenue:</label>
-                <span className="revenue-display">${editModal.revenue.toLocaleString()}</span>
-              </div>
-              <div className="form-actions">
-                <button 
-                  type="button" 
-                  onClick={() => handleSaveEdit(editModal.quantity, editModal.price)}
-                  style={{ backgroundColor: '#28a745', color: 'white', borderColor: '#28a745' }}
-                >
-                  Save
-                </button>
-                <button type="button" onClick={() => setEditModal(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
+      </CardHeader>
+      <CardContent>
+        {filteredMatrixData.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="text-6xl mb-4">📊</div>
+            <h3 className="text-xl font-semibold text-gray-900 mb-2">No forecast data found</h3>
+            <p className="text-gray-600 mb-4">
+              No revenue forecast data exists for the current scenario ({activeScenario || 'F001'}).
+            </p>
+            <p className="text-gray-500">
+              Click "Add Forecast Line" to create your first forecast entry.
+            </p>
           </div>
-        </div>
-      )}
-    </div>
+        ) : (
+          <EditableGrid
+            data={filteredMatrixData}
+            columns={matrixColumns}
+            onDataChange={onDataChange}
+            onCellChange={onCellChange}
+            enableDragFill={true}
+            enableBulkEdit={true}
+            enableKeyboardNavigation={true}
+            className="revenue-matrix"
+          />
+        )}
+
+        {/* Edit Modal */}
+        {editModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <Card className="w-full max-w-md">
+              <CardHeader>
+                <CardTitle>Edit Revenue</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Product:</label>
+                  <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{editModal.rowData.product_name}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Customer:</label>
+                  <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{editModal.rowData.customer_name}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Period:</label>
+                  <p className="text-sm text-gray-900 bg-gray-50 p-2 rounded">{editModal.periodKey}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Quantity:</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editModal.quantity}
+                    onChange={(e) => {
+                      const newQty = parseInt(e.target.value) || 0;
+                      const newRevenue = newQty * editModal.price;
+                      setEditModal(prev => ({
+                        ...prev,
+                        quantity: newQty,
+                        revenue: newRevenue
+                      }));
+                    }}
+                    className="w-full p-2 border border-gray-300 rounded focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Unit Price:</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={editModal.price}
+                    onChange={(e) => {
+                      const newPrice = parseFloat(e.target.value) || 0;
+                      const newRevenue = editModal.quantity * newPrice;
+                      setEditModal(prev => ({
+                        ...prev,
+                        price: newPrice,
+                        revenue: newRevenue
+                      }));
+                    }}
+                    className="w-full p-2 border border-gray-300 rounded focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Total Revenue:</label>
+                  <p className="text-lg font-semibold text-orange-600">${editModal.revenue.toLocaleString()}</p>
+                </div>
+                <div className="flex gap-2 pt-4">
+                  <Button 
+                    onClick={() => handleSaveEdit(editModal.quantity, editModal.price)}
+                    className="flex-1 bg-orange-600 hover:bg-orange-700"
+                  >
+                    Save
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => setEditModal(null)}
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 

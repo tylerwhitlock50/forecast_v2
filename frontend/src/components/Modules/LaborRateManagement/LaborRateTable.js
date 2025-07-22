@@ -1,5 +1,5 @@
 import React from 'react';
-import './LaborRateManagement.css';
+
 
 const LaborRateTable = ({
   laborRates,

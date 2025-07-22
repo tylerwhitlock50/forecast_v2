@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './ProductManagement.css';
+
 
 const ProductSummary = ({ products }) => {
   const summaryData = useMemo(() => {

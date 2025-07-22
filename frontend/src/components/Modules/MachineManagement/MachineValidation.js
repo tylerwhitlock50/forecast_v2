@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './MachineManagement.css';
+
 
 const MachineValidation = ({ machines }) => {
   const validationResults = useMemo(() => {

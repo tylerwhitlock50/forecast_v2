@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
-import './BOMManagement.css';
+
 
 const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
   const { actions } = useForecast();

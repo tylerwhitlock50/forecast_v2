@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
-import './ProductManagement.css';
+
 
 const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData }) => {
   const [formData, setFormData] = useState({

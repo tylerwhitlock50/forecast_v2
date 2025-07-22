@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
@@ -263,7 +262,8 @@ const RevenueForecasting = () => {
     {
       label: 'Add Forecast Line',
       onClick: () => setShowForecastLineModal(true),
-      variant: 'default'
+      variant: 'default',
+      className: 'bg-orange-600 hover:bg-orange-700'
     },
     {
       label: 'Bulk Import',
@@ -278,7 +278,8 @@ const RevenueForecasting = () => {
     {
       label: 'Save Changes',
       onClick: handleSaveChanges,
-      variant: 'default'
+      variant: 'default',
+      className: 'bg-orange-600 hover:bg-orange-700'
     }
   ];
 
@@ -398,45 +399,92 @@ const RevenueForecasting = () => {
         selectedSegment={selectedSegment} 
       />
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="matrix">Product-Customer Matrix</TabsTrigger>
-          <TabsTrigger value="analysis">Segment Analysis</TabsTrigger>
-          <TabsTrigger value="visualization">Visualizations</TabsTrigger>
-          <TabsTrigger value="validation">Data Validation</TabsTrigger>
-        </TabsList>
+      {/* Custom Tab Navigation */}
+      <div className="space-y-6">
+        {/* Tab Buttons */}
+        <div className="grid w-full grid-cols-4 bg-gray-100 p-1 rounded-lg">
+          <button
+            onClick={() => setActiveTab('matrix')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'matrix'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Product-Customer Matrix
+          </button>
+          <button
+            onClick={() => setActiveTab('analysis')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'analysis'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Segment Analysis
+          </button>
+          <button
+            onClick={() => setActiveTab('visualization')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'visualization'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Visualizations
+          </button>
+          <button
+            onClick={() => setActiveTab('validation')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'validation'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Data Validation
+          </button>
+        </div>
 
-        <TabsContent value="matrix" className="space-y-6">
-          <RevenueMatrix
-            data={data}
-            timePeriods={timePeriods}
-            selectedSegment={selectedSegment}
-            onDataChange={handleMatrixDataChange}
-            onCellChange={handleCellChange}
-            onAddForecastLine={() => setShowForecastLineModal(true)}
-          />
-        </TabsContent>
+        {/* Tab Content */}
+        {activeTab === 'matrix' && (
+          <div className="space-y-6">
+            <RevenueMatrix
+              data={data}
+              timePeriods={timePeriods}
+              selectedSegment={selectedSegment}
+              onDataChange={handleMatrixDataChange}
+              onCellChange={handleCellChange}
+              onAddForecastLine={() => setShowForecastLineModal(true)}
+            />
+          </div>
+        )}
 
-        <TabsContent value="analysis" className="space-y-6">
-          <RevenueAnalysis
-            data={data}
-            timePeriods={timePeriods}
-          />
-        </TabsContent>
+        {activeTab === 'analysis' && (
+          <div className="space-y-6">
+            <RevenueAnalysis
+              data={data}
+              timePeriods={timePeriods}
+            />
+          </div>
+        )}
 
-        <TabsContent value="visualization" className="space-y-6">
-          <RevenueVisualizations
-            data={data}
-            timePeriods={timePeriods}
-          />
-        </TabsContent>
+        {activeTab === 'visualization' && (
+          <div className="space-y-6">
+            <RevenueVisualizations
+              data={data}
+              timePeriods={timePeriods}
+            />
+          </div>
+        )}
 
-        <TabsContent value="validation" className="space-y-6">
-          <RevenueValidation
-            data={data}
-          />
-        </TabsContent>
-      </Tabs>
+        {activeTab === 'validation' && (
+          <div className="space-y-6">
+            <RevenueValidation
+              data={data}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 };

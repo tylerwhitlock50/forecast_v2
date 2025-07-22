@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import './RouterManagement.css';
+
 
 const RouterSummary = ({ routers, machines, units, laborRates }) => {
   const summaryData = useMemo(() => {
