@@ -117,13 +117,6 @@ const UnitManagement = () => (
   />
 );
 
-const ExpenseManagement = () => (
-  <PlaceholderComponent 
-    title="Expense Management" 
-    description="Manage recurring and one-time expenses. Track departmental spending and forecast future costs."
-  />
-);
-
 const LoanSchedules = () => (
   <PlaceholderComponent 
     title="Loan Schedules" 

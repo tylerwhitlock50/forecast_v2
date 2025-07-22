@@ -41,6 +41,13 @@ const PayrollManagement = () => {
     'Other Projects'
   ]);
 
+  // Calculate next review date (12 months from start date or last review)
+  const getNextReviewDate = (startDate) => {
+    const date = new Date(startDate);
+    date.setFullYear(date.getFullYear() + 1);
+    return date.toISOString().split('T')[0];
+  };
+
   // Get current payroll data with enhanced structure
   const employees = useMemo(() => {
     if (!data?.payroll) return [];
@@ -56,13 +63,6 @@ const PayrollManagement = () => {
       status: emp.end_date && new Date(emp.end_date) < new Date() ? 'inactive' : 'active'
     }));
   }, [data?.payroll]);
-
-  // Calculate next review date (12 months from start date or last review)
-  const getNextReviewDate = (startDate) => {
-    const date = new Date(startDate);
-    date.setFullYear(date.getFullYear() + 1);
-    return date.toISOString().split('T')[0];
-  };
 
   // Calculate gross pay for an employee
   const calculateGrossPay = (employee, payPeriods = 1) => {
