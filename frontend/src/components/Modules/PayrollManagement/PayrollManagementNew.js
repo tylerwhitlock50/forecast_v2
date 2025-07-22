@@ -462,36 +462,42 @@ const PayrollManagement = () => {
       </Tabs>
 
       {/* Modals */}
-      <EmployeeModal
-        isOpen={showEmployeeModal}
-        onClose={() => {
-          setShowEmployeeModal(false);
-          setSelectedEmployee(null);
-        }}
-        onSave={handleSaveEmployee}
-        employee={selectedEmployee}
-        departments={departments}
-        businessUnits={businessUnits}
-      />
+      {showEmployeeModal && (
+        <EmployeeModal
+          employee={selectedEmployee}
+          departments={departments}
+          businessUnits={businessUnits}
+          onSave={handleSaveEmployee}
+          onCancel={() => {
+            setShowEmployeeModal(false);
+            setSelectedEmployee(null);
+          }}
+        />
+      )}
 
-      <AllocationModal
-        isOpen={showAllocationModal}
-        onClose={() => setShowAllocationModal(false)}
-        employee={selectedEmployee}
-        businessUnits={businessUnits}
-        onSave={(allocations) => {
-          if (selectedEmployee) {
-            handleSaveEmployee({ ...selectedEmployee, allocations });
-          }
-        }}
-      />
+      {showAllocationModal && (
+        <AllocationModal
+          employee={selectedEmployee}
+          businessUnits={businessUnits}
+          onSave={(allocations) => {
+            if (selectedEmployee) {
+              handleSaveEmployee({ ...selectedEmployee, allocations });
+            }
+          }}
+          onCancel={() => setShowAllocationModal(false)}
+        />
+      )}
 
-      <ConfigurationModal
-        isOpen={showConfigModal}
-        onClose={() => setShowConfigModal(false)}
-        config={config}
-        onSave={setConfig}
-      />
+      {showConfigModal && (
+        <ConfigurationModal
+          config={config}
+          onSave={(newConfig) => {
+            setConfig(newConfig);
+            setShowConfigModal(false);
+          }}
+          onCancel={() => setShowConfigModal(false)}
+        />
+      )}
     </div>
   );
 };

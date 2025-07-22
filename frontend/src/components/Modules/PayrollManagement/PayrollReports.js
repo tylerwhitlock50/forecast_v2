@@ -6,6 +6,11 @@ const PayrollReports = ({
   departmentCosts, 
   businessUnitCosts 
 }) => {
+  // Ensure arrays and objects are defined
+  const safeEmployees = employees || [];
+  const safeForecast = forecast || [];
+  const safeDepartmentCosts = departmentCosts || {};
+  const safeBusinessUnitCosts = businessUnitCosts || {};
   const [activeReport, setActiveReport] = useState('summary');
   const [dateRange, setDateRange] = useState({
     start: new Date().toISOString().split('T')[0],
@@ -29,8 +34,8 @@ const PayrollReports = ({
 
   // Generate comprehensive payroll summary
   const generateSummaryReport = () => {
-    const activeEmployees = employees.filter(emp => emp.status === 'active');
-    const totalAnnualCost = Object.values(departmentCosts).reduce((sum, dept) => sum + dept.totalCost, 0);
+    const activeEmployees = safeEmployees.filter(emp => emp.status === 'active');
+    const totalAnnualCost = Object.values(safeDepartmentCosts).reduce((sum, dept) => sum + dept.totalCost, 0);
     const avgSalary = activeEmployees.length > 0 ? totalAnnualCost / activeEmployees.length : 0;
     
     const upcomingReviews = activeEmployees.filter(emp => {
@@ -44,7 +49,7 @@ const PayrollReports = ({
       totalEmployees: activeEmployees.length,
       totalAnnualCost,
       avgSalary,
-      totalDepartments: Object.keys(departmentCosts).length,
+      totalDepartments: Object.keys(safeDepartmentCosts).length,
       upcomingReviews: upcomingReviews.length,
       monthlyAverageCost: totalAnnualCost / 12,
       biweeklyAverageCost: totalAnnualCost / 26
@@ -71,7 +76,7 @@ const PayrollReports = ({
   };
 
   const exportEmployeeReport = () => {
-    const data = employees.map(emp => ({
+    const data = safeEmployees.map(emp => ({
       'Employee Name': emp.employee_name,
       'Department': emp.department,
       'Rate Type': emp.rate_type,
@@ -92,7 +97,7 @@ const PayrollReports = ({
   };
 
   const exportDepartmentReport = () => {
-    const data = Object.entries(departmentCosts).map(([dept, costs]) => ({
+    const data = Object.entries(safeDepartmentCosts).map(([dept, costs]) => ({
       'Department': dept,
       'Employee Count': costs.employees,
       'Annual Cost': costs.totalCost,
@@ -105,7 +110,7 @@ const PayrollReports = ({
   };
 
   const exportBusinessUnitReport = () => {
-    const data = Object.entries(businessUnitCosts).map(([unit, costs]) => ({
+    const data = Object.entries(safeBusinessUnitCosts).map(([unit, costs]) => ({
       'Business Unit': unit,
       'FTE Allocation': costs.employees,
       'Annual Cost': costs.totalCost,
@@ -117,7 +122,7 @@ const PayrollReports = ({
   };
 
   const exportForecastReport = () => {
-    const data = forecast.slice(0, 26).map(period => ({
+    const data = safeForecast.slice(0, 26).map(period => ({
       'Period': period.period,
       'Date': period.date,
       'Employee Count': period.employeeCount,
@@ -234,27 +239,27 @@ const PayrollReports = ({
                 <div className="insights-list">
                   <div className="insight">
                     <strong>Largest Department:</strong> {
-                      Object.entries(departmentCosts)
+                      Object.entries(safeDepartmentCosts)
                         .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[0] || 'N/A'
                     } ({formatCurrency(
-                      Object.entries(departmentCosts)
+                      Object.entries(safeDepartmentCosts)
                         .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[1]?.totalCost || 0
                     )})
                   </div>
                   
                   <div className="insight">
                     <strong>Highest Business Unit Cost:</strong> {
-                      Object.entries(businessUnitCosts)
+                      Object.entries(safeBusinessUnitCosts)
                         .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[0] || 'N/A'
                     } ({formatCurrency(
-                      Object.entries(businessUnitCosts)
+                      Object.entries(safeBusinessUnitCosts)
                         .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[1]?.totalCost || 0
                     )})
                   </div>
                   
                   <div className="insight">
                     <strong>Next Quarter Forecast:</strong> {formatCurrency(
-                      forecast.slice(0, 6).reduce((sum, period) => sum + period.totalCost, 0)
+                      safeForecast.slice(0, 6).reduce((sum, period) => sum + period.totalCost, 0)
                     )} (6 pay periods)
                   </div>
                 </div>
@@ -271,7 +276,7 @@ const PayrollReports = ({
               </button>
             </div>
             
-            <EmployeeDetailReport employees={employees} />
+            <EmployeeDetailReport employees={safeEmployees} />
           </div>
         )}
 
@@ -283,7 +288,7 @@ const PayrollReports = ({
               </button>
             </div>
             
-            <DepartmentCostReport departmentCosts={departmentCosts} />
+            <DepartmentCostReport departmentCosts={safeDepartmentCosts} />
           </div>
         )}
 
@@ -295,7 +300,7 @@ const PayrollReports = ({
               </button>
             </div>
             
-            <BusinessUnitReport businessUnitCosts={businessUnitCosts} employees={employees} />
+            <BusinessUnitReport businessUnitCosts={safeBusinessUnitCosts} employees={safeEmployees} />
           </div>
         )}
 
@@ -307,7 +312,7 @@ const PayrollReports = ({
               </button>
             </div>
             
-            <ForecastDetailReport forecast={forecast} />
+            <ForecastDetailReport forecast={safeForecast} />
           </div>
         )}
       </div>

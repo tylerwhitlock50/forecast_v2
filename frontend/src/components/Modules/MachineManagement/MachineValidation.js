@@ -17,11 +17,11 @@ const MachineValidation = ({ machines }) => {
       const machineWarnings = [];
 
       // Required field validation
-      if (!machine.machine_name || machine.machine_name.trim() === '') {
+      if (!machine.machine_name || (typeof machine.machine_name === 'string' && machine.machine_name.trim() === '') || machine.machine_name === null || machine.machine_name === undefined) {
         machineIssues.push('Missing machine name');
       }
 
-      if (!machine.machine_id || machine.machine_id.trim() === '') {
+      if (!machine.machine_id || (typeof machine.machine_id === 'string' && machine.machine_id.trim() === '') || machine.machine_id === null || machine.machine_id === undefined) {
         machineIssues.push('Missing machine ID');
       }
 
@@ -52,12 +52,12 @@ const MachineValidation = ({ machines }) => {
       }
 
       // Labor type validation
-      if (!machine.labor_type || machine.labor_type.trim() === '') {
+      if (!machine.labor_type || (typeof machine.labor_type === 'string' && machine.labor_type.trim() === '') || machine.labor_type === null || machine.labor_type === undefined) {
         machineWarnings.push('No labor type specified');
       }
 
       // Description validation
-      if (!machine.machine_description || machine.machine_description.trim() === '') {
+      if (!machine.machine_description || (typeof machine.machine_description === 'string' && machine.machine_description.trim() === '') || machine.machine_description === null || machine.machine_description === undefined) {
         machineWarnings.push('No machine description provided');
       }
 

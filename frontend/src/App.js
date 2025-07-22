@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { ForecastProvider } from './context/ForecastContext';
-import MainNavigation from './components/Navigation/MainNavigation';
+import MainNavigation from './components/Navigation/MainNavigationNew';
 import ChatPanel from './components/ChatPanel';
+import './App.css';
 
 // Module components
 import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueForecastingNew';
@@ -175,13 +176,7 @@ const AppLayout = ({ children }) => {
       />
       
       <div 
-        className="main-content"
-        style={{
-          marginLeft: navCollapsed ? '60px' : '280px',
-          transition: 'margin-left 0.3s ease',
-          minHeight: '100vh',
-          position: 'relative'
-        }}
+        className={`main-content ${navCollapsed ? 'nav-collapsed' : ''}`}
       >
         {children}
       </div>

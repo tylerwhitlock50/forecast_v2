@@ -78,3 +78,68 @@
     margin-left: 0 !important;
   }
 } 
+
+/* App Layout Styles */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Override any conflicting styles from index.css */
+.app-layout .main-content {
+  flex: 1;
+  margin-left: 320px; /* w-80 = 320px when expanded */
+  transition: margin-left 0.3s ease;
+  min-height: 100vh;
+  position: relative;
+  background-color: #f8f9fa;
+  overflow-x: auto;
+}
+
+.app-layout .main-content.nav-collapsed {
+  margin-left: 64px; /* w-16 = 64px when collapsed */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .app-layout .main-content {
+    margin-left: 0;
+  }
+  
+  .app-layout .main-content.nav-collapsed {
+    margin-left: 0;
+  }
+}
+
+/* Ensure the navigation doesn't cover content */
+.app-layout nav {
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100vh;
+  z-index: 40;
+  transition: width 0.3s ease;
+}
+
+/* Smooth transitions for layout elements */
+.app-layout * {
+  transition: margin-left 0.3s ease, width 0.3s ease;
+}
+
+/* Navigation toggle button improvements */
+.app-layout nav button[onClick] {
+  transition: all 0.2s ease;
+}
+
+.app-layout nav button[onClick]:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  transform: scale(1.05);
+}
+
+/* Ensure content doesn't get cut off */
+.app-layout .main-content > * {
+  max-width: 100%;
+  overflow-x: auto;
+} 

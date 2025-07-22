@@ -10,7 +10,7 @@ const LaborRateValidation = ({ laborRates }) => {
 
     // Check for missing required fields
     rates.forEach((rate, index) => {
-      if (!rate.rate_id || !rate.rate_id.trim()) {
+      if (!rate.rate_id || (typeof rate.rate_id === 'string' && !rate.rate_id.trim()) || rate.rate_id === null || rate.rate_id === undefined) {
         errors.push({
           type: 'Missing Rate ID',
           message: `Labor rate at row ${index + 1} is missing a rate ID`,
@@ -20,7 +20,7 @@ const LaborRateValidation = ({ laborRates }) => {
         });
       }
 
-      if (!rate.rate_name || !rate.rate_name.trim()) {
+      if (!rate.rate_name || (typeof rate.rate_name === 'string' && !rate.rate_name.trim()) || rate.rate_name === null || rate.rate_name === undefined) {
         errors.push({
           type: 'Missing Rate Name',
           message: `Labor rate at row ${index + 1} is missing a rate name`,
@@ -30,7 +30,7 @@ const LaborRateValidation = ({ laborRates }) => {
         });
       }
 
-      if (!rate.rate_type || !rate.rate_type.trim()) {
+      if (!rate.rate_type || (typeof rate.rate_type === 'string' && !rate.rate_type.trim()) || rate.rate_type === null || rate.rate_type === undefined) {
         warnings.push({
           type: 'Missing Rate Type',
           message: `Labor rate "${rate.rate_name}" is missing a rate type`,
@@ -116,7 +116,7 @@ const LaborRateValidation = ({ laborRates }) => {
     });
 
     // Check for missing descriptions
-    const missingDescriptions = rates.filter(rate => !rate.rate_description || !rate.rate_description.trim()).length;
+    const missingDescriptions = rates.filter(rate => !rate.rate_description || (typeof rate.rate_description === 'string' && !rate.rate_description.trim()) || rate.rate_description === null || rate.rate_description === undefined).length;
     if (missingDescriptions > 0) {
       info.push({
         type: 'Missing Descriptions',

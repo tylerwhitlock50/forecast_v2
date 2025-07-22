@@ -2,13 +2,17 @@ import React, { useMemo } from 'react';
 import './BOMManagement.css';
 
 const BOMValidation = ({ boms, bomItems, units }) => {
+  // Ensure arrays are defined and not null
+  const safeBoms = boms || [];
+  const safeBomItems = bomItems || [];
+  
   const validationResults = useMemo(() => {
     const issues = [];
     const warnings = [];
     
     // 1. BOMs without items
-    const bomsWithoutItems = boms.filter(bom => {
-      const itemCount = bomItems.filter(item => item.bom_id === bom.bom_id).length;
+    const bomsWithoutItems = safeBoms.filter(bom => {
+      const itemCount = safeBomItems.filter(item => item.bom_id === bom.bom_id).length;
       return itemCount === 0;
     });
     
@@ -24,8 +28,8 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 2. Items without material descriptions
-    const itemsWithoutDescription = bomItems.filter(item => 
-      !item.material_description || item.material_description.trim() === ''
+    const itemsWithoutDescription = safeBomItems.filter(item => 
+      !item.material_description || (typeof item.material_description === 'string' && item.material_description.trim() === '') || item.material_description === null || item.material_description === undefined
     );
     
     if (itemsWithoutDescription.length > 0) {
@@ -40,7 +44,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 3. Items with zero or negative quantities
-    const itemsWithBadQuantity = bomItems.filter(item => 
+    const itemsWithBadQuantity = safeBomItems.filter(item => 
       !item.qty || item.qty <= 0
     );
     
@@ -56,7 +60,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 4. Items without unit prices
-    const itemsWithoutPrice = bomItems.filter(item => 
+    const itemsWithoutPrice = safeBomItems.filter(item => 
       !item.unit_price || item.unit_price <= 0
     );
     
@@ -72,7 +76,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 5. Items without target costs
-    const itemsWithoutTarget = bomItems.filter(item => 
+    const itemsWithoutTarget = safeBomItems.filter(item => 
       !item.target_cost || item.target_cost <= 0
     );
     
@@ -88,7 +92,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 6. Cost variance validation
-    const itemsWithHighVariance = bomItems.filter(item => {
+    const itemsWithHighVariance = safeBomItems.filter(item => {
       if (!item.material_cost || !item.target_cost) return false;
       const variance = Math.abs(item.material_cost - item.target_cost);
       const variancePercent = (variance / item.target_cost) * 100;
@@ -111,7 +115,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     
     // 7. Duplicate line numbers within BOMs
     const duplicateLines = [];
-    const bomGroups = bomItems.reduce((acc, item) => {
+    const bomGroups = safeBomItems.reduce((acc, item) => {
       const key = `${item.bom_id}-${item.version}`;
       if (!acc[key]) acc[key] = [];
       acc[key].push(item);
@@ -138,7 +142,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 8. Inconsistent unit usage
-    const unitUsage = bomItems.reduce((acc, item) => {
+    const unitUsage = safeBomItems.reduce((acc, item) => {
       const desc = item.material_description?.toLowerCase() || '';
       if (!acc[desc]) acc[desc] = new Set();
       acc[desc].add(item.unit);
@@ -161,8 +165,8 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     // 9. BOMs with very few items (potential incomplete BOMs)
-    const sparseBOMs = boms.filter(bom => {
-      const itemCount = bomItems.filter(item => item.bom_id === bom.bom_id).length;
+    const sparseBOMs = safeBoms.filter(bom => {
+      const itemCount = safeBomItems.filter(item => item.bom_id === bom.bom_id).length;
       return itemCount > 0 && itemCount < 3;
     });
     
@@ -172,13 +176,13 @@ const BOMValidation = ({ boms, bomItems, units }) => {
         category: 'Completeness',
         title: 'BOMs With Few Items',
         description: `${sparseBOMs.length} BOMs have less than 3 items (possibly incomplete)`,
-        items: sparseBOMs.map(bom => `${bom.bom_id} (${bomItems.filter(item => item.bom_id === bom.bom_id).length} items)`),
+        items: sparseBOMs.map(bom => `${bom.bom_id} (${safeBomItems.filter(item => item.bom_id === bom.bom_id).length} items)`),
         severity: 'low'
       });
     }
     
     // 10. Cost calculation mismatches
-    const costMismatches = bomItems.filter(item => {
+    const costMismatches = safeBomItems.filter(item => {
       if (!item.qty || !item.unit_price || !item.material_cost) return false;
       const expectedCost = item.qty * item.unit_price;
       const actualCost = item.material_cost;
@@ -202,7 +206,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
     }
     
     return { issues, warnings };
-  }, [boms, bomItems]);
+  }, [safeBoms, safeBomItems]);
 
   const allValidations = [...validationResults.issues, ...validationResults.warnings];
   const errorCount = validationResults.issues.length;
@@ -226,8 +230,8 @@ const BOMValidation = ({ boms, bomItems, units }) => {
   };
 
   const getHealthScore = () => {
-    const totalItems = bomItems.length;
-    const totalBOMs = boms.length;
+    const totalItems = safeBomItems.length;
+    const totalBOMs = safeBoms.length;
     
     if (totalItems === 0) return 0;
     
@@ -293,7 +297,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
               <span className="score-label">BOMs</span>
             </div>
             <div className="score-item">
-              <span className="score-count">{bomItems.length}</span>
+                              <span className="score-count">{safeBomItems.length}</span>
               <span className="score-label">Items</span>
             </div>
           </div>
@@ -357,24 +361,24 @@ const BOMValidation = ({ boms, bomItems, units }) => {
         <div className="stats-grid">
           <div className="stat-item">
             <span className="stat-label">Total BOMs</span>
-            <span className="stat-value">{boms.length}</span>
+            <span className="stat-value">{safeBoms.length}</span>
           </div>
           <div className="stat-item">
             <span className="stat-label">Total Items</span>
-            <span className="stat-value">{bomItems.length}</span>
+            <span className="stat-value">{safeBomItems.length}</span>
           </div>
           <div className="stat-item">
             <span className="stat-label">Avg Items per BOM</span>
-            <span className="stat-value">{boms.length > 0 ? (bomItems.length / boms.length).toFixed(1) : 0}</span>
+            <span className="stat-value">{safeBoms.length > 0 ? (safeBomItems.length / safeBoms.length).toFixed(1) : 0}</span>
           </div>
           <div className="stat-item">
             <span className="stat-label">Unique Materials</span>
-            <span className="stat-value">{new Set(bomItems.map(item => item.material_description?.toLowerCase())).size}</span>
+            <span className="stat-value">{new Set(safeBomItems.map(item => item.material_description?.toLowerCase())).size}</span>
           </div>
           <div className="stat-item">
             <span className="stat-label">Complete Items</span>
             <span className="stat-value">
-              {bomItems.filter(item => 
+              {safeBomItems.filter(item => 
                 item.material_description && 
                 item.qty > 0 && 
                 item.unit_price > 0
@@ -384,12 +388,12 @@ const BOMValidation = ({ boms, bomItems, units }) => {
           <div className="stat-item">
             <span className="stat-label">Data Completeness</span>
             <span className="stat-value">
-              {bomItems.length > 0 ? 
-                Math.round((bomItems.filter(item => 
+              {safeBomItems.length > 0 ? 
+                Math.round((safeBomItems.filter(item => 
                   item.material_description && 
                   item.qty > 0 && 
                   item.unit_price > 0
-                ).length / bomItems.length) * 100) : 0}%
+                ).length / safeBomItems.length) * 100) : 0}%
             </span>
           </div>
         </div>
@@ -418,7 +422,7 @@ const BOMValidation = ({ boms, bomItems, units }) => {
               </div>
             )}
             
-            {bomItems.filter(item => !item.target_cost || item.target_cost <= 0).length > bomItems.length * 0.5 && (
+            {safeBomItems.filter(item => !item.target_cost || item.target_cost <= 0).length > safeBomItems.length * 0.5 && (
               <div className="recommendation info">
                 <span className="rec-icon">🎯</span>
                 <div className="rec-content">

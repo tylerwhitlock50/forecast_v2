@@ -3,28 +3,32 @@ import './BOMManagement.css';
 
 const BOMSummary = ({ boms, bomItems, units }) => {
   const summaryData = useMemo(() => {
-    const totalBOMs = boms.length;
+    // Ensure arrays are defined and not null
+    const safeBoms = boms || [];
+    const safeBomItems = bomItems || [];
+    
+    const totalBOMs = safeBoms.length;
     
     // Version breakdown
-    const versionBreakdown = boms.reduce((acc, bom) => {
+    const versionBreakdown = safeBoms.reduce((acc, bom) => {
       const version = bom.version || '1.0';
       acc[version] = (acc[version] || 0) + 1;
       return acc;
     }, {});
     
     // Cost analysis
-    const totalMaterialCost = bomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
-    const totalTargetCost = bomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
+    const totalMaterialCost = safeBomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
+    const totalTargetCost = safeBomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
     const avgMaterialCost = totalBOMs > 0 ? totalMaterialCost / totalBOMs : 0;
     const avgTargetCost = totalBOMs > 0 ? totalTargetCost / totalBOMs : 0;
     const costVariance = totalMaterialCost - totalTargetCost;
     
     // Item analysis
-    const totalItems = bomItems.length;
+    const totalItems = safeBomItems.length;
     const avgItemsPerBOM = totalBOMs > 0 ? totalItems / totalBOMs : 0;
     
     // Material type breakdown
-    const materialTypes = bomItems.reduce((acc, item) => {
+    const materialTypes = safeBomItems.reduce((acc, item) => {
       const description = item.material_description || 'Unknown';
       const type = getItemType(description);
       acc[type] = (acc[type] || 0) + 1;
@@ -32,29 +36,29 @@ const BOMSummary = ({ boms, bomItems, units }) => {
     }, {});
     
     // Unit breakdown
-    const unitBreakdown = bomItems.reduce((acc, item) => {
+    const unitBreakdown = safeBomItems.reduce((acc, item) => {
       const unit = item.unit || 'each';
       acc[unit] = (acc[unit] || 0) + 1;
       return acc;
     }, {});
     
     // Cost per BOM breakdown
-    const bomCosts = boms.map(bom => {
-      const bomTotal = bomItems
+    const bomCosts = safeBoms.map(bom => {
+      const bomTotal = safeBomItems
         .filter(item => item.bom_id === bom.bom_id)
         .reduce((sum, item) => sum + (item.material_cost || 0), 0);
       return { bom_id: bom.bom_id, cost: bomTotal };
     }).sort((a, b) => b.cost - a.cost);
     
     // Data completeness
-    const withTargetCost = bomItems.filter(item => item.target_cost && item.target_cost > 0).length;
-    const withUnitPrice = bomItems.filter(item => item.unit_price && item.unit_price > 0).length;
-    const withQuantity = bomItems.filter(item => item.qty && item.qty > 0).length;
+    const withTargetCost = safeBomItems.filter(item => item.target_cost && item.target_cost > 0).length;
+    const withUnitPrice = safeBomItems.filter(item => item.unit_price && item.unit_price > 0).length;
+    const withQuantity = safeBomItems.filter(item => item.qty && item.qty > 0).length;
     
     // Complete BOMs
-    const completeBOMs = boms.filter(bom => {
-      const bomItemCount = bomItems.filter(item => item.bom_id === bom.bom_id).length;
-      const completeItems = bomItems.filter(item => 
+    const completeBOMs = safeBoms.filter(bom => {
+      const bomItemCount = safeBomItems.filter(item => item.bom_id === bom.bom_id).length;
+      const completeItems = safeBomItems.filter(item => 
         item.bom_id === bom.bom_id && 
         item.material_description && 
         item.qty > 0 && 

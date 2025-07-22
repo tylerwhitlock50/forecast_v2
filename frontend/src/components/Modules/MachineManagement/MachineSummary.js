@@ -34,8 +34,8 @@ const MachineSummary = ({ machines }) => {
     // Data completeness
     const withRates = machines.filter(m => m.machine_rate && m.machine_rate > 0).length;
     const withCapacity = machines.filter(m => m.available_minutes_per_month && m.available_minutes_per_month > 0).length;
-    const withDescription = machines.filter(m => m.machine_description && m.machine_description.trim()).length;
-    const withLaborType = machines.filter(m => m.labor_type && m.labor_type.trim()).length;
+    const withDescription = machines.filter(m => m.machine_description && (typeof m.machine_description === 'string' ? m.machine_description.trim() : true)).length;
+    const withLaborType = machines.filter(m => m.labor_type && (typeof m.labor_type === 'string' ? m.labor_type.trim() : true)).length;
     
     // Data quality metrics
     const completeProfiles = machines.filter(m => 

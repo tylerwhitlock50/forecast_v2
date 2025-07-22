@@ -5,11 +5,14 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
   const [showDetails, setShowDetails] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
 
+  // Ensure forecast is defined and is an array
+  const safeForecast = forecast || [];
+
   // Calculate monthly rollups from bi-weekly data
   const getMonthlyRollups = () => {
     const monthlyData = {};
     
-    forecast.forEach(period => {
+    safeForecast.forEach(period => {
       const date = new Date(period.date);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
       
@@ -42,13 +45,13 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
   // Calculate running totals and trends
   const getTrendData = () => {
     let runningTotal = 0;
-    return forecast.map((period, index) => {
+    return safeForecast.map((period, index) => {
       runningTotal += period.totalCost;
       return {
         ...period,
         runningTotal,
         percentChange: index > 0 ? 
-          ((period.totalCost - forecast[index - 1].totalCost) / forecast[index - 1].totalCost * 100) : 0
+          ((period.totalCost - safeForecast[index - 1].totalCost) / safeForecast[index - 1].totalCost * 100) : 0
       };
     });
   };
@@ -106,10 +109,10 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
         <div className="summary-card">
           <h3>Next Payroll</h3>
           <div className="summary-value">
-            {formatCurrency(forecast[0]?.totalCost || 0)}
+            {formatCurrency(safeForecast[0]?.totalCost || 0)}
           </div>
           <div className="summary-detail">
-            {formatDate(forecast[0]?.date)} • {forecast[0]?.employeeCount} employees
+            {formatDate(safeForecast[0]?.date)} • {safeForecast[0]?.employeeCount} employees
           </div>
         </div>
         
@@ -130,7 +133,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
           <h3>Annual Projection</h3>
           <div className="summary-value">
             {formatCurrency(
-              forecast.slice(0, 26).reduce((sum, period) => sum + period.totalCost, 0)
+              safeForecast.slice(0, 26).reduce((sum, period) => sum + period.totalCost, 0)
             )}
           </div>
           <div className="summary-detail">
@@ -142,7 +145,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
           <h3>Total Forecast</h3>
           <div className="summary-value">
             {formatCurrency(
-              forecast.reduce((sum, period) => sum + period.totalCost, 0)
+              safeForecast.reduce((sum, period) => sum + period.totalCost, 0)
             )}
           </div>
           <div className="summary-detail">

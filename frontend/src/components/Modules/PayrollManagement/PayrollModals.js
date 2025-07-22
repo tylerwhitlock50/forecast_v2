@@ -474,8 +474,8 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    console.log('ConfigurationModal: handleSubmit called');
     onSave(formData);
-    onCancel();
   };
 
   const resetToDefaults = () => {
@@ -491,11 +491,17 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
   };
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay" onClick={() => {
+      console.log('ConfigurationModal: overlay clicked');
+      onCancel();
+    }}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>Payroll Configuration</h3>
-          <button className="close-btn" onClick={onCancel}>×</button>
+          <button className="close-btn" onClick={() => {
+            console.log('ConfigurationModal: close button clicked');
+            onCancel();
+          }}>×</button>
         </div>
 
         <form onSubmit={handleSubmit} className="modal-content">

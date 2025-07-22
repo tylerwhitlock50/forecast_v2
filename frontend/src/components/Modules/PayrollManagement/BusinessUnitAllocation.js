@@ -6,6 +6,10 @@ const BusinessUnitAllocation = ({
   businessUnitCosts, 
   onEditAllocations 
 }) => {
+  // Ensure arrays and objects are defined
+  const safeEmployees = employees || [];
+  const safeBusinessUnits = businessUnits || [];
+  const safeBusinessUnitCosts = businessUnitCosts || {};
   const [viewMode, setViewMode] = useState('overview'); // 'overview', 'employee', 'matrix'
   const [selectedBusinessUnit, setSelectedBusinessUnit] = useState('');
 
@@ -18,7 +22,7 @@ const BusinessUnitAllocation = ({
 
   // Get employees allocated to a specific business unit
   const getEmployeesForBusinessUnit = (businessUnit) => {
-    return employees.filter(emp => 
+    return safeEmployees.filter(emp => 
       emp.status === 'active' && 
       emp.allocations && 
       emp.allocations[businessUnit] > 0
@@ -29,14 +33,14 @@ const BusinessUnitAllocation = ({
   const getAllocationMatrix = () => {
     const matrix = [];
     
-    employees.forEach(emp => {
+    safeEmployees.forEach(emp => {
       if (emp.status === 'active') {
         const row = {
           employee: emp,
           allocations: {}
         };
         
-        businessUnits.forEach(unit => {
+        safeBusinessUnits.forEach(unit => {
           row.allocations[unit] = emp.allocations?.[unit] || 0;
         });
         
@@ -53,7 +57,7 @@ const BusinessUnitAllocation = ({
   const validateAllocations = () => {
     const issues = [];
     
-    employees.forEach(emp => {
+    safeEmployees.forEach(emp => {
       if (emp.status === 'active') {
         const total = Object.values(emp.allocations || {}).reduce((sum, val) => sum + val, 0);
         if (Math.abs(total - 100) > 0.01) {
@@ -129,8 +133,8 @@ const BusinessUnitAllocation = ({
       {viewMode === 'overview' && (
         <div className="allocation-overview">
           <div className="business-unit-cards">
-            {businessUnits.map(unit => {
-              const unitData = businessUnitCosts[unit];
+            {safeBusinessUnits.map(unit => {
+              const unitData = safeBusinessUnitCosts[unit] || { employees: 0, totalCost: 0 };
               const unitEmployees = getEmployeesForBusinessUnit(unit);
               
               return (
@@ -381,12 +385,13 @@ const AllocationMatrix = ({ matrix, businessUnits, selectedBusinessUnit, onEditA
 
 // Cost Distribution Chart Component
 const CostDistributionChart = ({ businessUnitCosts }) => {
-  const totalCost = Object.values(businessUnitCosts)
+  const safeBusinessUnitCosts = businessUnitCosts || {};
+  const totalCost = Object.values(safeBusinessUnitCosts)
     .reduce((sum, unit) => sum + unit.totalCost, 0);
 
   return (
     <div className="distribution-chart">
-      {Object.entries(businessUnitCosts).map(([unit, data]) => {
+      {Object.entries(safeBusinessUnitCosts).map(([unit, data]) => {
         const percentage = totalCost > 0 ? (data.totalCost / totalCost * 100) : 0;
         
         return (
@@ -415,12 +420,13 @@ const CostDistributionChart = ({ businessUnitCosts }) => {
 
 // FTE Distribution Chart Component
 const FTEDistributionChart = ({ businessUnitCosts }) => {
-  const totalFTE = Object.values(businessUnitCosts)
+  const safeBusinessUnitCosts = businessUnitCosts || {};
+  const totalFTE = Object.values(safeBusinessUnitCosts)
     .reduce((sum, unit) => sum + unit.employees, 0);
 
   return (
     <div className="distribution-chart">
-      {Object.entries(businessUnitCosts).map(([unit, data]) => {
+      {Object.entries(safeBusinessUnitCosts).map(([unit, data]) => {
         const percentage = totalFTE > 0 ? (data.employees / totalFTE * 100) : 0;
         
         return (

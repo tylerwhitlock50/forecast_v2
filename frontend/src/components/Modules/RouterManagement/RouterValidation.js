@@ -1,12 +1,12 @@
 import React, { useMemo } from 'react';
 import './RouterManagement.css';
 
-const RouterValidation = ({ routers, machines, units, laborRates }) => {
+const RouterValidation = ({ routers, routerOperations, machines, units, laborRates }) => {
   const validationResults = useMemo(() => {
     const issues = [];
     const warnings = [];
     const stats = {
-      total: routers.length,
+      total: (routers?.length || 0) + (routerOperations?.length || 0),
       valid: 0,
       withIssues: 0,
       withWarnings: 0
@@ -17,20 +17,22 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
     const unitIds = new Set(units.map(u => u.unit_id));
     const laborRateIds = new Set(laborRates.map(r => r.rate_id));
 
-    routers.forEach((router, index) => {
+    // Validate router definitions
+    if (routers && routers.length > 0) {
+      routers.forEach((router, index) => {
       const routerIssues = [];
       const routerWarnings = [];
 
       // Required field validation
-      if (!router.router_id || router.router_id.trim() === '') {
+      if (!router.router_id || (typeof router.router_id === 'string' && router.router_id.trim() === '') || router.router_id === null || router.router_id === undefined) {
         routerIssues.push('Missing router ID');
       }
 
-      if (!router.unit_id || router.unit_id.trim() === '') {
+      if (!router.unit_id || (typeof router.unit_id === 'string' && router.unit_id.trim() === '') || router.unit_id === null || router.unit_id === undefined) {
         routerIssues.push('Missing unit ID');
       }
 
-      if (!router.machine_id || router.machine_id.trim() === '') {
+      if (!router.machine_id || (typeof router.machine_id === 'string' && router.machine_id.trim() === '') || router.machine_id === null || router.machine_id === undefined) {
         routerIssues.push('Missing machine ID');
       }
 
@@ -77,7 +79,7 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
       }
 
       // Version validation
-      if (!router.version || router.version.trim() === '') {
+      if (!router.version || (typeof router.version === 'string' && router.version.trim() === '') || router.version === null || router.version === undefined) {
         routerWarnings.push('No version specified (defaulting to 1.0)');
       }
 
@@ -105,7 +107,8 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
         r.sequence === router.sequence
       );
       if (duplicateSequence) {
-        routerIssues.push(`Duplicate sequence ${router.sequence} in router ${router.router_id} version ${router.version}`);
+        const versionStr = router.version ? String(router.version) : '1.0';
+        routerIssues.push(`Duplicate sequence ${router.sequence} in router ${router.router_id} version ${versionStr}`);
       }
 
       // Orphaned operations (no matching unit in units table)
@@ -140,9 +143,117 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
         stats.valid++;
       }
     });
+    }
+
+    // Validate router operations
+    if (routerOperations && routerOperations.length > 0) {
+      routerOperations.forEach((operation, index) => {
+        const operationIssues = [];
+        const operationWarnings = [];
+
+        // Required field validation for operations
+        if (!operation.router_id || (typeof operation.router_id === 'string' && operation.router_id.trim() === '') || operation.router_id === null || operation.router_id === undefined) {
+          operationIssues.push('Missing router ID');
+        }
+
+        if (!operation.machine_id || (typeof operation.machine_id === 'string' && operation.machine_id.trim() === '') || operation.machine_id === null || operation.machine_id === undefined) {
+          operationIssues.push('Missing machine ID');
+        }
+
+        if (!operation.sequence || operation.sequence < 1) {
+          operationIssues.push('Missing or invalid sequence number');
+        }
+
+        // Foreign key validation
+        if (operation.machine_id && !machineIds.has(operation.machine_id)) {
+          operationIssues.push(`Machine '${operation.machine_id}' does not exist`);
+        }
+
+        if (operation.labor_type_id && !laborRateIds.has(operation.labor_type_id)) {
+          operationIssues.push(`Labor rate '${operation.labor_type_id}' does not exist`);
+        }
+
+        // Time validation
+        if (operation.machine_minutes !== null && operation.machine_minutes !== undefined) {
+          if (isNaN(operation.machine_minutes) || operation.machine_minutes < 0) {
+            operationIssues.push('Invalid machine minutes (must be a positive number)');
+          } else if (operation.machine_minutes === 0) {
+            operationWarnings.push('Machine minutes is zero');
+          } else if (operation.machine_minutes > 1440) {
+            operationWarnings.push('Machine minutes exceeds 24 hours');
+          }
+        } else {
+          operationWarnings.push('No machine minutes specified');
+        }
+
+        if (operation.labor_minutes !== null && operation.labor_minutes !== undefined) {
+          if (isNaN(operation.labor_minutes) || operation.labor_minutes < 0) {
+            operationIssues.push('Invalid labor minutes (must be a positive number)');
+          } else if (operation.labor_minutes === 0) {
+            operationWarnings.push('Labor minutes is zero');
+          } else if (operation.labor_minutes > 1440) {
+            operationWarnings.push('Labor minutes exceeds 24 hours');
+          }
+        } else {
+          operationWarnings.push('No labor minutes specified');
+        }
+
+        // Labor rate consistency
+        if (!operation.labor_type_id && operation.labor_minutes && operation.labor_minutes > 0) {
+          operationWarnings.push('Labor minutes specified but no labor rate assigned');
+        }
+
+        // Efficiency warnings
+        if (operation.machine_minutes && operation.labor_minutes && 
+            operation.machine_minutes > 0 && operation.labor_minutes > 0) {
+          const ratio = operation.labor_minutes / operation.machine_minutes;
+          if (ratio > 3) {
+            operationWarnings.push('Labor time significantly exceeds machine time');
+          } else if (ratio < 0.1) {
+            operationWarnings.push('Machine time significantly exceeds labor time');
+          }
+        }
+
+        // Duplicate sequence check within same router
+        const duplicateSequence = routerOperations.find((op, i) => 
+          i !== index && 
+          op.router_id === operation.router_id &&
+          op.sequence === operation.sequence
+        );
+        if (duplicateSequence) {
+          operationIssues.push(`Duplicate sequence ${operation.sequence} in router ${operation.router_id}`);
+        }
+
+        // Data completeness check
+        const hasCompleteProfile = operation.router_id && 
+                                  operation.machine_id && 
+                                  operation.sequence && 
+                                  (operation.machine_minutes > 0 || operation.labor_minutes > 0);
+        if (!hasCompleteProfile) {
+          operationWarnings.push('Incomplete operation profile');
+        }
+
+        // Add to overall stats
+        if (operationIssues.length > 0) {
+          issues.push({
+            router: operation,
+            issues: operationIssues
+          });
+          stats.withIssues++;
+        } else if (operationWarnings.length > 0) {
+          warnings.push({
+            router: operation,
+            warnings: operationWarnings
+          });
+          stats.withWarnings++;
+        } else {
+          stats.valid++;
+        }
+      });
+    }
 
     return { issues, warnings, stats };
-  }, [routers, machines, units, laborRates]);
+  }, [routers, routerOperations, machines, units, laborRates]);
 
   const getSeverityClass = (type) => {
     return type === 'error' ? 'validation-error' : 'validation-warning';
@@ -153,7 +264,15 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
   };
 
   const getRouterDisplayName = (router) => {
-    return `${router.router_id} v${router.version || '1.0'} seq${router.sequence}`;
+    // Handle both router definitions and router operations
+    if (router.version !== null && router.version !== undefined) {
+      // Router definition
+      const versionStr = String(router.version);
+      return `${router.router_id} v${versionStr} seq${router.sequence || 'N/A'}`;
+    } else {
+      // Router operation
+      return `${router.router_id} seq${router.sequence}`;
+    }
   };
 
   return (
@@ -212,7 +331,10 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
                   <span className="validation-icon">{getSeverityIcon('error')}</span>
                   <span className="router-name">{getRouterDisplayName(item.router)}</span>
                   <span className="router-details">
-                    ({item.router.unit_id} → {item.router.machine_id})
+                    {item.router.unit_id ? 
+                      `(${item.router.unit_id} → ${item.router.machine_id})` : 
+                      `(${item.router.machine_id})`
+                    }
                   </span>
                 </div>
                 <div className="validation-issues">
@@ -243,7 +365,10 @@ const RouterValidation = ({ routers, machines, units, laborRates }) => {
                   <span className="validation-icon">{getSeverityIcon('warning')}</span>
                   <span className="router-name">{getRouterDisplayName(item.router)}</span>
                   <span className="router-details">
-                    ({item.router.unit_id} → {item.router.machine_id})
+                    {item.router.unit_id ? 
+                      `(${item.router.unit_id} → ${item.router.machine_id})` : 
+                      `(${item.router.machine_id})`
+                    }
                   </span>
                 </div>
                 <div className="validation-issues">

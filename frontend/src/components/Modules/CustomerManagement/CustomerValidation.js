@@ -17,11 +17,11 @@ const CustomerValidation = ({ customers }) => {
       const customerWarnings = [];
 
       // Required field validation
-      if (!customer.customer_name || customer.customer_name.trim() === '') {
+      if (!customer.customer_name || (typeof customer.customer_name === 'string' && customer.customer_name.trim() === '') || customer.customer_name === null || customer.customer_name === undefined) {
         customerIssues.push('Missing customer name');
       }
 
-      if (!customer.customer_id || customer.customer_id.trim() === '') {
+      if (!customer.customer_id || (typeof customer.customer_id === 'string' && customer.customer_id.trim() === '') || customer.customer_id === null || customer.customer_id === undefined) {
         customerIssues.push('Missing customer ID');
       }
 

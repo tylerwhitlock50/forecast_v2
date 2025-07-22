@@ -17,11 +17,11 @@ const ProductValidation = ({ products }) => {
       const productWarnings = [];
 
       // Required field validation
-      if (!product.unit_name || product.unit_name.trim() === '') {
+      if (!product.unit_name || (typeof product.unit_name === 'string' && product.unit_name.trim() === '') || product.unit_name === null || product.unit_name === undefined) {
         productIssues.push('Missing product name');
       }
 
-      if (!product.unit_id || product.unit_id.trim() === '') {
+      if (!product.unit_id || (typeof product.unit_id === 'string' && product.unit_id.trim() === '') || product.unit_id === null || product.unit_id === undefined) {
         productIssues.push('Missing product ID');
       }
 
@@ -40,12 +40,12 @@ const ProductValidation = ({ products }) => {
       }
 
       // BOM validation
-      if (!product.bom || product.bom.trim() === '') {
+      if (!product.bom || (typeof product.bom === 'string' && product.bom.trim() === '') || product.bom === null || product.bom === undefined) {
         productWarnings.push('No BOM assigned');
       }
 
       // Router validation
-      if (!product.router || product.router.trim() === '') {
+      if (!product.router || (typeof product.router === 'string' && product.router.trim() === '') || product.router === null || product.router === undefined) {
         productWarnings.push('No router assigned');
       }
 
@@ -75,7 +75,7 @@ const ProductValidation = ({ products }) => {
       }
 
       // Description check
-      if (!product.unit_description || product.unit_description.trim() === '') {
+      if (!product.unit_description || (typeof product.unit_description === 'string' && product.unit_description.trim() === '') || product.unit_description === null || product.unit_description === undefined) {
         productWarnings.push('No product description provided');
       }
 

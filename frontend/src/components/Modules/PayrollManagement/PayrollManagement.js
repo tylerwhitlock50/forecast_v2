@@ -418,8 +418,15 @@ const PayrollManagement = () => {
       {showConfigModal && (
         <ConfigurationModal
           config={config}
-          onSave={setConfig}
-          onCancel={() => setShowConfigModal(false)}
+          onSave={(newConfig) => {
+            console.log('PayrollManagement: ConfigurationModal onSave called with:', newConfig);
+            setConfig(newConfig);
+            setShowConfigModal(false);
+          }}
+          onCancel={() => {
+            console.log('PayrollManagement: ConfigurationModal onCancel called');
+            setShowConfigModal(false);
+          }}
         />
       )}
     </div>
