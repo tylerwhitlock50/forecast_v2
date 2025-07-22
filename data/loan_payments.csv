@@ -1,0 +1,6 @@
+payment_id,loan_id,payment_number,payment_date,payment_amount,principal_payment,interest_payment,remaining_balance,payment_status,actual_payment_date,actual_payment_amount,notes
+LOAN-001-001,LOAN-001,1,2024-02-15,4750.25,3657.25,1093.00,246342.75,paid,2024-02-15,4750.25,First payment completed
+LOAN-001-002,LOAN-001,2,2024-03-15,4750.25,3673.22,1077.03,242669.53,paid,2024-03-15,4750.25,
+LOAN-001-003,LOAN-001,3,2024-04-15,4750.25,3689.27,1060.98,238980.26,scheduled,,,
+LOAN-002-001,LOAN-002,1,2024-04-01,625.00,0.00,625.00,75000.00,scheduled,,,Interest-only payment
+LOAN-003-001,LOAN-003,1,2024-07-01,2610.15,1653.65,956.50,483346.35,scheduled,,,

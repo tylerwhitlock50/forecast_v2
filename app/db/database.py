@@ -345,6 +345,55 @@ class DatabaseManager:
             )
         ''')
         
+        # Create loans table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS loans (
+                loan_id TEXT PRIMARY KEY,
+                loan_name TEXT NOT NULL,
+                lender TEXT NOT NULL,
+                loan_type TEXT NOT NULL CHECK (loan_type IN ('term_loan', 'line_of_credit', 'sba_loan', 'equipment_loan', 'real_estate_loan')),
+                principal_amount REAL NOT NULL,
+                interest_rate REAL NOT NULL,
+                loan_term_months INTEGER NOT NULL,
+                start_date TEXT NOT NULL,
+                payment_type TEXT NOT NULL CHECK (payment_type IN ('amortizing', 'interest_only')),
+                payment_frequency TEXT DEFAULT 'monthly' CHECK (payment_frequency IN ('monthly', 'quarterly', 'annually')),
+                balloon_payment REAL,
+                balloon_date TEXT,
+                description TEXT,
+                collateral_description TEXT,
+                guarantor TEXT,
+                loan_officer TEXT,
+                account_number TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                current_balance REAL NOT NULL,
+                next_payment_date TEXT NOT NULL,
+                monthly_payment_amount REAL NOT NULL
+            )
+        ''')
+        
+        # Create loan_payments table for amortization schedules
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS loan_payments (
+                payment_id TEXT PRIMARY KEY,
+                loan_id TEXT NOT NULL,
+                payment_number INTEGER NOT NULL,
+                payment_date TEXT NOT NULL,
+                payment_amount REAL NOT NULL,
+                principal_payment REAL NOT NULL,
+                interest_payment REAL NOT NULL,
+                remaining_balance REAL NOT NULL,
+                payment_status TEXT DEFAULT 'scheduled' CHECK (payment_status IN ('scheduled', 'paid', 'overdue', 'skipped')),
+                actual_payment_date TEXT,
+                actual_payment_amount REAL,
+                notes TEXT,
+                FOREIGN KEY (loan_id) REFERENCES loans (loan_id),
+                UNIQUE(loan_id, payment_number)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -414,7 +463,9 @@ class DatabaseManager:
             'forecast.csv': 'forecast',
             'expense_categories.csv': 'expense_categories',
             'expenses.csv': 'expenses',
-            'expense_allocations.csv': 'expense_allocations'
+            'expense_allocations.csv': 'expense_allocations',
+            'loans.csv': 'loans',
+            'loan_payments.csv': 'loan_payments'
         }
         
         for csv_file, table_name in csv_mappings.items():

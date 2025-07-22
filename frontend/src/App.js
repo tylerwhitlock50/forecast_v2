@@ -16,6 +16,7 @@ import BOMManagement from './components/Modules/BOMManagement/BOMManagement';
 import LaborRateManagement from './components/Modules/LaborRateManagement/LaborRateManagement';
 import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagement';
 import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagement';
+import LoanManagement from './components/Modules/LoanManagement/LoanManagement';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -117,12 +118,7 @@ const UnitManagement = () => (
   />
 );
 
-const LoanSchedules = () => (
-  <PlaceholderComponent 
-    title="Loan Schedules" 
-    description="Manage loan schedules and amortization tables. Track payment timelines and interest allocations."
-  />
-);
+// LoanSchedules now uses actual LoanManagement component
 
 const CashFlow = () => (
   <PlaceholderComponent 
@@ -233,7 +229,7 @@ function App() {
               
               {/* Financial Planning */}
               <Route path="/expenses" element={<ExpenseManagement />} />
-              <Route path="/loans" element={<LoanSchedules />} />
+              <Route path="/loans" element={<LoanManagement />} />
               <Route path="/cashflow" element={<CashFlow />} />
               
               {/* Reporting & Analysis */}

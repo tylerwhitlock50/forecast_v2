@@ -403,4 +403,139 @@ class ExpenseReportSummary(BaseModel):
     upcoming_payments: List[Dict[str, Any]]
     overdue_payments: List[Dict[str, Any]]
     top_categories: List[Dict[str, Any]]
-    monthly_forecast: List[ExpenseForecast] 
+    monthly_forecast: List[ExpenseForecast]
+
+# Loan Management Models
+
+class LoanBase(BaseModel):
+    loan_name: str
+    lender: str
+    loan_type: str  # 'term_loan', 'line_of_credit', 'sba_loan', 'equipment_loan', 'real_estate_loan'
+    principal_amount: float
+    interest_rate: float  # Annual percentage rate
+    loan_term_months: int
+    start_date: str
+    payment_type: str  # 'amortizing', 'interest_only'
+    payment_frequency: str = 'monthly'  # 'monthly', 'quarterly', 'annually'
+    balloon_payment: Optional[float] = None
+    balloon_date: Optional[str] = None
+    description: Optional[str] = None
+    collateral_description: Optional[str] = None
+    guarantor: Optional[str] = None
+    loan_officer: Optional[str] = None
+    account_number: Optional[str] = None
+    is_active: bool = True
+
+class Loan(LoanBase):
+    loan_id: str
+    created_date: str
+    updated_date: str
+    current_balance: float
+    next_payment_date: str
+    monthly_payment_amount: float
+
+class LoanCreate(LoanBase):
+    pass
+
+class LoanUpdate(BaseModel):
+    loan_name: Optional[str] = None
+    lender: Optional[str] = None
+    loan_type: Optional[str] = None
+    principal_amount: Optional[float] = None
+    interest_rate: Optional[float] = None
+    loan_term_months: Optional[int] = None
+    start_date: Optional[str] = None
+    payment_type: Optional[str] = None
+    payment_frequency: Optional[str] = None
+    balloon_payment: Optional[float] = None
+    balloon_date: Optional[str] = None
+    description: Optional[str] = None
+    collateral_description: Optional[str] = None
+    guarantor: Optional[str] = None
+    loan_officer: Optional[str] = None
+    account_number: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class LoanPayment(BaseModel):
+    payment_id: str
+    loan_id: str
+    payment_number: int
+    payment_date: str
+    payment_amount: float
+    principal_payment: float
+    interest_payment: float
+    remaining_balance: float
+    payment_status: str  # 'scheduled', 'paid', 'overdue', 'skipped'
+    actual_payment_date: Optional[str] = None
+    actual_payment_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+class LoanPaymentCreate(BaseModel):
+    loan_id: str
+    payment_number: int
+    payment_date: str
+    payment_amount: float
+    principal_payment: float
+    interest_payment: float
+    remaining_balance: float
+    payment_status: str = 'scheduled'
+    actual_payment_date: Optional[str] = None
+    actual_payment_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+class AmortizationSchedule(BaseModel):
+    loan_id: str
+    loan_name: str
+    lender: str
+    payment_schedule: List[LoanPayment]
+    total_payments: float
+    total_interest: float
+    loan_summary: Dict[str, Any]
+
+class LoanWithDetails(BaseModel):
+    loan_id: str
+    loan_name: str
+    lender: str
+    loan_type: str
+    principal_amount: float
+    interest_rate: float
+    loan_term_months: int
+    start_date: str
+    payment_type: str
+    payment_frequency: str
+    balloon_payment: Optional[float] = None
+    balloon_date: Optional[str] = None
+    description: Optional[str] = None
+    collateral_description: Optional[str] = None
+    guarantor: Optional[str] = None
+    loan_officer: Optional[str] = None
+    account_number: Optional[str] = None
+    is_active: bool
+    created_date: str
+    updated_date: str
+    current_balance: float
+    next_payment_date: str
+    monthly_payment_amount: float
+    payments_made: int
+    payments_remaining: int
+    total_interest_paid: float
+    total_interest_remaining: float
+
+class LoanSummary(BaseModel):
+    total_loans: int
+    active_loans: int
+    total_principal: float
+    total_current_balance: float
+    total_monthly_payments: float
+    total_annual_payments: float
+    upcoming_payments: List[Dict[str, Any]]
+    loans_by_type: List[Dict[str, Any]]
+    interest_rate_summary: Dict[str, float]
+
+class CashFlowProjection(BaseModel):
+    period: str  # YYYY-MM format
+    loan_payments: List[Dict[str, Any]]
+    total_principal: float
+    total_interest: float
+    total_payment: float
+    remaining_balance: float 
