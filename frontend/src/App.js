@@ -20,88 +20,32 @@ import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseMan
 import LoanManagement from './components/Modules/LoanManagement/LoanManagementNew';
 import Dashboard from './components/Dashboard';
 
-// Import Shadcn UI components
-import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
-import { Button } from './components/ui/button';
-import { Badge } from './components/ui/badge';
-
 // Placeholder components for modules not yet implemented
-const PlaceholderComponent = ({ title, description, icon = "🚧" }) => (
-  <div className="min-h-screen bg-gray-50 p-6">
-    <div className="max-w-4xl mx-auto">
-      <div className="text-center mb-8">
-        <div className="text-6xl mb-4">{icon}</div>
-        <h1 className="text-3xl font-bold text-gray-900 mb-4">{title}</h1>
-        <p className="text-lg text-gray-600 max-w-2xl mx-auto leading-relaxed">
-          {description}
-        </p>
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="text-orange-600">📊</span>
-              Data Management
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-600 mb-4">
-              Import and manage your data with our comprehensive tools.
-            </p>
-            <Button variant="outline" className="w-full">
-              Learn More
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="text-orange-600">📈</span>
-              Analytics
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-600 mb-4">
-              Get insights and analytics to make informed decisions.
-            </p>
-            <Button variant="outline" className="w-full">
-              Explore
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="text-orange-600">⚙️</span>
-              Configuration
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-600 mb-4">
-              Configure settings and preferences for optimal performance.
-            </p>
-            <Button variant="outline" className="w-full">
-              Configure
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card className="mt-8 bg-orange-50 border-orange-200">
-        <CardContent className="pt-6">
-          <div className="flex items-center gap-3">
-            <Badge variant="secondary" className="bg-orange-100 text-orange-800">
-              Coming Soon
-            </Badge>
-            <p className="text-orange-800 font-medium">
-              This module is under development and will be available soon.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+const PlaceholderComponent = ({ title, description }) => (
+  <div style={{ 
+    padding: '2rem', 
+    textAlign: 'center', 
+    background: '#f8f9fa', 
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center'
+  }}>
+    <h2 style={{ color: '#2c3e50', marginBottom: '1rem' }}>{title}</h2>
+    <p style={{ color: '#6c757d', fontSize: '1.1rem', maxWidth: '600px', lineHeight: '1.6' }}>
+      {description}
+    </p>
+    <div style={{ 
+      marginTop: '2rem', 
+      padding: '1rem', 
+      background: 'white', 
+      borderRadius: '8px',
+      border: '1px solid #e9ecef'
+    }}>
+      <p style={{ margin: 0, color: '#495057', fontSize: '0.9rem' }}>
+        🚧 This module is under development and will be available soon.
+      </p>
     </div>
   </div>
 );
@@ -111,7 +55,6 @@ const ProductCustomerSetup = () => (
   <PlaceholderComponent 
     title="Product & Customer Setup" 
     description="Manage your product catalog and customer database. Create product SKUs, define customer segments, and set up the foundational data for your revenue forecasting."
-    icon="📦"
   />
 );
 
@@ -119,7 +62,6 @@ const SegmentAnalysis = () => (
   <PlaceholderComponent 
     title="Segment Analysis" 
     description="Analyze revenue performance across different customer segments. Compare segment metrics, identify trends, and optimize your forecasting strategy."
-    icon="📊"
   />
 );
 
@@ -152,7 +94,6 @@ const DepartmentManagement = () => (
   <PlaceholderComponent 
     title="Department Management" 
     description="Organize your workforce by departments and cost centers. Define reporting structures and budget allocations."
-    icon="🏢"
   />
 );
 
@@ -160,7 +101,6 @@ const LaborAnalysis = () => (
   <PlaceholderComponent 
     title="Labor Analysis" 
     description="Analyze labor costs and productivity metrics. Track efficiency trends and identify optimization opportunities."
-    icon="👥"
   />
 );
 
@@ -176,7 +116,6 @@ const UnitManagement = () => (
   <PlaceholderComponent 
     title="Unit Management" 
     description="Manage product units and finished goods. Configure unit specifications, pricing, and product catalog information."
-    icon="📦"
   />
 );
 
@@ -186,7 +125,6 @@ const CashFlow = () => (
   <PlaceholderComponent 
     title="Cash Flow" 
     description="Monitor cash flow projections and liquidity management. Analyze working capital requirements and financial health."
-    icon="💰"
   />
 );
 
@@ -194,7 +132,6 @@ const IncomeStatement = () => (
   <PlaceholderComponent 
     title="Income Statement" 
     description="Generate comprehensive income statements from your forecast data. View consolidated financial projections and performance metrics."
-    icon="📊"
   />
 );
 
@@ -202,7 +139,6 @@ const ScenarioAnalysis = () => (
   <PlaceholderComponent 
     title="Scenario Analysis" 
     description="Compare different forecast scenarios side-by-side. Analyze best case, worst case, and base case projections."
-    icon="📈"
   />
 );
 
@@ -210,7 +146,6 @@ const DataCompleteness = () => (
   <PlaceholderComponent 
     title="Data Completeness" 
     description="Monitor data quality and completeness across all modules. Identify missing information and validation errors."
-    icon="✅"
   />
 );
 
@@ -218,7 +153,6 @@ const BulkImport = () => (
   <PlaceholderComponent 
     title="Bulk Import" 
     description="Import large datasets from CSV, Excel, or other formats. Batch process your forecasting data efficiently."
-    icon="📥"
   />
 );
 
@@ -226,7 +160,6 @@ const Export = () => (
   <PlaceholderComponent 
     title="Export" 
     description="Export your forecast data and reports in various formats. Generate professional presentations and documentation."
-    icon="📤"
   />
 );
 
@@ -241,17 +174,6 @@ const AppLayout = ({ children }) => {
         isCollapsed={navCollapsed}
         onToggle={() => setNavCollapsed(!navCollapsed)}
       />
-      
-      {/* Floating Hamburger Menu Button - Always Visible */}
-      <button
-        onClick={() => setNavCollapsed(!navCollapsed)}
-        className="fixed top-4 left-4 z-50 h-12 w-12 bg-orange-600 hover:bg-orange-700 text-white rounded-lg shadow-lg flex items-center justify-center transition-all duration-200 hover:scale-105 lg:hidden"
-        title={navCollapsed ? "Show Navigation" : "Hide Navigation"}
-      >
-        <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
       
       <div 
         className={`main-content ${navCollapsed ? 'nav-collapsed' : ''}`}
@@ -328,12 +250,11 @@ function App() {
             toastOptions={{
               duration: 4000,
               style: {
-                background: '#1f2937',
+                background: '#363636',
                 color: '#fff',
                 borderRadius: '8px',
                 fontSize: '14px',
-                fontWeight: '500',
-                border: '1px solid #374151'
+                fontWeight: '500'
               },
               success: {
                 iconTheme: {
@@ -344,12 +265,6 @@ function App() {
               error: {
                 iconTheme: {
                   primary: '#EF4444',
-                  secondary: '#fff'
-                }
-              },
-              loading: {
-                iconTheme: {
-                  primary: '#c2410c',
                   secondary: '#fff'
                 }
               }

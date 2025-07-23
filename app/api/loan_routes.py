@@ -218,8 +218,32 @@ async def get_loans(active_only: bool = Query(True)):
     try:
         from db.database import db_manager
         
+        print(f"Getting loans with active_only={active_only}")
+        
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        
+        # First, let's check if the loans table exists and has data
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='loans'")
+        if not cursor.fetchone():
+            print("Loans table does not exist!")
+            return ForecastResponse(
+                status="success",
+                data={"loans": []},
+                message="No loans table found"
+            )
+        
+        # Check if there's any data in the loans table
+        cursor.execute("SELECT COUNT(*) FROM loans")
+        loan_count = cursor.fetchone()[0]
+        print(f"Found {loan_count} loans in database")
+        
+        if loan_count == 0:
+            return ForecastResponse(
+                status="success",
+                data={"loans": []},
+                message="No loans found in database"
+            )
         
         # Build query
         query = """
@@ -238,15 +262,18 @@ async def get_loans(active_only: bool = Query(True)):
         
         query += " GROUP BY l.loan_id ORDER BY l.created_date DESC"
         
+        print(f"Executing query: {query}")
         cursor.execute(query, params)
         loan_rows = cursor.fetchall()
         
         # Get column names
         columns = [description[0] for description in cursor.description]
+        print(f"Columns: {columns}")
         
         loans = []
         for row in loan_rows:
             loan_dict = dict(zip(columns, row))
+            print(f"Processing loan: {loan_dict.get('loan_id', 'Unknown')}")
             
             # Calculate payments remaining
             total_payments = loan_dict.get('total_payments', 0)
@@ -286,6 +313,7 @@ async def get_loans(active_only: bool = Query(True)):
         
         db_manager.close_connection(conn)
         
+        print(f"Successfully retrieved {len(loans)} loans")
         return ForecastResponse(
             status="success",
             data={"loans": loans},
@@ -293,6 +321,9 @@ async def get_loans(active_only: bool = Query(True)):
         )
         
     except Exception as e:
+        import traceback
+        print(f"Error in get_loans: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error retrieving loans: {str(e)}")
 
 @router.get("/{loan_id}/schedule", response_model=ForecastResponse)
@@ -373,10 +404,33 @@ async def get_loan_summary():
     try:
         from db.database import db_manager
         
+        print("Getting loan summary...")
+        
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
+        # Check if loans table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='loans'")
+        if not cursor.fetchone():
+            print("Loans table does not exist for summary!")
+            return ForecastResponse(
+                status="success",
+                data={
+                    "total_loans": 0,
+                    "active_loans": 0,
+                    "total_principal": 0,
+                    "total_current_balance": 0,
+                    "total_monthly_payments": 0,
+                    "total_annual_payments": 0,
+                    "interest_rate_summary": {"average": 0, "minimum": 0, "maximum": 0},
+                    "loans_by_type": [],
+                    "upcoming_payments": []
+                },
+                message="No loans table found"
+            )
+        
         # Get basic loan statistics
+        print("Getting basic statistics...")
         cursor.execute("""
             SELECT 
                 COUNT(*) as total_loans,
@@ -390,8 +444,10 @@ async def get_loan_summary():
             FROM loans
         """)
         stats = cursor.fetchone()
+        print(f"Basic stats: {stats}")
         
         # Get loans by type
+        print("Getting loans by type...")
         cursor.execute("""
             SELECT loan_type, 
                    COUNT(*) as count,
@@ -409,8 +465,10 @@ async def get_loan_summary():
                 "total_balance": row[2],
                 "avg_interest_rate": row[3]
             })
+        print(f"Loans by type: {loans_by_type}")
         
         # Get upcoming payments (next 30 days)
+        print("Getting upcoming payments...")
         cursor.execute("""
             SELECT l.loan_name, l.lender, lp.payment_date, lp.payment_amount, lp.payment_status
             FROM loan_payments lp
@@ -430,6 +488,7 @@ async def get_loan_summary():
                 "payment_amount": row[3],
                 "payment_status": row[4]
             })
+        print(f"Upcoming payments: {upcoming_payments}")
         
         db_manager.close_connection(conn)
         
@@ -449,6 +508,7 @@ async def get_loan_summary():
             }
         )
         
+        print("Successfully retrieved loan summary")
         return ForecastResponse(
             status="success",
             data=summary.dict(),
@@ -456,6 +516,9 @@ async def get_loan_summary():
         )
         
     except Exception as e:
+        import traceback
+        print(f"Error in get_loan_summary: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error retrieving loan summary: {str(e)}")
 
 @router.get("/cash-flow", response_model=ForecastResponse)

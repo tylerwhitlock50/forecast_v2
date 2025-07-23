@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
@@ -275,7 +274,8 @@ const MachineManagement = () => {
         setEditingMachine(null);
         setShowMachineModal(true);
       },
-      variant: 'default'
+      variant: 'default',
+      className: 'bg-orange-600 hover:bg-orange-700'
     }
   ];
 
@@ -338,41 +338,77 @@ const MachineManagement = () => {
         )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="table">Machine Table</TabsTrigger>
-          <TabsTrigger value="summary">Summary</TabsTrigger>
-          <TabsTrigger value="validation">Data Validation</TabsTrigger>
-        </TabsList>
+      {/* Custom Tab Navigation */}
+      <div className="space-y-6">
+        {/* Tab Buttons */}
+        <div className="grid w-full grid-cols-3 bg-gray-100 p-1 rounded-lg">
+          <button
+            onClick={() => setActiveTab('table')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'table'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Machine Table
+          </button>
+          <button
+            onClick={() => setActiveTab('summary')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'summary'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Summary
+          </button>
+          <button
+            onClick={() => setActiveTab('validation')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'validation'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Data Validation
+          </button>
+        </div>
 
-        <TabsContent value="table" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>All Machines ({filteredMachines.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DataTable
-                data={filteredMachines}
-                columns={machineColumns}
-                onEdit={(machine) => {
-                  setEditingMachine(machine);
-                  setShowMachineModal(true);
-                }}
-                onDelete={(machine) => handleDeleteMachine(machine.machine_id)}
-                emptyMessage="No machines found. Click 'Add Machine' to get started."
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {/* Tab Content */}
+        {activeTab === 'table' && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>All Machines ({filteredMachines.length})</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DataTable
+                  data={filteredMachines}
+                  columns={machineColumns}
+                  onEdit={(machine) => {
+                    setEditingMachine(machine);
+                    setShowMachineModal(true);
+                  }}
+                  onDelete={(machine) => handleDeleteMachine(machine.machine_id)}
+                  emptyMessage="No machines found. Click 'Add Machine' to get started."
+                />
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
-        <TabsContent value="summary" className="space-y-6">
-          <MachineSummary machines={data.machines || []} />
-        </TabsContent>
+        {activeTab === 'summary' && (
+          <div className="space-y-6">
+            <MachineSummary machines={data.machines || []} />
+          </div>
+        )}
 
-        <TabsContent value="validation" className="space-y-6">
-          <MachineValidation machines={data.machines || []} />
-        </TabsContent>
-      </Tabs>
+        {activeTab === 'validation' && (
+          <div className="space-y-6">
+            <MachineValidation machines={data.machines || []} />
+          </div>
+        )}
+      </div>
 
       <MachineModal
         isOpen={showMachineModal}

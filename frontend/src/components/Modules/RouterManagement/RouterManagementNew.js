@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
@@ -272,7 +271,8 @@ const RouterManagement = () => {
         setEditingRouter(null);
         setShowRouterModal(true);
       },
-      variant: 'default'
+      variant: 'default',
+      className: 'bg-orange-600 hover:bg-orange-700'
     }
   ];
 
@@ -335,53 +335,89 @@ const RouterManagement = () => {
         )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="table">Router Table</TabsTrigger>
-          <TabsTrigger value="summary">Summary</TabsTrigger>
-          <TabsTrigger value="validation">Data Validation</TabsTrigger>
-        </TabsList>
+      {/* Custom Tab Navigation */}
+      <div className="space-y-6">
+        {/* Tab Buttons */}
+        <div className="grid w-full grid-cols-3 bg-gray-100 p-1 rounded-lg">
+          <button
+            onClick={() => setActiveTab('table')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'table'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Router Table
+          </button>
+          <button
+            onClick={() => setActiveTab('summary')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'summary'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Summary
+          </button>
+          <button
+            onClick={() => setActiveTab('validation')}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === 'validation'
+                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Data Validation
+          </button>
+        </div>
 
-        <TabsContent value="table" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>All Routers ({filteredRouters.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DataTable
-                data={filteredRouters}
-                columns={routerColumns}
-                onEdit={(router) => {
-                  setEditingRouter(router);
-                  setShowRouterModal(true);
-                }}
-                onDelete={(router) => handleDeleteRouter(router.router_id)}
-                emptyMessage="No routers found. Click 'Add Router' to get started."
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {/* Tab Content */}
+        {activeTab === 'table' && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>All Routers ({filteredRouters.length})</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DataTable
+                  data={filteredRouters}
+                  columns={routerColumns}
+                  onEdit={(router) => {
+                    setEditingRouter(router);
+                    setShowRouterModal(true);
+                  }}
+                  onDelete={(router) => handleDeleteRouter(router.router_id)}
+                  emptyMessage="No routers found. Click 'Add Router' to get started."
+                />
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
-        <TabsContent value="summary" className="space-y-6">
-          <RouterSummary 
-            routers={data.router_definitions || []} 
-            routerOperations={data.router_operations || []}
-            machines={data.machines || []}
-            units={data.units || []}
-            laborRates={data.labor_rates || []}
-          />
-        </TabsContent>
+        {activeTab === 'summary' && (
+          <div className="space-y-6">
+            <RouterSummary 
+              routers={data.router_definitions || []} 
+              routerOperations={data.router_operations || []}
+              machines={data.machines || []}
+              units={data.units || []}
+              laborRates={data.labor_rates || []}
+            />
+          </div>
+        )}
 
-        <TabsContent value="validation" className="space-y-6">
-          <RouterValidation 
-            routers={data.router_definitions || []} 
-            routerOperations={data.router_operations || []}
-            machines={data.machines || []}
-            units={data.units || []}
-            laborRates={data.labor_rates || []}
-          />
-        </TabsContent>
-      </Tabs>
+        {activeTab === 'validation' && (
+          <div className="space-y-6">
+            <RouterValidation 
+              routers={data.router_definitions || []} 
+              routerOperations={data.router_operations || []}
+              machines={data.machines || []}
+              units={data.units || []}
+              laborRates={data.labor_rates || []}
+            />
+          </div>
+        )}
+      </div>
 
       <RouterModal
         isOpen={showRouterModal}

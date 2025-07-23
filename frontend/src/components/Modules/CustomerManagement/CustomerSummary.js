@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 
 const CustomerSummary = ({ customers }) => {
   const summaryData = useMemo(() => {
@@ -55,193 +55,221 @@ const CustomerSummary = ({ customers }) => {
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5);
 
+  const summaryCards = [
+    {
+      title: "Total Customers",
+      value: summaryData.totalCustomers,
+      icon: "👥",
+      color: "text-blue-600"
+    },
+    {
+      title: "Complete Profiles",
+      value: summaryData.dataQuality.completeProfiles,
+      icon: "✅",
+      color: "text-green-600"
+    },
+    {
+      title: "With Email",
+      value: summaryData.contactMetrics.withEmail,
+      icon: "📧",
+      color: "text-purple-600"
+    },
+    {
+      title: "With Phone",
+      value: summaryData.contactMetrics.withPhone,
+      icon: "📞",
+      color: "text-orange-600"
+    }
+  ];
+
   return (
-    <div className="customer-summary">
-      <div className="summary-header">
-        <h3>Customer Analytics</h3>
-        <p>Overview of your customer database</p>
+    <div className="space-y-6">
+      {/* Key Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {summaryCards.map((card, index) => (
+          <Card key={index} className="hover:shadow-lg transition-shadow">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <span>{card.icon}</span>
+                {card.title}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className={`text-2xl font-bold ${card.color}`}>
+                {card.value}
+              </p>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
-      <div className="summary-grid">
-        {/* Key Metrics */}
-        <div className="summary-section">
-          <h4>Key Metrics</h4>
-          <div className="metrics-grid">
-            <div className="metric-card">
-              <div className="metric-icon">👥</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.totalCustomers}</span>
-                <span className="metric-label">Total Customers</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">✅</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.dataQuality.completeProfiles}</span>
-                <span className="metric-label">Complete Profiles</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">📧</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.contactMetrics.withEmail}</span>
-                <span className="metric-label">With Email</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">📞</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.contactMetrics.withPhone}</span>
-                <span className="metric-label">With Phone</span>
-              </div>
-            </div>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
         {/* Customer Types */}
-        <div className="summary-section">
-          <h4>Customer Types</h4>
-          <div className="chart-container">
-            {topCustomerTypes.map(([type, count]) => (
-              <div key={type} className="chart-bar">
-                <div className="bar-label">{type}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(count / summaryData.totalCustomers) * 100}%`,
-                      backgroundColor: getTypeColor(type)
-                    }}
-                  ></div>
-                  <span className="bar-value">{count}</span>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">Customer Types</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {topCustomerTypes.map(([type, count]) => (
+                <div key={type} className="space-y-2">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="font-medium">{type}</span>
+                    <span className="text-muted-foreground">{count}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="h-2 rounded-full transition-all duration-300"
+                      style={{ 
+                        width: `${(count / summaryData.totalCustomers) * 100}%`,
+                        backgroundColor: getTypeColor(type)
+                      }}
+                    ></div>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Regional Distribution */}
-        <div className="summary-section">
-          <h4>Regional Distribution</h4>
-          <div className="chart-container">
-            {topRegions.map(([region, count]) => (
-              <div key={region} className="chart-bar">
-                <div className="bar-label">{region}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(count / summaryData.totalCustomers) * 100}%`,
-                      backgroundColor: getRegionColor(region)
-                    }}
-                  ></div>
-                  <span className="bar-value">{count}</span>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">Regional Distribution</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {topRegions.map(([region, count]) => (
+                <div key={region} className="space-y-2">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="font-medium">{region}</span>
+                    <span className="text-muted-foreground">{count}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="h-2 rounded-full transition-all duration-300"
+                      style={{ 
+                        width: `${(count / summaryData.totalCustomers) * 100}%`,
+                        backgroundColor: getRegionColor(region)
+                      }}
+                    ></div>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Data Quality */}
-        <div className="summary-section">
-          <h4>Data Quality</h4>
-          <div className="quality-metrics">
-            <div className="quality-item">
-              <span className="quality-label">Complete Profiles</span>
-              <div className="quality-bar">
-                <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalCustomers) * 100}%`,
-                    backgroundColor: '#28a745'
-                  }}
-                ></div>
-              </div>
-              <span className="quality-value">{summaryData.dataQuality.completeProfiles}</span>
+              ))}
             </div>
-            
-            <div className="quality-item">
-              <span className="quality-label">With Email</span>
-              <div className="quality-bar">
-                <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100}%`,
-                    backgroundColor: '#007bff'
-                  }}
-                ></div>
-              </div>
-              <span className="quality-value">{summaryData.contactMetrics.withEmail}</span>
-            </div>
-            
-            <div className="quality-item">
-              <span className="quality-label">With Phone</span>
-              <div className="quality-bar">
-                <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.contactMetrics.withPhone / summaryData.totalCustomers) * 100}%`,
-                    backgroundColor: '#ffc107'
-                  }}
-                ></div>
-              </div>
-              <span className="quality-value">{summaryData.contactMetrics.withPhone}</span>
-            </div>
-            
-            <div className="quality-item">
-              <span className="quality-label">With Address</span>
-              <div className="quality-bar">
-                <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.contactMetrics.withAddress / summaryData.totalCustomers) * 100}%`,
-                    backgroundColor: '#6f42c1'
-                  }}
-                ></div>
-              </div>
-              <span className="quality-value">{summaryData.contactMetrics.withAddress}</span>
-            </div>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Data Quality */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">Data Quality</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">Complete Profiles</span>
+                <span className="text-muted-foreground">{summaryData.dataQuality.completeProfiles}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-green-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">With Email</span>
+                <span className="text-muted-foreground">{summaryData.contactMetrics.withEmail}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-blue-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">With Phone</span>
+                <span className="text-muted-foreground">{summaryData.contactMetrics.withPhone}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-yellow-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.contactMetrics.withPhone / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">With Address</span>
+                <span className="text-muted-foreground">{summaryData.contactMetrics.withAddress}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-purple-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.contactMetrics.withAddress / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Recommendations */}
-      <div className="summary-section recommendations">
-        <h4>Recommendations</h4>
-        <div className="recommendations-list">
-          {summaryData.dataQuality.incompleteProfiles > 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">⚠️</span>
-              <span className="recommendation-text">
-                {summaryData.dataQuality.incompleteProfiles} customers have incomplete profiles. 
-                Consider reaching out to gather missing information.
-              </span>
-            </div>
-          )}
-          
-          {summaryData.contactMetrics.withEmail < summaryData.totalCustomers * 0.8 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">📧</span>
-              <span className="recommendation-text">
-                Only {Math.round((summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100)}% of customers have email addresses. 
-                Email addresses are crucial for marketing campaigns.
-              </span>
-            </div>
-          )}
-          
-          {Object.keys(summaryData.typeBreakdown).length < 3 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🏷️</span>
-              <span className="recommendation-text">
-                Customer types are not well diversified. Consider adding more customer type categories.
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {summaryData.dataQuality.incompleteProfiles > 0 && (
+              <div className="flex items-start gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <span className="text-xl">⚠️</span>
+                <span className="text-sm text-yellow-800">
+                  {summaryData.dataQuality.incompleteProfiles} customers have incomplete profiles. 
+                  Consider reaching out to gather missing information.
+                </span>
+              </div>
+            )}
+            
+            {summaryData.contactMetrics.withEmail < summaryData.totalCustomers * 0.8 && (
+              <div className="flex items-start gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <span className="text-xl">📧</span>
+                <span className="text-sm text-blue-800">
+                  Only {Math.round((summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100)}% of customers have email addresses. 
+                  Email addresses are crucial for marketing campaigns.
+                </span>
+              </div>
+            )}
+            
+            {Object.keys(summaryData.typeBreakdown).length < 3 && (
+              <div className="flex items-start gap-3 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                <span className="text-xl">🏷️</span>
+                <span className="text-sm text-purple-800">
+                  Customer types are not well diversified. Consider adding more customer type categories.
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };

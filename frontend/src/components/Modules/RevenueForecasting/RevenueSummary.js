@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+
 
 const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
   const { activeScenario } = useForecast();
@@ -37,56 +37,28 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
     };
   }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario]);
 
-  const summaryCards = [
-    {
-      title: "Total Revenue",
-      value: `$${summaryStats.totalRevenue.toLocaleString()}`,
-      icon: "💰",
-      color: "text-green-600"
-    },
-    {
-      title: "Total Quantity",
-      value: summaryStats.totalQuantity.toLocaleString(),
-      icon: "📦",
-      color: "text-blue-600"
-    },
-    {
-      title: "Products",
-      value: summaryStats.productCount,
-      icon: "🏷️",
-      color: "text-purple-600"
-    },
-    {
-      title: "Customers",
-      value: summaryStats.customerCount,
-      icon: "👥",
-      color: "text-orange-600"
-    },
-    {
-      title: "Avg Price",
-      value: `$${summaryStats.averagePrice.toFixed(2)}`,
-      icon: "💵",
-      color: "text-indigo-600"
-    }
-  ];
-
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      {summaryCards.map((card, index) => (
-        <Card key={index} className="hover:shadow-lg transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-              <span>{card.icon}</span>
-              {card.title}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className={`text-2xl font-bold ${card.color}`}>
-              {card.value}
-            </p>
-          </CardContent>
-        </Card>
-      ))}
+    <div className="revenue-summary">
+      <div className="summary-card">
+        <h4>Total Revenue</h4>
+        <p className="summary-value">${summaryStats.totalRevenue.toLocaleString()}</p>
+      </div>
+      <div className="summary-card">
+        <h4>Total Quantity</h4>
+        <p className="summary-value">{summaryStats.totalQuantity.toLocaleString()}</p>
+      </div>
+      <div className="summary-card">
+        <h4>Products</h4>
+        <p className="summary-value">{summaryStats.productCount}</p>
+      </div>
+      <div className="summary-card">
+        <h4>Customers</h4>
+        <p className="summary-value">{summaryStats.customerCount}</p>
+      </div>
+      <div className="summary-card">
+        <h4>Avg Price</h4>
+        <p className="summary-value">${summaryStats.averagePrice.toFixed(2)}</p>
+      </div>
     </div>
   );
 };

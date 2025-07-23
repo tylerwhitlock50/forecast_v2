@@ -117,9 +117,13 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
       const startDate = new Date(formData.start_period + '-01');
       const endDate = new Date(formData.end_period + '-01');
       
-      let currentDate = new Date(startDate);
-      while (currentDate <= endDate) {
-        const periodKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+      // Use a more reliable date iteration method
+      let currentYear = startDate.getFullYear();
+      let currentMonth = startDate.getMonth();
+      
+      while (true) {
+        // Create period key for current month
+        const periodKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
         
         // Calculate quantity for this period based on period type
         let periodQuantity = formData.quantity;
@@ -141,8 +145,17 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
           forecast_id: activeScenario
         });
         
-        // Move to next month
-        currentDate.setMonth(currentDate.getMonth() + 1);
+        // Check if we've reached the end date
+        if (currentYear === endDate.getFullYear() && currentMonth === endDate.getMonth()) {
+          break;
+        }
+        
+        // Move to next month safely
+        currentMonth++;
+        if (currentMonth > 11) {
+          currentMonth = 0;
+          currentYear++;
+        }
       }
 
       // Call the save function

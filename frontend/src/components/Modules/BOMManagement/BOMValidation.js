@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Badge } from '../../ui/badge';
 
 const BOMValidation = ({ boms, bomItems, units }) => {
   // Ensure arrays are defined and not null
