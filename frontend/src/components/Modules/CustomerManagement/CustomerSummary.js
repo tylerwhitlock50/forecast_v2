@@ -7,7 +7,7 @@ const CustomerSummary = ({ customers }) => {
     
     // Customer types breakdown
     const typeBreakdown = customers.reduce((acc, customer) => {
-      const type = customer.customer_type || 'General';
+      const type = customer.customer_type || 'Unspecified';
       acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
@@ -19,30 +19,37 @@ const CustomerSummary = ({ customers }) => {
       return acc;
     }, {});
     
-    // Contact completeness
-    const withEmail = customers.filter(c => c.email).length;
-    const withPhone = customers.filter(c => c.phone).length;
-    const withAddress = customers.filter(c => c.address).length;
-    const withContactPerson = customers.filter(c => c.contact_person).length;
+    // Data completeness metrics
+    const withCustomerId = customers.filter(c => c.customer_id).length;
+    const withCustomerName = customers.filter(c => c.customer_name).length;
+    const withCustomerType = customers.filter(c => c.customer_type).length;
+    const withRegion = customers.filter(c => c.region).length;
     
     // Data quality metrics
     const completeProfiles = customers.filter(c => 
-      c.customer_name && c.email && c.phone && c.address
+      c.customer_id && c.customer_name && c.customer_type && c.region
+    ).length;
+    
+    // Customer ID format compliance
+    const validIdFormat = customers.filter(c => 
+      c.customer_id && c.customer_id.match(/^CUST-\d{3}$/)
     ).length;
     
     return {
       totalCustomers,
       typeBreakdown,
       regionBreakdown,
-      contactMetrics: {
-        withEmail,
-        withPhone,
-        withAddress,
-        withContactPerson
+      dataMetrics: {
+        withCustomerId,
+        withCustomerName,
+        withCustomerType,
+        withRegion
       },
       dataQuality: {
         completeProfiles,
-        incompleteProfiles: totalCustomers - completeProfiles
+        incompleteProfiles: totalCustomers - completeProfiles,
+        validIdFormat,
+        invalidIdFormat: totalCustomers - validIdFormat
       }
     };
   }, [customers]);
@@ -69,15 +76,15 @@ const CustomerSummary = ({ customers }) => {
       color: "text-green-600"
     },
     {
-      title: "With Email",
-      value: summaryData.contactMetrics.withEmail,
-      icon: "📧",
+      title: "Valid ID Format",
+      value: summaryData.dataQuality.validIdFormat,
+      icon: "🆔",
       color: "text-purple-600"
     },
     {
-      title: "With Phone",
-      value: summaryData.contactMetrics.withPhone,
-      icon: "📞",
+      title: "With Region",
+      value: summaryData.dataMetrics.withRegion,
+      icon: "🌍",
       color: "text-orange-600"
     }
   ];
@@ -186,14 +193,14 @@ const CustomerSummary = ({ customers }) => {
             
             <div className="space-y-2">
               <div className="flex justify-between items-center text-sm">
-                <span className="font-medium">With Email</span>
-                <span className="text-muted-foreground">{summaryData.contactMetrics.withEmail}</span>
+                <span className="font-medium">With Customer ID</span>
+                <span className="text-muted-foreground">{summaryData.dataMetrics.withCustomerId}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="h-2 rounded-full bg-blue-500 transition-all duration-300"
                   style={{ 
-                    width: `${(summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100}%`
+                    width: `${(summaryData.dataMetrics.withCustomerId / summaryData.totalCustomers) * 100}%`
                   }}
                 ></div>
               </div>
@@ -201,29 +208,74 @@ const CustomerSummary = ({ customers }) => {
             
             <div className="space-y-2">
               <div className="flex justify-between items-center text-sm">
-                <span className="font-medium">With Phone</span>
-                <span className="text-muted-foreground">{summaryData.contactMetrics.withPhone}</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div 
-                  className="h-2 rounded-full bg-yellow-500 transition-all duration-300"
-                  style={{ 
-                    width: `${(summaryData.contactMetrics.withPhone / summaryData.totalCustomers) * 100}%`
-                  }}
-                ></div>
-              </div>
-            </div>
-            
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-sm">
-                <span className="font-medium">With Address</span>
-                <span className="text-muted-foreground">{summaryData.contactMetrics.withAddress}</span>
+                <span className="font-medium">With Customer Name</span>
+                <span className="text-muted-foreground">{summaryData.dataMetrics.withCustomerName}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="h-2 rounded-full bg-purple-500 transition-all duration-300"
                   style={{ 
-                    width: `${(summaryData.contactMetrics.withAddress / summaryData.totalCustomers) * 100}%`
+                    width: `${(summaryData.dataMetrics.withCustomerName / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">With Customer Type</span>
+                <span className="text-muted-foreground">{summaryData.dataMetrics.withCustomerType}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-yellow-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.dataMetrics.withCustomerType / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">With Region</span>
+                <span className="text-muted-foreground">{summaryData.dataMetrics.withRegion}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-orange-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.dataMetrics.withRegion / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">Valid ID Format</span>
+                <span className="text-muted-foreground">{summaryData.dataQuality.validIdFormat}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-teal-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.dataQuality.validIdFormat / summaryData.totalCustomers) * 100}%`
+                  }}
+                ></div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center text-sm">
+                <span className="font-medium">Invalid ID Format</span>
+                <span className="text-muted-foreground">{summaryData.dataQuality.invalidIdFormat}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="h-2 rounded-full bg-red-500 transition-all duration-300"
+                  style={{ 
+                    width: `${(summaryData.dataQuality.invalidIdFormat / summaryData.totalCustomers) * 100}%`
                   }}
                 ></div>
               </div>
@@ -249,12 +301,12 @@ const CustomerSummary = ({ customers }) => {
               </div>
             )}
             
-            {summaryData.contactMetrics.withEmail < summaryData.totalCustomers * 0.8 && (
-              <div className="flex items-start gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <span className="text-xl">📧</span>
-                <span className="text-sm text-blue-800">
-                  Only {Math.round((summaryData.contactMetrics.withEmail / summaryData.totalCustomers) * 100)}% of customers have email addresses. 
-                  Email addresses are crucial for marketing campaigns.
+            {summaryData.dataQuality.invalidIdFormat > 0 && (
+              <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <span className="text-xl">⚠️</span>
+                <span className="text-sm text-red-800">
+                  {summaryData.dataQuality.invalidIdFormat} customers have invalid ID format. 
+                  Please ensure all customer IDs follow the CUST-XXX format.
                 </span>
               </div>
             )}
@@ -286,7 +338,7 @@ const getTypeColor = (type) => {
     'Retail': '#fd7e14',
     'Manufacturing': '#6c757d',
     'Other': '#6c757d',
-    'General': '#6c757d'
+    'Unspecified': '#6c757d'
   };
   return colors[type] || '#6c757d';
 };

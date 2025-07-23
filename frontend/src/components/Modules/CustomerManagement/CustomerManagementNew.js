@@ -26,10 +26,10 @@ const CustomerManagement = () => {
   const [selectedCustomers, setSelectedCustomers] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
-  // Get unique segments for filtering
-  const segments = useMemo(() => {
+  // Get unique customer types for filtering
+  const customerTypes = useMemo(() => {
     const customers = Array.isArray(data.customers) ? data.customers : [];
-    return [...new Set(customers.map(c => c.customer_type || c.region || 'General'))];
+    return [...new Set(customers.map(c => c.customer_type).filter(Boolean))];
   }, [data.customers]);
 
   // Filter and sort customers
@@ -42,15 +42,14 @@ const CustomerManagement = () => {
         customer.customer_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         customer.customer_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         customer.customer_type?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.region?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.email?.toLowerCase().includes(searchTerm.toLowerCase())
+        customer.region?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
     
-    // Apply segment filter
+    // Apply customer type filter
     if (filterSegment !== 'all') {
       customers = customers.filter(customer => 
-        (customer.customer_type || customer.region || 'General') === filterSegment
+        customer.customer_type === filterSegment
       );
     }
     
@@ -190,41 +189,25 @@ const CustomerManagement = () => {
     },
     {
       key: 'customer_type',
-      title: 'Type/Segment',
-      render: (value, row) => {
-        const segment = value || row.region || 'General';
+      title: 'Customer Type',
+      render: (value) => {
         const variants = {
+          'D2C-WEB': 'default',
+          'ONLINE-DEALER': 'secondary',
+          'DEALER': 'outline',
+          'D2C-AMAZON': 'default',
           'Enterprise': 'success',
           'SMB': 'warning',
           'Retail': 'info',
-          'General': 'default'
+          'Manufacturing': 'secondary'
         };
-        return <Badge variant={variants[segment] || 'default'}>{segment}</Badge>;
+        return <Badge variant={variants[value] || 'default'}>{value || 'N/A'}</Badge>;
       }
     },
     {
       key: 'region',
       title: 'Region',
       render: (value) => value || 'N/A'
-    },
-    {
-      key: 'email',
-      title: 'Email',
-      render: (value) => value || 'N/A'
-    },
-    {
-      key: 'phone',
-      title: 'Phone',
-      render: (value) => value || 'N/A'
-    },
-    {
-      key: 'is_active',
-      title: 'Status',
-      render: (value) => (
-        <Badge variant={value ? 'success' : 'secondary'}>
-          {value ? 'Active' : 'Inactive'}
-        </Badge>
-      )
     }
   ];
 
@@ -292,11 +275,11 @@ const CustomerManagement = () => {
         </div>
         
         <div className="flex items-center gap-2">
-          <Label>Segment:</Label>
+          <Label>Customer Type:</Label>
           <Select value={filterSegment} onValueChange={setFilterSegment}>
-            <SelectOption value="all">All Segments</SelectOption>
-            {segments.map(segment => (
-              <SelectOption key={segment} value={segment}>{segment}</SelectOption>
+            <SelectOption value="all">All Types</SelectOption>
+            {customerTypes.map(type => (
+              <SelectOption key={type} value={type}>{type}</SelectOption>
             ))}
           </Select>
         </div>

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
-
+import { StatsCard } from '../../ui/stats-card';
+import { TrendingUp, Package, Users, DollarSign, BarChart3 } from 'lucide-react';
 
 const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
   const { activeScenario } = useForecast();
@@ -38,27 +39,51 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
   }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario]);
 
   return (
-    <div className="revenue-summary">
-      <div className="summary-card">
-        <h4>Total Revenue</h4>
-        <p className="summary-value">${summaryStats.totalRevenue.toLocaleString()}</p>
-      </div>
-      <div className="summary-card">
-        <h4>Total Quantity</h4>
-        <p className="summary-value">{summaryStats.totalQuantity.toLocaleString()}</p>
-      </div>
-      <div className="summary-card">
-        <h4>Products</h4>
-        <p className="summary-value">{summaryStats.productCount}</p>
-      </div>
-      <div className="summary-card">
-        <h4>Customers</h4>
-        <p className="summary-value">{summaryStats.customerCount}</p>
-      </div>
-      <div className="summary-card">
-        <h4>Avg Price</h4>
-        <p className="summary-value">${summaryStats.averagePrice.toFixed(2)}</p>
-      </div>
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <StatsCard
+        title="Total Revenue"
+        value={`$${summaryStats.totalRevenue.toLocaleString()}`}
+        variant="primary"
+        className="border-l-4 border-l-blue-500"
+      >
+        <DollarSign className="h-4 w-4 text-blue-600 mt-2" />
+      </StatsCard>
+      
+      <StatsCard
+        title="Total Quantity"
+        value={summaryStats.totalQuantity.toLocaleString()}
+        variant="success"
+        className="border-l-4 border-l-green-500"
+      >
+        <Package className="h-4 w-4 text-green-600 mt-2" />
+      </StatsCard>
+      
+      <StatsCard
+        title="Products"
+        value={summaryStats.productCount}
+        variant="warning"
+        className="border-l-4 border-l-yellow-500"
+      >
+        <BarChart3 className="h-4 w-4 text-yellow-600 mt-2" />
+      </StatsCard>
+      
+      <StatsCard
+        title="Customers"
+        value={summaryStats.customerCount}
+        variant="default"
+        className="border-l-4 border-l-gray-500"
+      >
+        <Users className="h-4 w-4 text-gray-600 mt-2" />
+      </StatsCard>
+      
+      <StatsCard
+        title="Avg Price"
+        value={`$${summaryStats.averagePrice.toFixed(2)}`}
+        variant="danger"
+        className="border-l-4 border-l-red-500"
+      >
+        <TrendingUp className="h-4 w-4 text-red-600 mt-2" />
+      </StatsCard>
     </div>
   );
 };

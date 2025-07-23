@@ -26,25 +26,24 @@ const CustomerValidation = ({ customers }) => {
         customerIssues.push('Missing customer ID');
       }
 
-      // Email validation
-      if (customer.email) {
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer.email)) {
-          customerIssues.push('Invalid email format');
-        }
-      } else {
-        customerWarnings.push('No email address provided');
+      // Customer ID format validation
+      if (customer.customer_id && !customer.customer_id.match(/^CUST-\d{3}$/)) {
+        customerWarnings.push('Customer ID should follow format CUST-XXX');
       }
 
-      // Phone validation
-      if (customer.phone) {
-        const phoneRegex = /^[\+]?[1-9][\d]{0,15}$/;
-        const cleanPhone = customer.phone.replace(/[\s\-\(\)]/g, '');
-        if (!phoneRegex.test(cleanPhone)) {
-          customerWarnings.push('Phone number format may be invalid');
-        }
+      // Customer type validation
+      if (!customer.customer_type || customer.customer_type.trim() === '') {
+        customerWarnings.push('No customer type specified');
       } else {
-        customerWarnings.push('No phone number provided');
+        const validTypes = ['D2C-WEB', 'ONLINE-DEALER', 'DEALER', 'D2C-AMAZON', 'Enterprise', 'SMB', 'Startup', 'Government', 'Education', 'Healthcare', 'Retail', 'Manufacturing', 'Other'];
+        if (!validTypes.includes(customer.customer_type)) {
+          customerWarnings.push('Customer type may not be standard');
+        }
+      }
+
+      // Region validation
+      if (!customer.region || customer.region.trim() === '') {
+        customerWarnings.push('No region specified');
       }
 
       // Duplicate check
@@ -57,8 +56,17 @@ const CustomerValidation = ({ customers }) => {
         customerWarnings.push('Duplicate customer name detected');
       }
 
+      const duplicateId = customers.find((c, i) => 
+        i !== index && 
+        c.customer_id && 
+        c.customer_id.toLowerCase() === customer.customer_id?.toLowerCase()
+      );
+      if (duplicateId) {
+        customerIssues.push('Duplicate customer ID detected');
+      }
+
       // Data completeness check
-      const hasCompleteProfile = customer.customer_name && customer.email && customer.phone && customer.address;
+      const hasCompleteProfile = customer.customer_name && customer.customer_id && customer.customer_type && customer.region;
       if (!hasCompleteProfile) {
         customerWarnings.push('Incomplete profile information');
       }
