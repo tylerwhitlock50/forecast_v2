@@ -9,7 +9,7 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import MachineTable from './MachineTable';
+
 import MachineModal from './MachineModal';
 import MachineSummary from './MachineSummary';
 import MachineValidation from './MachineValidation';
@@ -231,28 +231,9 @@ const MachineManagement = () => {
       render: (value) => formatCurrency(value)
     },
     {
-      key: 'available_hours_per_day',
-      title: 'Hours/Day',
-      render: (value) => value ? `${value}h` : 'N/A'
-    },
-    {
-      key: 'setup_time_minutes',
-      title: 'Setup Time',
-      render: (value) => value ? `${value}min` : 'N/A'
-    },
-    {
-      key: 'efficiency_percent',
-      title: 'Efficiency',
-      render: (value) => value ? `${value}%` : 'N/A'
-    },
-    {
-      key: 'is_active',
-      title: 'Status',
-      render: (value) => (
-        <Badge variant={value !== false ? 'success' : 'secondary'}>
-          {value !== false ? 'Active' : 'Inactive'}
-        </Badge>
-      )
+      key: 'available_minutes_per_month',
+      title: 'Available (min/month)',
+      render: (value) => value ? value.toLocaleString() : 'N/A'
     }
   ];
 

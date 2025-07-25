@@ -162,7 +162,8 @@ def update_database_structure():
             machine_name TEXT NOT NULL,
             machine_description TEXT,
             machine_rate REAL,
-            labor_type TEXT
+            labor_type TEXT,
+            available_minutes_per_month REAL
         )
     ''')
     # Labor rates
