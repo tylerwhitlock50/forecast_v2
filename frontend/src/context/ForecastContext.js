@@ -1,9 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/apiClient';
 import { toast } from 'react-hot-toast';
-
-// Use relative path for proxy configuration (both development and production)
-const API_BASE = '/api';
 
 // Initial state
 const initialState = {
@@ -189,34 +186,34 @@ export const ForecastProvider = ({ children }) => {
           routerOperationsRes,
           laborRatesRes,
           forecastRes
-        ] = await Promise.all([
+        ] = await api.batchGet([
           // Filter sales by forecast_id if we have an active scenario
-          axios.get(`${API_BASE}/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`),
-          axios.get(`${API_BASE}/data/units`),
-          axios.get(`${API_BASE}/data/customers`),
-          axios.get(`${API_BASE}/data/machines`),
-          axios.get(`${API_BASE}/data/payroll`),
-          axios.get(`${API_BASE}/data/bom`),
-          axios.get(`${API_BASE}/forecast/bom_definitions`),
-          axios.get(`${API_BASE}/data/router_definitions`),
-          axios.get(`${API_BASE}/data/router_operations`),
-          axios.get(`${API_BASE}/data/labor_rates`),
-          axios.get(`${API_BASE}/data/forecast`) // Get forecast data directly from forecast table
-        ]);
+          `/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`,
+          `/data/units`,
+          `/data/customers`,
+          `/data/machines`,
+          `/data/payroll`,
+          `/data/bom`,
+          `/forecast/bom_definitions`,
+          `/data/router_definitions`,
+          `/data/router_operations`,
+          `/data/labor_rates`,
+          `/data/forecast` // Get forecast data directly from forecast table
+        ], { suppressErrorToast: true });
 
-        // Map backend data to frontend expected format
-        const units = unitsRes.data.status === 'success' ? unitsRes.data.data || [] : [];
-        const customers = customersRes.data.status === 'success' ? customersRes.data.data || [] : [];
-        const sales = salesRes.data.status === 'success' ? salesRes.data.data || [] : [];
-        const machines = machinesRes.data.status === 'success' ? machinesRes.data.data || [] : [];
-        const payroll = payrollRes.data.status === 'success' ? payrollRes.data.data || [] : [];
-        const bom = bomRes.data.status === 'success' ? bomRes.data.data || [] : [];
+        // Map backend data to frontend expected format - API client already handles response format
+        const units = unitsRes?.data || [];
+        const customers = customersRes?.data || [];
+        const sales = salesRes?.data || [];
+        const machines = machinesRes?.data || [];
+        const payroll = payrollRes?.data || [];
+        const bom = bomRes?.data || [];
         console.log('Raw BOM data from API:', bom);
-        const bom_definitions = bomDefinitionsRes.data.status === 'success' ? bomDefinitionsRes.data.data?.bom_definitions || [] : [];
-        const router_definitions = routerDefinitionsRes.data.status === 'success' ? routerDefinitionsRes.data.data || [] : [];
-        const router_operations = routerOperationsRes.data.status === 'success' ? routerOperationsRes.data.data || [] : [];
-        const labor_rates = laborRatesRes.data.status === 'success' ? laborRatesRes.data.data || [] : [];
-        const forecast = forecastRes.data.status === 'success' ? forecastRes.data.data || [] : [];
+        const bom_definitions = bomDefinitionsRes?.data?.bom_definitions || [];
+        const router_definitions = routerDefinitionsRes?.data || [];
+        const router_operations = routerOperationsRes?.data || [];
+        const labor_rates = laborRatesRes?.data || [];
+        const forecast = forecastRes?.data || [];
 
         // Transform units to products format - keep original field names for consistency
         const products = units.map(unit => ({
@@ -350,38 +347,36 @@ export const ForecastProvider = ({ children }) => {
     fetchScenarios: async () => {
       try {
         console.log('Fetching scenarios...');
-        const response = await axios.get(`${API_BASE}/data/forecast`);
-        console.log('Forecast response:', response.data);
+        const response = await api.get('/data/forecast', { suppressErrorToast: true });
+        console.log('Forecast response:', response);
         
-        if (response.data.status === 'success') {
-          const scenarios = response.data.data || [];
-          console.log('Raw scenarios:', scenarios);
-          
-          const scenarioMap = {};
-          
-          scenarios.forEach(scenario => {
-            scenarioMap[scenario.forecast_id] = {
-              id: scenario.forecast_id,
-              name: scenario.name || 'Unnamed Scenario',
-              description: scenario.description || '',
-              isActive: false
-            };
-          });
-          
-          console.log('Processed scenario map:', scenarioMap);
-          
-          // Set first scenario as active if no active scenario
-          if (scenarios.length > 0 && !state.activeScenario) {
-            scenarioMap[scenarios[0].forecast_id].isActive = true;
-            dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
-          }
-          
-          // Store scenarios in both locations for compatibility
-          dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
-          dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
-          
-          console.log('Scenarios loaded successfully');
+        const scenarios = response?.data || [];
+        console.log('Raw scenarios:', scenarios);
+        
+        const scenarioMap = {};
+        
+        scenarios.forEach(scenario => {
+          scenarioMap[scenario.forecast_id] = {
+            id: scenario.forecast_id,
+            name: scenario.name || 'Unnamed Scenario',
+            description: scenario.description || '',
+            isActive: false
+          };
+        });
+        
+        console.log('Processed scenario map:', scenarioMap);
+        
+        // Set first scenario as active if no active scenario
+        if (scenarios.length > 0 && !state.activeScenario) {
+          scenarioMap[scenarios[0].forecast_id].isActive = true;
+          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
         }
+        
+        // Store scenarios in both locations for compatibility
+        dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
+        dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
+        
+        console.log('Scenarios loaded successfully');
       } catch (error) {
         console.error('Error fetching scenarios:', error);
         toast.error('Failed to load forecast scenarios');
@@ -390,20 +385,17 @@ export const ForecastProvider = ({ children }) => {
 
     createScenario: async (scenarioData) => {
       try {
-        const response = await axios.post(`${API_BASE}/forecast/scenario`, scenarioData);
-        if (response.data.status === 'success') {
-          const newScenario = response.data.data;
-          toast.success(`Scenario ${newScenario.forecast_id} created successfully`);
-          
-          // Refresh scenarios and switch to the new one
-          await actions.fetchScenarios();
-          actions.switchScenario(newScenario.forecast_id);
-          
-          return newScenario;
-        }
+        const response = await api.post('/forecast/scenario', scenarioData);
+        const newScenario = response.data;
+        
+        // Refresh scenarios and switch to the new one
+        await actions.fetchScenarios();
+        actions.switchScenario(newScenario.forecast_id);
+        
+        return newScenario;
       } catch (error) {
         console.error('Error creating scenario:', error);
-        toast.error('Failed to create scenario');
+        // Error is already handled by API client
       }
     },
 
@@ -421,17 +413,14 @@ export const ForecastProvider = ({ children }) => {
           forecast_id: sale.forecast_id
         }));
         
-        const response = await axios.post(`${API_BASE}/forecast/bulk_update`, { 
+        const response = await api.post('/forecast/bulk_update', { 
           forecasts,
           operation 
         });
-        if (response.data.status === 'success') {
-          toast.success(`Updated ${response.data.data.updated_count} forecast records`);
-          await actions.fetchAllData();
-        }
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error bulk updating forecast:', error);
-        toast.error('Failed to update forecast');
+        // Error is already handled by API client
         throw error; // Re-throw so the component can handle it
       } finally {
         actions.setLoading(false);
@@ -455,15 +444,13 @@ export const ForecastProvider = ({ children }) => {
           forecast_id: forecastData.forecast_id
         };
 
-        const response = await axios.post(`${API_BASE}/forecast/create`, { sales: salesData });
-        if (response.data.status === 'success') {
-          toast.success('Forecast saved successfully');
-          actions.fetchAllData(); // Refresh data
-        }
+        const response = await api.post('/forecast/create', { sales: salesData });
+        // API client already handles response format and shows success toast
+        actions.fetchAllData(); // Refresh data
       } catch (error) {
         console.error('Error saving forecast:', error);
         actions.setError('Failed to save forecast');
-        toast.error('Failed to save forecast');
+        // Error toast is already handled by API client
       }
     },
 
@@ -489,11 +476,10 @@ export const ForecastProvider = ({ children }) => {
           }
         });
 
-        const response = await axios.post(`${API_BASE}/forecast/update`, backendUpdateData);
-        if (response.data.status === 'success') {
-          toast.success('Forecast updated successfully');
-          actions.fetchAllData(); // Refresh data
-        }
+        const response = await api.post('/forecast/update', backendUpdateData);
+        // API client already handles response format
+        toast.success('Forecast updated successfully');
+        actions.fetchAllData(); // Refresh data
       } catch (error) {
         console.error('Error updating forecast:', error);
         actions.setError('Failed to update forecast');
@@ -506,11 +492,10 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         // Map frontend table names to backend table names
         const backendTableName = tableName === 'forecasts' ? 'sales' : tableName;
-        const response = await axios.delete(`${API_BASE}/forecast/delete/${backendTableName}/${recordId}`);
-        if (response.data.status === 'success') {
-          toast.success('Forecast deleted successfully');
-          actions.fetchAllData(); // Refresh data
-        }
+        const response = await api.delete(`/forecast/delete/${backendTableName}/${recordId}`);
+        // API client already handles response format
+        toast.success('Forecast deleted successfully');
+        actions.fetchAllData(); // Refresh data
       } catch (error) {
         console.error('Error deleting forecast:', error);
         actions.setError('Failed to delete forecast');
@@ -558,15 +543,14 @@ export const ForecastProvider = ({ children }) => {
           customerData.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
         }
 
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'customers',
           data: customerData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Customer created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Customer created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating customer:', error);
         toast.error('Failed to create customer');
@@ -580,16 +564,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'customers',
           id: customerId,
           updates: customerData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Customer updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Customer updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating customer:', error);
         toast.error('Failed to update customer');
@@ -603,12 +586,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${customerId}`);
+        const response = await api.delete(`/forecast/delete/${tableName}/${customerId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Customer deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Customer deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting customer:', error);
         toast.error('Failed to delete customer');
@@ -623,15 +605,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'machines',
           data: machineData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Machine created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Machine created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating machine:', error);
         toast.error('Failed to create machine');
@@ -645,16 +626,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'machines',
           id: machineId,
           updates: machineData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Machine updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Machine updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating machine:', error);
         toast.error('Failed to update machine');
@@ -668,12 +648,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/machines/${machineId}`);
+        const response = await api.delete(`/forecast/delete/machines/${machineId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Machine deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Machine deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting machine:', error);
         toast.error('Failed to delete machine');
@@ -688,15 +667,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'router_definitions',
           data: routerData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Router created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating router:', error);
         toast.error('Failed to create router');
@@ -710,16 +688,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'router_definitions',
           id: routerId,
           updates: routerData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Router updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating router:', error);
         toast.error('Failed to update router');
@@ -733,12 +710,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/router_definitions/${routerId}`);
+        const response = await api.delete(`/forecast/delete/router_definitions/${routerId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Router deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting router:', error);
         toast.error('Failed to delete router');
@@ -753,15 +729,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'router_operations',
           data: operationData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Router operation created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router operation created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating router operation:', error);
         toast.error('Failed to create router operation');
@@ -775,16 +750,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'router_operations',
           id: operationId,
           updates: operationData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Router operation updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router operation updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating router operation:', error);
         toast.error('Failed to update router operation');
@@ -798,12 +772,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/router_operations/${operationId}`);
+        const response = await api.delete(`/forecast/delete/router_operations/${operationId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Router operation deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Router operation deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting router operation:', error);
         toast.error('Failed to delete router operation');
@@ -829,15 +802,14 @@ export const ForecastProvider = ({ children }) => {
           console.log('Auto-generated product ID:', productData.unit_id);
         }
 
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'units',
           data: productData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Product created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Product created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating product:', error);
         toast.error('Failed to create product');
@@ -851,16 +823,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'units',
           id: productId,
           updates: productData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Product updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Product updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating product:', error);
         toast.error('Failed to update product');
@@ -874,12 +845,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${productId}`);
+        const response = await api.delete(`/forecast/delete/${tableName}/${productId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Product deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Product deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting product:', error);
         toast.error('Failed to delete product');
@@ -894,15 +864,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'labor_rates',
           data: laborRateData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Labor rate created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Labor rate created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating labor rate:', error);
         toast.error('Failed to create labor rate');
@@ -916,16 +885,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'labor_rates',
           id: laborRateId,
           updates: laborRateData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Labor rate updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Labor rate updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating labor rate:', error);
         toast.error('Failed to update labor rate');
@@ -939,12 +907,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/${tableName}/${laborRateId}`);
+        const response = await api.delete(`/forecast/delete/${tableName}/${laborRateId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('Labor rate deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Labor rate deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting labor rate:', error);
         toast.error('Failed to delete labor rate');
@@ -959,15 +926,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'units',
           data: unitData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Unit created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Unit created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating unit:', error);
         toast.error('Failed to create unit');
@@ -981,16 +947,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'units',
           id: unitId,
           updates: unitData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('Unit updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('Unit updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating unit:', error);
         toast.error('Failed to update unit');
@@ -1005,15 +970,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'bom',
           data: bomData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('BOM created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating BOM:', error);
         toast.error('Failed to create BOM');
@@ -1027,15 +991,14 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/create`, { 
+        const response = await api.post('/forecast/create', { 
           table: 'bom_definitions',
           data: bomData 
         });
         
-        if (response.data.status === 'success') {
-          toast.success('BOM definition created successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM definition created successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating BOM definition:', error);
         toast.error('Failed to create BOM definition');
@@ -1049,16 +1012,15 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'bom_definitions',
           id: bomId,
           updates: bomData
         });
         
-        if (response.data.status === 'success') {
-          toast.success('BOM definition updated successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM definition updated successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating BOM definition:', error);
         toast.error('Failed to update BOM definition');
@@ -1072,12 +1034,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/bom_definitions/${bomId}`);
+        const response = await api.delete(`/forecast/delete/bom_definitions/${bomId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('BOM definition deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM definition deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting BOM definition:', error);
         toast.error('Failed to delete BOM definition');
@@ -1093,7 +1054,7 @@ export const ForecastProvider = ({ children }) => {
         
         console.log('updateBOM called with:', { bomId, bomData });
         
-        const response = await axios.post(`${API_BASE}/forecast/update`, {
+        const response = await api.post('/forecast/update', {
           table: 'bom',
           id: bomId,
           updates: bomData
@@ -1101,12 +1062,11 @@ export const ForecastProvider = ({ children }) => {
         
         console.log('updateBOM response:', response.data);
         
-        if (response.data.status === 'success') {
-          toast.success('BOM updated successfully');
-          // Add a small delay to ensure database transaction is committed
-          await new Promise(resolve => setTimeout(resolve, 100));
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM updated successfully');
+        // Add a small delay to ensure database transaction is committed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating BOM:', error);
         toast.error('Failed to update BOM');
@@ -1120,12 +1080,11 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await axios.delete(`${API_BASE}/forecast/delete/bom/${bomId}`);
+        const response = await api.delete(`/forecast/delete/bom/${bomId}`);
         
-        if (response.data.status === 'success') {
-          toast.success('BOM deleted successfully');
-          await actions.fetchAllData();
-        }
+        // API client already handles response format
+        toast.success('BOM deleted successfully');
+        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting BOM:', error);
         toast.error('Failed to delete BOM');

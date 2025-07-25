@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import api from '../../../lib/apiClient';
 
 const ExpenseForecast = ({ expenses, categories, allocations, onFetchAllocations }) => {
   const [forecastPeriods, setForecastPeriods] = useState(12); // months
@@ -25,12 +26,8 @@ const ExpenseForecast = ({ expenses, categories, allocations, onFetchAllocations
         queryParams.append('category_type', selectedCategory);
       }
 
-      const response = await fetch(`http://localhost:8000/expenses/forecast?${queryParams}`);
-      const result = await response.json();
-      
-      if (result.status === 'success') {
-        setForecastData(result.data);
-      }
+      const response = await api.get(`/expenses/forecast?${queryParams}`, { suppressErrorToast: true });
+      setForecastData(response.data);
     } catch (error) {
       console.error('Error fetching forecast data:', error);
     }

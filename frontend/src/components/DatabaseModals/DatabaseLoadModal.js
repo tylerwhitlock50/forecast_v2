@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import api from '../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import './DatabaseModals.css';
 
@@ -17,14 +18,8 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
   const fetchDatabases = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/database/list');
-      const data = await response.json();
-      
-      if (data.status === 'success') {
-        setDatabases(data.data.databases || []);
-      } else {
-        toast.error('Failed to load database list');
-      }
+      const response = await api.get('/database/list', { suppressErrorToast: true });
+      setDatabases(response.data.databases || []);
     } catch (error) {
       console.error('Error fetching databases:', error);
       toast.error('Failed to load database list');
@@ -65,24 +60,16 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
     if (!confirmed) return;
 
     try {
-      const response = await fetch(`/api/database/delete/${database.filename}`, {
-        method: 'DELETE'
-      });
+      const response = await api.delete(`/database/delete/${database.filename}`);
       
-      const data = await response.json();
-      
-      if (data.status === 'success') {
-        toast.success('Database deleted successfully');
-        fetchDatabases(); // Refresh the list
-        if (selectedDatabase?.filename === database.filename) {
-          setSelectedDatabase(null);
-        }
-      } else {
-        toast.error('Failed to delete database');
+      // API client handles success toast
+      fetchDatabases(); // Refresh the list
+      if (selectedDatabase?.filename === database.filename) {
+        setSelectedDatabase(null);
       }
     } catch (error) {
       console.error('Error deleting database:', error);
-      toast.error('Failed to delete database');
+      // Error toast is already handled by API client
     }
   };
 

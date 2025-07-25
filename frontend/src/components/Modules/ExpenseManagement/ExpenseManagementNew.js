@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
+import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -26,14 +27,8 @@ const ExpenseManagement = () => {
     const loadExpenses = async () => {
         actions.setLoading(true);
         try {
-            const response = await fetch('/api/expenses/');
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                setExpenses(data.data.expenses || []);
-            } else {
-                actions.setError('Failed to load expenses');
-            }
+            const response = await api.get('/expenses/', { suppressErrorToast: true });
+            setExpenses(response.data.expenses || []);
         } catch (error) {
             console.error('Error loading expenses:', error);
             actions.setError('Failed to load expenses');
@@ -44,12 +39,8 @@ const ExpenseManagement = () => {
 
     const loadExpenseCategories = async () => {
         try {
-            const response = await fetch('/api/expenses/categories');
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                setExpenseCategories(data.data.categories || []);
-            }
+            const response = await api.get('/expenses/categories', { suppressErrorToast: true });
+            setExpenseCategories(response.data.categories || []);
         } catch (error) {
             console.error('Error loading expense categories:', error);
         }
@@ -57,12 +48,8 @@ const ExpenseManagement = () => {
 
     const loadExpenseSummary = async () => {
         try {
-            const response = await fetch('/api/expenses/summary');
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                setExpenseSummary(data.data);
-            }
+            const response = await api.get('/expenses/summary', { suppressErrorToast: true });
+            setExpenseSummary(response.data);
         } catch (error) {
             console.error('Error loading expense summary:', error);
         }

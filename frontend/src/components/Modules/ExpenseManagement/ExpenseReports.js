@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import api from '../../../lib/apiClient';
 
 const ExpenseReports = ({ expenses, categories, summaryStats }) => {
   const [reportData, setReportData] = useState(null);
@@ -11,12 +12,8 @@ const ExpenseReports = ({ expenses, categories, summaryStats }) => {
   const fetchReportData = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/expenses/report');
-      const result = await response.json();
-      
-      if (result.status === 'success') {
-        setReportData(result.data);
-      }
+      const response = await api.get('/expenses/report', { suppressErrorToast: true });
+      setReportData(response.data);
     } catch (error) {
       console.error('Error fetching report data:', error);
     } finally {

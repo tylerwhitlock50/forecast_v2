@@ -1,10 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import './ChatPanel.css';
-
-// Use relative path for Docker nginx proxy, fallback to localhost for development
-const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
 const ChatPanel = ({ expanded, onToggle }) => {
   const [messages, setMessages] = useState([]);
@@ -31,10 +28,8 @@ const ChatPanel = ({ expanded, onToggle }) => {
 
   const loadAvailableAgents = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/chat/agents/available`);
-      if (response.data.status === 'success') {
-        setAvailableAgents(response.data.data);
-      }
+      const response = await api.get('/chat/agents/available', { suppressErrorToast: true });
+      setAvailableAgents(response.data);
     } catch (error) {
       console.error('Failed to load agents:', error);
     }
@@ -65,7 +60,7 @@ const ChatPanel = ({ expanded, onToggle }) => {
       
       if (serviceType === 'agents') {
         // Use the new OpenAI agents service
-        response = await axios.post(`${API_BASE}/chat/agents`, {
+        response = await api.post('/chat/agents', {
           current_message: inputMessage,
           prior_messages: recentMessages,
           user_id: 'user_' + Date.now(),
@@ -92,7 +87,7 @@ const ChatPanel = ({ expanded, onToggle }) => {
         
       } else {
         // Use legacy services
-        response = await axios.post(`${API_BASE}/${serviceType}`, {
+        response = await api.post(`/${serviceType}`, {
           message: inputMessage,
           context: {
             prior_messages: recentMessages
@@ -146,7 +141,7 @@ const ChatPanel = ({ expanded, onToggle }) => {
   const clearConversation = async () => {
     try {
       if (serviceType === 'agents') {
-        await axios.post(`${API_BASE}/chat/agents/clear`);
+        await api.post('/chat/agents/clear');
       }
       setMessages([]);
       setSessionId(`session_${Date.now()}`); // Generate new session ID

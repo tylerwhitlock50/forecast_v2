@@ -1,9 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/apiClient';
 import './ForecastingWizard.css';
-
-// Use relative path for Docker nginx proxy, fallback to localhost for development
-const API_BASE = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000';
 
 const ForecastingWizard = ({ onComplete, onCancel }) => {
   const [currentStep, setCurrentStep] = useState(1);
@@ -70,9 +67,9 @@ const ForecastingWizard = ({ onComplete, onCancel }) => {
   const fetchAvailableData = async () => {
     try {
       const [customersRes, productsRes, routersRes] = await Promise.all([
-        axios.get(`${API_BASE}/data/customers`),
-        axios.get(`${API_BASE}/data/units`),
-        axios.get(`${API_BASE}/data/routers`)
+        api.get('/data/customers'),
+        api.get('/data/units'),
+        api.get('/data/routers')
       ]);
 
       setAvailableData({
@@ -110,7 +107,7 @@ const ForecastingWizard = ({ onComplete, onCancel }) => {
   const handleSubmit = async () => {
     try {
       // Submit all form data to the backend
-      const response = await axios.post(`${API_BASE}/forecast/create`, formData);
+      const response = await api.post('/forecast/create', formData);
       if (response.data.status === 'success') {
         onComplete();
       }

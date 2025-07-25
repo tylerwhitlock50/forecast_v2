@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
+import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -27,14 +28,8 @@ const LoanManagement = () => {
     const loadLoans = async () => {
         actions.setLoading(true);
         try {
-            const response = await fetch('/api/loans/');
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                setLoans(data.data.loans || []);
-            } else {
-                actions.setError('Failed to load loans');
-            }
+            const response = await api.get('/loans/', { suppressErrorToast: true });
+            setLoans(response.data.loans || []);
         } catch (error) {
             console.error('Error loading loans:', error);
             actions.setError('Failed to load loans');
@@ -45,12 +40,8 @@ const LoanManagement = () => {
 
     const loadLoanSummary = async () => {
         try {
-            const response = await fetch('/api/loans/summary');
-            const data = await response.json();
-            
-            if (data.status === 'success') {
-                setLoanSummary(data.data);
-            }
+            const response = await api.get('/loans/summary', { suppressErrorToast: true });
+            setLoanSummary(response.data);
         } catch (error) {
             console.error('Error loading loan summary:', error);
         }
@@ -69,28 +60,15 @@ const LoanManagement = () => {
     const handleSaveLoan = async (loanData) => {
         actions.setLoading(true);
         try {
-            const url = selectedLoan ? `/api/loans/${selectedLoan.loan_id}` : '/api/loans/';
-            const method = selectedLoan ? 'PUT' : 'POST';
+            const response = selectedLoan 
+                ? await api.put(`/loans/${selectedLoan.loan_id}`, loanData)
+                : await api.post('/loans/', loanData);
             
-            const response = await fetch(url, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(loanData),
-            });
-
-            const result = await response.json();
-            
-            if (result.status === 'success') {
-                toast.success(selectedLoan ? 'Loan updated successfully' : 'Loan created successfully');
-                setIsModalOpen(false);
-                loadLoans();
-                loadLoanSummary();
-                actions.fetchAllData();
-            } else {
-                actions.setError(result.message || 'Failed to save loan');
-            }
+            // API client handles success toast
+            setIsModalOpen(false);
+            loadLoans();
+            loadLoanSummary();
+            actions.fetchAllData();
         } catch (error) {
             console.error('Error saving loan:', error);
             actions.setError('Failed to save loan');
@@ -106,20 +84,12 @@ const LoanManagement = () => {
 
         actions.setLoading(true);
         try {
-            const response = await fetch(`/api/loans/${loanId}`, {
-                method: 'DELETE',
-            });
-
-            const result = await response.json();
+            const response = await api.delete(`/loans/${loanId}`);
             
-            if (result.status === 'success') {
-                toast.success('Loan deleted successfully');
-                loadLoans();
-                loadLoanSummary();
-                actions.fetchAllData();
-            } else {
-                actions.setError('Failed to delete loan');
-            }
+            // API client handles success toast
+            loadLoans();
+            loadLoanSummary();
+            actions.fetchAllData();
         } catch (error) {
             console.error('Error deleting loan:', error);
             actions.setError('Failed to delete loan');
@@ -131,15 +101,10 @@ const LoanManagement = () => {
     const handleViewSchedule = async (loanId) => {
         actions.setLoading(true);
         try {
-            const response = await fetch(`/api/loans/${loanId}/schedule`);
-            const data = await response.json();
+            const response = await api.get(`/loans/${loanId}/schedule`, { suppressErrorToast: true });
             
-            if (data.status === 'success') {
-                setAmortizationSchedule(data.data);
-                setIsScheduleModalOpen(true);
-            } else {
-                actions.setError('Failed to load amortization schedule');
-            }
+            setAmortizationSchedule(response.data);
+            setIsScheduleModalOpen(true);
         } catch (error) {
             console.error('Error loading amortization schedule:', error);
             actions.setError('Failed to load amortization schedule');
