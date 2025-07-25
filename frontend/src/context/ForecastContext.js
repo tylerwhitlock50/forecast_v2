@@ -1092,6 +1092,192 @@ export const ForecastProvider = ({ children }) => {
       } finally {
         actions.setLoading(false);
       }
+    },
+
+    // Expense Management Methods
+    fetchExpenses: async () => {
+      try {
+        actions.setLoading(true);
+        const response = await api.get('/expenses/', { suppressErrorToast: true });
+        
+        // Update the data in the state
+        dispatch({ 
+          type: actionTypes.UPDATE_DATA, 
+          payload: { type: 'expenses', data: response.data.expenses || [] }
+        });
+        
+        return response.data.expenses || [];
+      } catch (error) {
+        console.error('Error fetching expenses:', error);
+        actions.setError('Failed to load expenses');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    fetchExpenseCategories: async () => {
+      try {
+        const response = await api.get('/expenses/categories', { suppressErrorToast: true });
+        return response.data.categories || [];
+      } catch (error) {
+        console.error('Error fetching expense categories:', error);
+        throw error;
+      }
+    },
+
+    fetchExpenseSummary: async () => {
+      try {
+        const response = await api.get('/expenses/summary', { suppressErrorToast: true });
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching expense summary:', error);
+        throw error;
+      }
+    },
+
+    createExpense: async (expenseData) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.post('/expenses/', expenseData);
+        
+        // Refresh expenses data
+        await actions.fetchExpenses();
+        return response.data;
+      } catch (error) {
+        console.error('Error creating expense:', error);
+        actions.setError('Failed to create expense');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateExpense: async (expenseId, expenseData) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.put(`/expenses/${expenseId}`, expenseData);
+        
+        // Refresh expenses data
+        await actions.fetchExpenses();
+        return response.data;
+      } catch (error) {
+        console.error('Error updating expense:', error);
+        actions.setError('Failed to update expense');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteExpense: async (expenseId) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.delete(`/expenses/${expenseId}`);
+        
+        // Refresh expenses data
+        await actions.fetchExpenses();
+        return response.data;
+      } catch (error) {
+        console.error('Error deleting expense:', error);
+        actions.setError('Failed to delete expense');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    // Loan Management Methods
+    fetchLoans: async () => {
+      try {
+        actions.setLoading(true);
+        const response = await api.get('/loans/', { suppressErrorToast: true });
+        
+        // Update the data in the state
+        dispatch({ 
+          type: actionTypes.UPDATE_DATA, 
+          payload: { type: 'loans', data: response.data.loans || [] }
+        });
+        
+        return response.data.loans || [];
+      } catch (error) {
+        console.error('Error fetching loans:', error);
+        actions.setError('Failed to load loans');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    fetchLoanSummary: async () => {
+      try {
+        const response = await api.get('/loans/summary', { suppressErrorToast: true });
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching loan summary:', error);
+        throw error;
+      }
+    },
+
+    createLoan: async (loanData) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.post('/loans/', loanData);
+        
+        // Refresh loans data
+        await actions.fetchLoans();
+        return response.data;
+      } catch (error) {
+        console.error('Error creating loan:', error);
+        actions.setError('Failed to create loan');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    updateLoan: async (loanId, loanData) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.put(`/loans/${loanId}`, loanData);
+        
+        // Refresh loans data
+        await actions.fetchLoans();
+        return response.data;
+      } catch (error) {
+        console.error('Error updating loan:', error);
+        actions.setError('Failed to update loan');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    deleteLoan: async (loanId) => {
+      try {
+        actions.setLoading(true);
+        const response = await api.delete(`/loans/${loanId}`);
+        
+        // Refresh loans data
+        await actions.fetchLoans();
+        return response.data;
+      } catch (error) {
+        console.error('Error deleting loan:', error);
+        actions.setError('Failed to delete loan');
+        throw error;
+      } finally {
+        actions.setLoading(false);
+      }
+    },
+
+    fetchLoanSchedule: async (loanId) => {
+      try {
+        const response = await api.get(`/loans/${loanId}/schedule`, { suppressErrorToast: true });
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching loan schedule:', error);
+        throw error;
+      }
     }
   };
 
