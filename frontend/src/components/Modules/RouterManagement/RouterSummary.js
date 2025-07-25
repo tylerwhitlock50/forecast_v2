@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Badge } from '../../ui/badge';
 
-
-const RouterSummary = ({ routers, machines, units, laborRates }) => {
+const RouterSummary = ({ routers, routerOperations, machines, units, laborRates }) => {
   const summaryData = useMemo(() => {
     const totalRouters = routers.length;
     
@@ -104,9 +105,11 @@ const RouterSummary = ({ routers, machines, units, laborRates }) => {
     .slice(0, 5);
 
   const formatMinutes = (minutes) => {
+    if (!minutes || minutes === 0) return '0 min';
+    if (minutes < 60) return `${minutes.toFixed(1)} min`;
     const hours = Math.floor(minutes / 60);
     const remainingMinutes = minutes % 60;
-    return `${hours}h ${remainingMinutes.toFixed(1)}m`;
+    return `${hours}h ${remainingMinutes.toFixed(0)}m`;
   };
 
   const getMachineName = (machineId) => {
@@ -125,279 +128,333 @@ const RouterSummary = ({ routers, machines, units, laborRates }) => {
   };
 
   return (
-    <div className="router-summary">
-      <div className="summary-header">
-        <h3>Router Analytics</h3>
-        <p>Overview of your routing operations and workflow</p>
+    <div className="space-y-6">
+      {/* Key Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">🔄</div>
+              <div>
+                <p className="text-2xl font-bold">{summaryData.totalRouters}</p>
+                <p className="text-sm text-muted-foreground">Total Operations</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">✅</div>
+              <div>
+                <p className="text-2xl font-bold">{summaryData.dataQuality.completeProfiles}</p>
+                <p className="text-sm text-muted-foreground">Complete Operations</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">🏭</div>
+              <div>
+                <p className="text-2xl font-bold">{formatMinutes(summaryData.timeStats.totalMachineMinutes)}</p>
+                <p className="text-sm text-muted-foreground">Total Machine Time</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">👷</div>
+              <div>
+                <p className="text-2xl font-bold">{formatMinutes(summaryData.timeStats.totalLaborMinutes)}</p>
+                <p className="text-sm text-muted-foreground">Total Labor Time</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
-      <div className="summary-grid">
-        {/* Key Metrics */}
-        <div className="summary-section">
-          <h4>Key Metrics</h4>
-          <div className="metrics-grid">
-            <div className="metric-card">
-              <div className="metric-icon">🔄</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.totalRouters}</span>
-                <span className="metric-label">Total Operations</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">✅</div>
-              <div className="metric-content">
-                <span className="metric-value">{summaryData.dataQuality.completeProfiles}</span>
-                <span className="metric-label">Complete Operations</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">🏭</div>
-              <div className="metric-content">
-                <span className="metric-value">{formatMinutes(summaryData.timeStats.totalMachineMinutes)}</span>
-                <span className="metric-label">Total Machine Time</span>
-              </div>
-            </div>
-            
-            <div className="metric-card">
-              <div className="metric-icon">👷</div>
-              <div className="metric-content">
-                <span className="metric-value">{formatMinutes(summaryData.timeStats.totalLaborMinutes)}</span>
-                <span className="metric-label">Total Labor Time</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Version Distribution */}
-        <div className="summary-section">
-          <h4>Version Distribution</h4>
-          <div className="chart-container">
+      {/* Version Distribution */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Version Distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
             {topVersions.map(([version, count]) => (
-              <div key={version} className="chart-bar">
-                <div className="bar-label">{version}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(count / summaryData.totalRouters) * 100}%`,
-                      backgroundColor: '#007bff'
-                    }}
-                  ></div>
-                  <span className="bar-value">{count}</span>
+              <div key={version} className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Badge variant="outline" className="bg-blue-100 text-blue-800">
+                    {version}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">{count} operations</span>
                 </div>
+                <div className="flex-1 mx-4">
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(count / summaryData.totalRouters) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <span className="text-sm font-medium">
+                  {((count / summaryData.totalRouters) * 100).toFixed(1)}%
+                </span>
               </div>
             ))}
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Unit Distribution */}
-        <div className="summary-section">
-          <h4>Unit Distribution</h4>
-          <div className="chart-container">
+      {/* Unit Distribution */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Unit Distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
             {topUnits.map(([unitId, count]) => (
-              <div key={unitId} className="chart-bar">
-                <div className="bar-label">{getUnitName(unitId)}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(count / summaryData.totalRouters) * 100}%`,
-                      backgroundColor: '#28a745'
-                    }}
-                  ></div>
-                  <span className="bar-value">{count}</span>
+              <div key={unitId} className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Badge variant="outline" className="bg-green-100 text-green-800">
+                    {getUnitName(unitId)}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">{count} operations</span>
                 </div>
+                <div className="flex-1 mx-4">
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-green-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(count / summaryData.totalRouters) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <span className="text-sm font-medium">
+                  {((count / summaryData.totalRouters) * 100).toFixed(1)}%
+                </span>
               </div>
             ))}
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Machine Utilization */}
-        <div className="summary-section">
-          <h4>Machine Utilization (Minutes)</h4>
-          <div className="chart-container">
+      {/* Machine Utilization */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Machine Utilization (Minutes)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
             {topMachines.map(([machineId, minutes]) => (
-              <div key={machineId} className="chart-bar">
-                <div className="bar-label">{getMachineName(machineId)}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(minutes / summaryData.timeStats.totalMachineMinutes) * 100}%`,
-                      backgroundColor: '#ffc107'
-                    }}
-                  ></div>
-                  <span className="bar-value">{minutes.toFixed(1)}</span>
+              <div key={machineId} className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Badge variant="outline" className="bg-yellow-100 text-yellow-800">
+                    {getMachineName(machineId)}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">{minutes.toFixed(1)} min</span>
                 </div>
+                <div className="flex-1 mx-4">
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(minutes / summaryData.timeStats.totalMachineMinutes) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <span className="text-sm font-medium">
+                  {((minutes / summaryData.timeStats.totalMachineMinutes) * 100).toFixed(1)}%
+                </span>
               </div>
             ))}
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Labor Utilization */}
-        <div className="summary-section">
-          <h4>Labor Utilization (Minutes)</h4>
-          <div className="chart-container">
+      {/* Labor Utilization */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Labor Utilization (Minutes)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
             {topLaborRates.map(([rateId, minutes]) => (
-              <div key={rateId} className="chart-bar">
-                <div className="bar-label">{getLaborRateName(rateId)}</div>
-                <div className="bar-container">
-                  <div 
-                    className="bar" 
-                    style={{ 
-                      width: `${(minutes / summaryData.timeStats.totalLaborMinutes) * 100}%`,
-                      backgroundColor: '#e83e8c'
-                    }}
-                  ></div>
-                  <span className="bar-value">{minutes.toFixed(1)}</span>
+              <div key={rateId} className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Badge variant="outline" className="bg-purple-100 text-purple-800">
+                    {getLaborRateName(rateId)}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">{minutes.toFixed(1)} min</span>
                 </div>
+                <div className="flex-1 mx-4">
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-purple-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(minutes / summaryData.timeStats.totalLaborMinutes) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <span className="text-sm font-medium">
+                  {((minutes / summaryData.timeStats.totalLaborMinutes) * 100).toFixed(1)}%
+                </span>
               </div>
             ))}
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Time Analysis */}
-        <div className="summary-section">
-          <h4>Time Analysis</h4>
-          <div className="analysis-grid">
-            <div className="analysis-item">
-              <span className="analysis-label">Avg Machine Time</span>
-              <span className="analysis-value">{summaryData.timeStats.avgMachineMinutes.toFixed(1)} min</span>
+      {/* Time Analysis */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Time Analysis</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm font-medium">Avg Machine Time</span>
+              <span className="text-lg font-bold text-blue-600">{summaryData.timeStats.avgMachineMinutes.toFixed(1)} min</span>
             </div>
-            <div className="analysis-item">
-              <span className="analysis-label">Avg Labor Time</span>
-              <span className="analysis-value">{summaryData.timeStats.avgLaborMinutes.toFixed(1)} min</span>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm font-medium">Avg Labor Time</span>
+              <span className="text-lg font-bold text-green-600">{summaryData.timeStats.avgLaborMinutes.toFixed(1)} min</span>
             </div>
-            <div className="analysis-item">
-              <span className="analysis-label">Max Sequence</span>
-              <span className="analysis-value">{summaryData.sequenceStats.maxSequence}</span>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm font-medium">Max Sequence</span>
+              <span className="text-lg font-bold text-orange-600">{summaryData.sequenceStats.maxSequence}</span>
             </div>
-            <div className="analysis-item">
-              <span className="analysis-label">Avg Sequence</span>
-              <span className="analysis-value">{summaryData.sequenceStats.avgSequence.toFixed(1)}</span>
+            <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+              <span className="text-sm font-medium">Avg Sequence</span>
+              <span className="text-lg font-bold text-purple-600">{summaryData.sequenceStats.avgSequence.toFixed(1)}</span>
             </div>
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {/* Data Completeness */}
-        <div className="summary-section">
-          <h4>Data Completeness</h4>
-          <div className="quality-metrics">
-            <div className="quality-item">
-              <span className="quality-label">Complete Operations</span>
-              <div className="quality-bar">
+      {/* Data Completeness */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Data Completeness</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>Complete Operations</span>
+                <span className="font-medium">{summaryData.dataQuality.completeProfiles} of {summaryData.totalRouters}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalRouters) * 100}%`,
-                    backgroundColor: '#28a745'
-                  }}
+                  className="bg-green-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalRouters) * 100}%` }}
                 ></div>
               </div>
-              <span className="quality-value">{summaryData.dataQuality.completeProfiles}</span>
             </div>
             
-            <div className="quality-item">
-              <span className="quality-label">With Machine</span>
-              <div className="quality-bar">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>With Machine</span>
+                <span className="font-medium">{summaryData.completeness.withMachine} of {summaryData.totalRouters}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.completeness.withMachine / summaryData.totalRouters) * 100}%`,
-                    backgroundColor: '#007bff'
-                  }}
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(summaryData.completeness.withMachine / summaryData.totalRouters) * 100}%` }}
                 ></div>
               </div>
-              <span className="quality-value">{summaryData.completeness.withMachine}</span>
             </div>
             
-            <div className="quality-item">
-              <span className="quality-label">With Labor Rate</span>
-              <div className="quality-bar">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>With Labor Rate</span>
+                <span className="font-medium">{summaryData.completeness.withLaborRate} of {summaryData.totalRouters}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${(summaryData.completeness.withLaborRate / summaryData.totalRouters) * 100}%`,
-                    backgroundColor: '#ffc107'
-                  }}
+                  className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(summaryData.completeness.withLaborRate / summaryData.totalRouters) * 100}%` }}
                 ></div>
               </div>
-              <span className="quality-value">{summaryData.completeness.withLaborRate}</span>
             </div>
             
-            <div className="quality-item">
-              <span className="quality-label">With Time Data</span>
-              <div className="quality-bar">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>With Time Data</span>
+                <span className="font-medium">{summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes} of {summaryData.totalRouters * 2}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
-                  className="quality-fill" 
-                  style={{ 
-                    width: `${((summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes) / (summaryData.totalRouters * 2)) * 100}%`,
-                    backgroundColor: '#6f42c1'
-                  }}
+                  className="bg-purple-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${((summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes) / (summaryData.totalRouters * 2)) * 100}%` }}
                 ></div>
               </div>
-              <span className="quality-value">{summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes}</span>
             </div>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Recommendations */}
-      <div className="summary-section recommendations">
-        <h4>Recommendations</h4>
-        <div className="recommendations-list">
-          {summaryData.dataQuality.incompleteProfiles > 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">⚠️</span>
-              <span className="recommendation-text">
-                {summaryData.dataQuality.incompleteProfiles} router operations have incomplete data. 
-                Consider adding missing machine assignments or time estimates.
-              </span>
-            </div>
-          )}
-          
-          {summaryData.completeness.withMachineMinutes < summaryData.totalRouters * 0.8 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">⏰</span>
-              <span className="recommendation-text">
-                Only {Math.round((summaryData.completeness.withMachineMinutes / summaryData.totalRouters) * 100)}% of operations have machine time data. 
-                Machine time is crucial for capacity planning.
-              </span>
-            </div>
-          )}
-          
-          {summaryData.completeness.withLaborMinutes < summaryData.totalRouters * 0.8 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">👷</span>
-              <span className="recommendation-text">
-                Only {Math.round((summaryData.completeness.withLaborMinutes / summaryData.totalRouters) * 100)}% of operations have labor time data. 
-                Labor time is essential for cost calculations.
-              </span>
-            </div>
-          )}
-          
-          {summaryData.sequenceStats.maxSequence > 10 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🔄</span>
-              <span className="recommendation-text">
-                Some routers have long sequences (max: {summaryData.sequenceStats.maxSequence}). 
-                Consider breaking down complex operations for better tracking.
-              </span>
-            </div>
-          )}
-          
-          {Object.keys(summaryData.versionBreakdown).length > 5 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🏷️</span>
-              <span className="recommendation-text">
-                Multiple router versions detected. Consider consolidating or archiving older versions.
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Recommendations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {summaryData.dataQuality.incompleteProfiles > 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-yellow-50 rounded-lg">
+                <span className="text-xl">⚠️</span>
+                <span className="text-sm">
+                  {summaryData.dataQuality.incompleteProfiles} router operations have incomplete data. 
+                  Consider adding missing machine assignments or time estimates.
+                </span>
+              </div>
+            )}
+            
+            {summaryData.completeness.withMachineMinutes < summaryData.totalRouters * 0.8 && (
+              <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
+                <span className="text-xl">⏰</span>
+                <span className="text-sm">
+                  Only {Math.round((summaryData.completeness.withMachineMinutes / summaryData.totalRouters) * 100)}% of operations have machine time data. 
+                  Machine time is crucial for capacity planning.
+                </span>
+              </div>
+            )}
+            
+            {summaryData.completeness.withLaborMinutes < summaryData.totalRouters * 0.8 && (
+              <div className="flex items-start space-x-3 p-3 bg-green-50 rounded-lg">
+                <span className="text-xl">👷</span>
+                <span className="text-sm">
+                  Only {Math.round((summaryData.completeness.withLaborMinutes / summaryData.totalRouters) * 100)}% of operations have labor time data. 
+                  Labor time is essential for cost calculations.
+                </span>
+              </div>
+            )}
+            
+            {summaryData.sequenceStats.maxSequence > 10 && (
+              <div className="flex items-start space-x-3 p-3 bg-orange-50 rounded-lg">
+                <span className="text-xl">🔄</span>
+                <span className="text-sm">
+                  Some routers have long sequences (max: {summaryData.sequenceStats.maxSequence}). 
+                  Consider breaking down complex operations for better tracking.
+                </span>
+              </div>
+            )}
+            
+            {Object.keys(summaryData.versionBreakdown).length > 5 && (
+              <div className="flex items-start space-x-3 p-3 bg-purple-50 rounded-lg">
+                <span className="text-xl">🏷️</span>
+                <span className="text-sm">
+                  Multiple router versions detected. Consider consolidating or archiving older versions.
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };

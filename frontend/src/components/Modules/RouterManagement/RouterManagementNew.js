@@ -335,7 +335,7 @@ const RouterManagement = () => {
         )}
       </div>
 
-      {/* Custom Tab Navigation */}
+      {/* Tab Navigation */}
       <div className="space-y-6">
         {/* Tab Buttons */}
         <div className="grid w-full grid-cols-3 bg-gray-100 p-1 rounded-lg">
@@ -373,49 +373,43 @@ const RouterManagement = () => {
 
         {/* Tab Content */}
         {activeTab === 'table' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>All Routers ({filteredRouters.length})</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  data={filteredRouters}
-                  columns={routerColumns}
-                  onEdit={(router) => {
-                    setEditingRouter(router);
-                    setShowRouterModal(true);
-                  }}
-                  onDelete={(router) => handleDeleteRouter(router.router_id)}
-                  emptyMessage="No routers found. Click 'Add Router' to get started."
-                />
-              </CardContent>
-            </Card>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>All Routers ({filteredRouters.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                data={filteredRouters}
+                columns={routerColumns}
+                onEdit={(router) => {
+                  setEditingRouter(router);
+                  setShowRouterModal(true);
+                }}
+                onDelete={(router) => handleDeleteRouter(router.router_id)}
+                emptyMessage="No routers found. Click 'Add Router' to get started."
+              />
+            </CardContent>
+          </Card>
         )}
 
         {activeTab === 'summary' && (
-          <div className="space-y-6">
-            <RouterSummary 
-              routers={data.router_definitions || []} 
-              routerOperations={data.router_operations || []}
-              machines={data.machines || []}
-              units={data.units || []}
-              laborRates={data.labor_rates || []}
-            />
-          </div>
+          <RouterSummary 
+            routers={data.router_definitions || []} 
+            routerOperations={data.router_operations || []}
+            machines={data.machines || []}
+            units={data.units || []}
+            laborRates={data.labor_rates || []}
+          />
         )}
 
         {activeTab === 'validation' && (
-          <div className="space-y-6">
-            <RouterValidation 
-              routers={data.router_definitions || []} 
-              routerOperations={data.router_operations || []}
-              machines={data.machines || []}
-              units={data.units || []}
-              laborRates={data.labor_rates || []}
-            />
-          </div>
+          <RouterValidation 
+            routers={data.router_definitions || []} 
+            routerOperations={data.router_operations || []}
+            machines={data.machines || []}
+            units={data.units || []}
+            laborRates={data.labor_rates || []}
+          />
         )}
       </div>
 

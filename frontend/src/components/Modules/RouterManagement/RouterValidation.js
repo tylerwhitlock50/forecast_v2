@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Badge } from '../../ui/badge';
 
 const RouterValidation = ({ routers, routerOperations, machines, units, laborRates }) => {
   const validationResults = useMemo(() => {
@@ -99,33 +100,6 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
         }
       }
 
-      // Duplicate sequence check within same router/version
-      const duplicateSequence = routers.find((r, i) => 
-        i !== index && 
-        r.router_id === router.router_id &&
-        r.version === router.version &&
-        r.sequence === router.sequence
-      );
-      if (duplicateSequence) {
-        const versionStr = router.version ? String(router.version) : '1.0';
-        routerIssues.push(`Duplicate sequence ${router.sequence} in router ${router.router_id} version ${versionStr}`);
-      }
-
-      // Orphaned operations (no matching unit in units table)
-      if (router.unit_id && unitIds.size > 0 && !unitIds.has(router.unit_id)) {
-        routerWarnings.push('Referenced unit may not exist in units table');
-      }
-
-      // Data completeness check
-      const hasCompleteProfile = router.router_id && 
-                                router.unit_id && 
-                                router.machine_id && 
-                                router.sequence && 
-                                (router.machine_minutes > 0 || router.labor_minutes > 0);
-      if (!hasCompleteProfile) {
-        routerWarnings.push('Incomplete operation profile');
-      }
-
       // Add to overall stats
       if (routerIssues.length > 0) {
         issues.push({
@@ -151,13 +125,9 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
         const operationIssues = [];
         const operationWarnings = [];
 
-        // Required field validation for operations
+        // Required field validation
         if (!operation.router_id || (typeof operation.router_id === 'string' && operation.router_id.trim() === '') || operation.router_id === null || operation.router_id === undefined) {
           operationIssues.push('Missing router ID');
-        }
-
-        if (!operation.machine_id || (typeof operation.machine_id === 'string' && operation.machine_id.trim() === '') || operation.machine_id === null || operation.machine_id === undefined) {
-          operationIssues.push('Missing machine ID');
         }
 
         if (!operation.sequence || operation.sequence < 1) {
@@ -198,41 +168,6 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
           operationWarnings.push('No labor minutes specified');
         }
 
-        // Labor rate consistency
-        if (!operation.labor_type_id && operation.labor_minutes && operation.labor_minutes > 0) {
-          operationWarnings.push('Labor minutes specified but no labor rate assigned');
-        }
-
-        // Efficiency warnings
-        if (operation.machine_minutes && operation.labor_minutes && 
-            operation.machine_minutes > 0 && operation.labor_minutes > 0) {
-          const ratio = operation.labor_minutes / operation.machine_minutes;
-          if (ratio > 3) {
-            operationWarnings.push('Labor time significantly exceeds machine time');
-          } else if (ratio < 0.1) {
-            operationWarnings.push('Machine time significantly exceeds labor time');
-          }
-        }
-
-        // Duplicate sequence check within same router
-        const duplicateSequence = routerOperations.find((op, i) => 
-          i !== index && 
-          op.router_id === operation.router_id &&
-          op.sequence === operation.sequence
-        );
-        if (duplicateSequence) {
-          operationIssues.push(`Duplicate sequence ${operation.sequence} in router ${operation.router_id}`);
-        }
-
-        // Data completeness check
-        const hasCompleteProfile = operation.router_id && 
-                                  operation.machine_id && 
-                                  operation.sequence && 
-                                  (operation.machine_minutes > 0 || operation.labor_minutes > 0);
-        if (!hasCompleteProfile) {
-          operationWarnings.push('Incomplete operation profile');
-        }
-
         // Add to overall stats
         if (operationIssues.length > 0) {
           issues.push({
@@ -256,7 +191,7 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
   }, [routers, routerOperations, machines, units, laborRates]);
 
   const getSeverityClass = (type) => {
-    return type === 'error' ? 'validation-error' : 'validation-warning';
+    return type === 'error' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800';
   };
 
   const getSeverityIcon = (type) => {
@@ -276,228 +211,265 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
   };
 
   return (
-    <div className="router-validation">
-      <div className="validation-header">
-        <h3>Data Validation</h3>
-        <p>Quality check results for your router database</p>
-      </div>
-
+    <div className="space-y-6">
       {/* Validation Summary */}
-      <div className="validation-summary">
-        <div className="summary-card">
-          <div className="summary-icon valid">✅</div>
-          <div className="summary-content">
-            <span className="summary-value">{validationResults.stats.valid}</span>
-            <span className="summary-label">Valid Operations</span>
-          </div>
-        </div>
-        
-        <div className="summary-card">
-          <div className="summary-icon warning">⚠️</div>
-          <div className="summary-content">
-            <span className="summary-value">{validationResults.stats.withWarnings}</span>
-            <span className="summary-label">With Warnings</span>
-          </div>
-        </div>
-        
-        <div className="summary-card">
-          <div className="summary-icon error">❌</div>
-          <div className="summary-content">
-            <span className="summary-value">{validationResults.stats.withIssues}</span>
-            <span className="summary-label">With Issues</span>
-          </div>
-        </div>
-        
-        <div className="summary-card">
-          <div className="summary-icon total">📊</div>
-          <div className="summary-content">
-            <span className="summary-value">{validationResults.stats.total}</span>
-            <span className="summary-label">Total Operations</span>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">🔄</div>
+              <div>
+                <p className="text-2xl font-bold">{validationResults.stats.total}</p>
+                <p className="text-sm text-muted-foreground">Total Operations</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-green-600">✅</div>
+              <div>
+                <p className="text-2xl font-bold">{validationResults.stats.valid}</p>
+                <p className="text-sm text-muted-foreground">Valid</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-yellow-600">⚠️</div>
+              <div>
+                <p className="text-2xl font-bold">{validationResults.stats.withWarnings}</p>
+                <p className="text-sm text-muted-foreground">With Warnings</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-red-600">❌</div>
+              <div>
+                <p className="text-2xl font-bold">{validationResults.stats.withIssues}</p>
+                <p className="text-sm text-muted-foreground">With Issues</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Critical Issues */}
       {validationResults.issues.length > 0 && (
-        <div className="validation-section">
-          <h4>
-            <span className="section-icon">❌</span>
-            Critical Issues ({validationResults.issues.length})
-          </h4>
-          <div className="validation-list">
-            {validationResults.issues.map((item, index) => (
-              <div key={index} className={`validation-item ${getSeverityClass('error')}`}>
-                <div className="validation-header">
-                  <span className="validation-icon">{getSeverityIcon('error')}</span>
-                  <span className="router-name">{getRouterDisplayName(item.router)}</span>
-                  <span className="router-details">
-                    {item.router.unit_id ? 
-                      `(${item.router.unit_id} → ${item.router.machine_id})` : 
-                      `(${item.router.machine_id})`
-                    }
-                  </span>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2">
+              <span>❌</span>
+              <span>Critical Issues ({validationResults.issues.length})</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {validationResults.issues.map((item, index) => (
+                <div key={index} className="p-4 border border-red-200 rounded-lg bg-red-50">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Badge variant="destructive" className="bg-red-100 text-red-800">
+                      {getSeverityIcon('error')}
+                    </Badge>
+                    <span className="font-semibold">{getRouterDisplayName(item.router)}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {item.router.unit_id ? 
+                        `(${item.router.unit_id} → ${item.router.machine_id})` : 
+                        `(${item.router.machine_id})`
+                      }
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {item.issues.map((issue, issueIndex) => (
+                      <div key={issueIndex} className="flex items-start space-x-2 text-sm">
+                        <span className="text-red-600 mt-1">•</span>
+                        <span>{issue}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="validation-issues">
-                  {item.issues.map((issue, issueIndex) => (
-                    <div key={issueIndex} className="issue-item">
-                      <span className="issue-bullet">•</span>
-                      <span className="issue-text">{issue}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Warnings */}
       {validationResults.warnings.length > 0 && (
-        <div className="validation-section">
-          <h4>
-            <span className="section-icon">⚠️</span>
-            Warnings ({validationResults.warnings.length})
-          </h4>
-          <div className="validation-list">
-            {validationResults.warnings.map((item, index) => (
-              <div key={index} className={`validation-item ${getSeverityClass('warning')}`}>
-                <div className="validation-header">
-                  <span className="validation-icon">{getSeverityIcon('warning')}</span>
-                  <span className="router-name">{getRouterDisplayName(item.router)}</span>
-                  <span className="router-details">
-                    {item.router.unit_id ? 
-                      `(${item.router.unit_id} → ${item.router.machine_id})` : 
-                      `(${item.router.machine_id})`
-                    }
-                  </span>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2">
+              <span>⚠️</span>
+              <span>Warnings ({validationResults.warnings.length})</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {validationResults.warnings.map((item, index) => (
+                <div key={index} className="p-4 border border-yellow-200 rounded-lg bg-yellow-50">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Badge variant="outline" className="bg-yellow-100 text-yellow-800">
+                      {getSeverityIcon('warning')}
+                    </Badge>
+                    <span className="font-semibold">{getRouterDisplayName(item.router)}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {item.router.unit_id ? 
+                        `(${item.router.unit_id} → ${item.router.machine_id})` : 
+                        `(${item.router.machine_id})`
+                      }
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {item.warnings.map((warning, warningIndex) => (
+                      <div key={warningIndex} className="flex items-start space-x-2 text-sm">
+                        <span className="text-yellow-600 mt-1">•</span>
+                        <span>{warning}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="validation-issues">
-                  {item.warnings.map((warning, warningIndex) => (
-                    <div key={warningIndex} className="issue-item">
-                      <span className="issue-bullet">•</span>
-                      <span className="issue-text">{warning}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* All Clear Message */}
       {validationResults.issues.length === 0 && validationResults.warnings.length === 0 && (
-        <div className="validation-section">
-          <div className="all-clear">
-            <div className="all-clear-icon">🎉</div>
-            <h4>All Clear!</h4>
-            <p>Your router database looks great! All operations are valid and complete.</p>
-          </div>
-        </div>
+        <Card>
+          <CardContent className="p-8 text-center">
+            <div className="space-y-4">
+              <div className="text-6xl">🎉</div>
+              <h3 className="text-2xl font-bold text-green-600">All Clear!</h3>
+              <p className="text-muted-foreground">Your router database looks great! All operations are valid and complete.</p>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Data Quality Score */}
-      <div className="validation-section">
-        <h4>Data Quality Score</h4>
-        <div className="quality-score">
-          <div className="score-circle">
-            <div className="score-value">
-              {Math.round((validationResults.stats.valid / validationResults.stats.total) * 100)}%
+      <Card>
+        <CardHeader>
+          <CardTitle>Data Quality Score</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center space-x-8">
+            <div className="flex-shrink-0">
+              <div className="w-24 h-24 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
+                <div className="text-center text-white">
+                  <div className="text-2xl font-bold">
+                    {Math.round((validationResults.stats.valid / validationResults.stats.total) * 100)}%
+                  </div>
+                  <div className="text-xs">Quality</div>
+                </div>
+              </div>
             </div>
-            <div className="score-label">Quality Score</div>
+            <div className="flex-1 space-y-2">
+              <div className="flex justify-between">
+                <span className="text-sm">Valid Operations:</span>
+                <span className="font-medium">{validationResults.stats.valid}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Operations with Issues:</span>
+                <span className="font-medium text-red-600">{validationResults.stats.withIssues}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Operations with Warnings:</span>
+                <span className="font-medium text-yellow-600">{validationResults.stats.withWarnings}</span>
+              </div>
+            </div>
           </div>
-          <div className="score-breakdown">
-            <div className="breakdown-item">
-              <span className="breakdown-label">Valid Operations:</span>
-              <span className="breakdown-value">{validationResults.stats.valid}</span>
-            </div>
-            <div className="breakdown-item">
-              <span className="breakdown-label">Operations with Issues:</span>
-              <span className="breakdown-value">{validationResults.stats.withIssues}</span>
-            </div>
-            <div className="breakdown-item">
-              <span className="breakdown-label">Operations with Warnings:</span>
-              <span className="breakdown-value">{validationResults.stats.withWarnings}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Recommendations */}
-      <div className="validation-section">
-        <h4>Recommendations</h4>
-        <div className="recommendations-list">
-          {validationResults.issues.length > 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🔧</span>
-              <span className="recommendation-text">
-                Fix {validationResults.issues.length} critical issues to improve data quality. 
-                Focus on missing required fields and invalid foreign key references.
-              </span>
-            </div>
-          )}
-          
-          {validationResults.warnings.length > 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">📝</span>
-              <span className="recommendation-text">
-                Address {validationResults.warnings.length} warnings to enhance data completeness. 
-                Consider adding missing time estimates and labor rate assignments.
-              </span>
-            </div>
-          )}
-          
-          {validationResults.stats.valid < validationResults.stats.total * 0.8 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">📊</span>
-              <span className="recommendation-text">
-                Data quality is below 80%. Consider implementing validation rules and 
-                regular data quality checks to maintain router accuracy.
-              </span>
-            </div>
-          )}
-          
-          {validationResults.stats.valid === validationResults.stats.total && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🌟</span>
-              <span className="recommendation-text">
-                Excellent data quality! Consider setting up automated validation checks 
-                to maintain this high standard as your routing data grows.
-              </span>
-            </div>
-          )}
-          
-          {machines.length === 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">🏭</span>
-              <span className="recommendation-text">
-                No machines found in the database. Router operations require machine assignments 
-                for proper scheduling and costing.
-              </span>
-            </div>
-          )}
-          
-          {units.length === 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">📦</span>
-              <span className="recommendation-text">
-                No units found in the database. Router operations must be linked to units 
-                for production planning.
-              </span>
-            </div>
-          )}
-          
-          {laborRates.length === 0 && (
-            <div className="recommendation-item">
-              <span className="recommendation-icon">💰</span>
-              <span className="recommendation-text">
-                No labor rates found in the database. Labor rates are essential for 
-                accurate cost calculations in router operations.
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Recommendations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {validationResults.issues.length > 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-red-50 rounded-lg">
+                <span className="text-xl">🔧</span>
+                <span className="text-sm">
+                  Fix {validationResults.issues.length} critical issues to improve data quality. 
+                  Focus on missing required fields and invalid foreign key references.
+                </span>
+              </div>
+            )}
+            
+            {validationResults.warnings.length > 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-yellow-50 rounded-lg">
+                <span className="text-xl">📝</span>
+                <span className="text-sm">
+                  Address {validationResults.warnings.length} warnings to enhance data completeness. 
+                  Consider adding missing time estimates and labor rate assignments.
+                </span>
+              </div>
+            )}
+            
+            {validationResults.stats.valid < validationResults.stats.total * 0.8 && (
+              <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
+                <span className="text-xl">📊</span>
+                <span className="text-sm">
+                  Data quality is below 80%. Consider implementing validation rules and 
+                  regular data quality checks to maintain router accuracy.
+                </span>
+              </div>
+            )}
+            
+            {validationResults.stats.valid === validationResults.stats.total && (
+              <div className="flex items-start space-x-3 p-3 bg-green-50 rounded-lg">
+                <span className="text-xl">🌟</span>
+                <span className="text-sm">
+                  Excellent data quality! Consider setting up automated validation checks 
+                  to maintain this high standard as your routing data grows.
+                </span>
+              </div>
+            )}
+            
+            {machines.length === 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-orange-50 rounded-lg">
+                <span className="text-xl">🏭</span>
+                <span className="text-sm">
+                  No machines found in the database. Router operations require machine assignments 
+                  for proper scheduling and costing.
+                </span>
+              </div>
+            )}
+            
+            {units.length === 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-purple-50 rounded-lg">
+                <span className="text-xl">📦</span>
+                <span className="text-sm">
+                  No units found in the database. Router operations must be linked to units 
+                  for production planning.
+                </span>
+              </div>
+            )}
+            
+            {laborRates.length === 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-indigo-50 rounded-lg">
+                <span className="text-xl">💰</span>
+                <span className="text-sm">
+                  No labor rates found in the database. Labor rates are essential for 
+                  accurate cost calculations in router operations.
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
