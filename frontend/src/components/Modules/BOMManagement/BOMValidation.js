@@ -262,187 +262,279 @@ const BOMValidation = ({ boms, bomItems, units }) => {
   const healthScore = getHealthScore();
 
   return (
-    <div className="bom-validation">
-      <div className="validation-header">
-        <h3>BOM Data Validation</h3>
-        <p>Analysis of data quality, completeness, and consistency</p>
-      </div>
-
-      {/* Health Score */}
-      <div className="health-score-section">
-        <div className="health-score-card">
-          <div className="health-score-circle">
-            <div 
-              className="health-score-fill" 
-              style={{ 
-                background: `conic-gradient(${healthScore >= 80 ? '#28a745' : healthScore >= 60 ? '#ffc107' : '#dc3545'} ${healthScore * 3.6}deg, #e9ecef 0deg)` 
-              }}
-            >
-              <div className="health-score-inner">
-                <span className="health-score-value">{Math.round(healthScore)}</span>
-                <span className="health-score-label">Health Score</span>
+    <div className="space-y-6">
+      {/* Validation Summary */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl">📋</div>
+              <div>
+                <p className="text-2xl font-bold">{safeBoms.length}</p>
+                <p className="text-sm text-muted-foreground">Total BOMs</p>
               </div>
             </div>
-          </div>
-          <div className="health-score-summary">
-            <div className="score-item">
-              <span className="score-count error">{errorCount}</span>
-              <span className="score-label">Errors</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-green-600">✅</div>
+              <div>
+                <p className="text-2xl font-bold">{safeBoms.length + safeBomItems.length - errorCount - warningCount}</p>
+                <p className="text-sm text-muted-foreground">Valid</p>
+              </div>
             </div>
-            <div className="score-item">
-              <span className="score-count warning">{warningCount}</span>
-              <span className="score-label">Warnings</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-yellow-600">⚠️</div>
+              <div>
+                <p className="text-2xl font-bold">{warningCount}</p>
+                <p className="text-sm text-muted-foreground">Warnings</p>
+              </div>
             </div>
-            <div className="score-item">
-              <span className="score-count">{boms.length}</span>
-              <span className="score-label">BOMs</span>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center space-x-4">
+              <div className="text-3xl text-red-600">❌</div>
+              <div>
+                <p className="text-2xl font-bold">{errorCount}</p>
+                <p className="text-sm text-muted-foreground">Errors</p>
+              </div>
             </div>
-            <div className="score-item">
-                              <span className="score-count">{safeBomItems.length}</span>
-              <span className="score-label">Items</span>
-            </div>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* Validation Results */}
-      <div className="validation-results">
-        {allValidations.length === 0 ? (
-          <div className="no-issues">
-            <div className="no-issues-icon">✅</div>
-            <h4>All Good!</h4>
-            <p>No validation issues found in your BOM data.</p>
-          </div>
-        ) : (
-          <div className="validation-list">
-            {allValidations.map((validation, index) => (
-              <div 
-                key={index} 
-                className={`validation-item ${validation.type}`}
-                style={{ borderLeftColor: getSeverityColor(validation.severity) }}
-              >
-                <div className="validation-header">
-                  <div className="validation-title">
-                    <span className="validation-icon">{getValidationIcon(validation.type)}</span>
-                    <span className="validation-name">{validation.title}</span>
-                    <span className="validation-category">{validation.category}</span>
+      {/* Critical Issues */}
+      {validationResults.issues.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2">
+              <span>❌</span>
+              <span>Critical Issues ({validationResults.issues.length})</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {validationResults.issues.map((validation, index) => (
+                <div key={index} className="p-4 border border-red-200 rounded-lg bg-red-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2">
+                      <Badge variant="destructive" className="bg-red-100 text-red-800">
+                        {getValidationIcon(validation.type)}
+                      </Badge>
+                      <span className="font-semibold">{validation.title}</span>
+                      <Badge variant="outline" className="text-xs">{validation.category}</Badge>
+                    </div>
+                    <Badge 
+                      variant="outline" 
+                      className="text-xs"
+                      style={{ backgroundColor: getSeverityColor(validation.severity), color: 'white' }}
+                    >
+                      {validation.severity}
+                    </Badge>
                   </div>
-                  <span 
-                    className="validation-severity"
-                    style={{ backgroundColor: getSeverityColor(validation.severity) }}
-                  >
-                    {validation.severity}
-                  </span>
-                </div>
-                <p className="validation-description">{validation.description}</p>
-                {validation.items && validation.items.length > 0 && (
-                  <div className="validation-items">
-                    <details>
-                      <summary>Show affected items ({validation.items.length})</summary>
-                      <ul className="affected-items">
+                  <p className="text-sm mb-3">{validation.description}</p>
+                  {validation.items && validation.items.length > 0 && (
+                    <details className="text-sm">
+                      <summary className="cursor-pointer font-medium text-red-700">Show affected items ({validation.items.length})</summary>
+                      <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
                         {validation.items.slice(0, 20).map((item, idx) => (
-                          <li key={idx}>{item}</li>
+                          <div key={idx} className="text-red-600">• {item}</div>
                         ))}
                         {validation.items.length > 20 && (
-                          <li className="more-items">... and {validation.items.length - 20} more</li>
+                          <div className="text-red-500 italic">... and {validation.items.length - 20} more</div>
                         )}
-                      </ul>
+                      </div>
                     </details>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Quick Stats */}
-      <div className="validation-stats">
-        <h4>Quick Statistics</h4>
-        <div className="stats-grid">
-          <div className="stat-item">
-            <span className="stat-label">Total BOMs</span>
-            <span className="stat-value">{safeBoms.length}</span>
+      {/* Warnings */}
+      {validationResults.warnings.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2">
+              <span>⚠️</span>
+              <span>Warnings ({validationResults.warnings.length})</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {validationResults.warnings.map((validation, index) => (
+                <div key={index} className="p-4 border border-yellow-200 rounded-lg bg-yellow-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2">
+                      <Badge variant="outline" className="bg-yellow-100 text-yellow-800">
+                        {getValidationIcon(validation.type)}
+                      </Badge>
+                      <span className="font-semibold">{validation.title}</span>
+                      <Badge variant="outline" className="text-xs">{validation.category}</Badge>
+                    </div>
+                    <Badge 
+                      variant="outline" 
+                      className="text-xs"
+                      style={{ backgroundColor: getSeverityColor(validation.severity), color: 'white' }}
+                    >
+                      {validation.severity}
+                    </Badge>
+                  </div>
+                  <p className="text-sm mb-3">{validation.description}</p>
+                  {validation.items && validation.items.length > 0 && (
+                    <details className="text-sm">
+                      <summary className="cursor-pointer font-medium text-yellow-700">Show affected items ({validation.items.length})</summary>
+                      <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                        {validation.items.slice(0, 20).map((item, idx) => (
+                          <div key={idx} className="text-yellow-600">• {item}</div>
+                        ))}
+                        {validation.items.length > 20 && (
+                          <div className="text-yellow-500 italic">... and {validation.items.length - 20} more</div>
+                        )}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* All Clear Message */}
+      {allValidations.length === 0 && (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <div className="space-y-4">
+              <div className="text-6xl">🎉</div>
+              <h3 className="text-2xl font-bold text-green-600">All Clear!</h3>
+              <p className="text-muted-foreground">No validation issues found in your BOM data. Everything looks great!</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Data Quality Score */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Data Quality Score</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center space-x-8">
+            <div className="flex-shrink-0">
+              <div className="w-24 h-24 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
+                <div className="text-center text-white">
+                  <div className="text-2xl font-bold">
+                    {Math.round(healthScore)}%
+                  </div>
+                  <div className="text-xs">Health</div>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 space-y-2">
+              <div className="flex justify-between">
+                <span className="text-sm">Complete Items:</span>
+                <span className="font-medium">
+                  {safeBomItems.filter(item => 
+                    item.material_description && 
+                    item.qty > 0 && 
+                    item.unit_price > 0
+                  ).length}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Items with Issues:</span>
+                <span className="font-medium text-red-600">{errorCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Items with Warnings:</span>
+                <span className="font-medium text-yellow-600">{warningCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Unique Materials:</span>
+                <span className="font-medium">{new Set(safeBomItems.map(item => item.material_description?.toLowerCase())).size}</span>
+              </div>
+            </div>
           </div>
-          <div className="stat-item">
-            <span className="stat-label">Total Items</span>
-            <span className="stat-value">{safeBomItems.length}</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Avg Items per BOM</span>
-            <span className="stat-value">{safeBoms.length > 0 ? (safeBomItems.length / safeBoms.length).toFixed(1) : 0}</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Unique Materials</span>
-            <span className="stat-value">{new Set(safeBomItems.map(item => item.material_description?.toLowerCase())).size}</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Complete Items</span>
-            <span className="stat-value">
-              {safeBomItems.filter(item => 
-                item.material_description && 
-                item.qty > 0 && 
-                item.unit_price > 0
-              ).length}
-            </span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Data Completeness</span>
-            <span className="stat-value">
-              {safeBomItems.length > 0 ? 
-                Math.round((safeBomItems.filter(item => 
-                  item.material_description && 
-                  item.qty > 0 && 
-                  item.unit_price > 0
-                ).length / safeBomItems.length) * 100) : 0}%
-            </span>
-          </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Recommendations */}
-      {allValidations.length > 0 && (
-        <div className="validation-recommendations">
-          <h4>Recommendations</h4>
-          <div className="recommendations-list">
+      <Card>
+        <CardHeader>
+          <CardTitle>Recommendations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
             {errorCount > 0 && (
-              <div className="recommendation error">
-                <span className="rec-icon">🚨</span>
-                <div className="rec-content">
+              <div className="flex items-start space-x-3 p-3 bg-red-50 rounded-lg">
+                <span className="text-xl">🚨</span>
+                <span className="text-sm">
                   <strong>Address Critical Issues:</strong> Fix {errorCount} error{errorCount !== 1 ? 's' : ''} first as they may prevent proper BOM functionality.
-                </div>
+                </span>
               </div>
             )}
             
             {warningCount > 5 && (
-              <div className="recommendation warning">
-                <span className="rec-icon">📋</span>
-                <div className="rec-content">
+              <div className="flex items-start space-x-3 p-3 bg-yellow-50 rounded-lg">
+                <span className="text-xl">📋</span>
+                <span className="text-sm">
                   <strong>Data Quality Review:</strong> Consider reviewing data entry processes to reduce the {warningCount} warnings.
-                </div>
+                </span>
               </div>
             )}
             
             {safeBomItems.filter(item => !item.target_cost || item.target_cost <= 0).length > safeBomItems.length * 0.5 && (
-              <div className="recommendation info">
-                <span className="rec-icon">🎯</span>
-                <div className="rec-content">
+              <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
+                <span className="text-xl">🎯</span>
+                <span className="text-sm">
                   <strong>Add Target Costs:</strong> Setting target costs helps track cost performance and identify savings opportunities.
-                </div>
+                </span>
               </div>
             )}
             
             {healthScore < 70 && (
-              <div className="recommendation warning">
-                <span className="rec-icon">💡</span>
-                <div className="rec-content">
+              <div className="flex items-start space-x-3 p-3 bg-orange-50 rounded-lg">
+                <span className="text-xl">💡</span>
+                <span className="text-sm">
                   <strong>Improve Data Quality:</strong> Focus on completing missing information and resolving inconsistencies to improve the health score.
-                </div>
+                </span>
+              </div>
+            )}
+            
+            {allValidations.length === 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-green-50 rounded-lg">
+                <span className="text-xl">🌟</span>
+                <span className="text-sm">
+                  <strong>Excellent Data Quality!</strong> Consider setting up automated validation checks to maintain this high standard as your BOM data grows.
+                </span>
+              </div>
+            )}
+            
+            {safeBoms.length === 0 && (
+              <div className="flex items-start space-x-3 p-3 bg-purple-50 rounded-lg">
+                <span className="text-xl">📋</span>
+                <span className="text-sm">
+                  <strong>No BOMs Found:</strong> Start by creating your first Bill of Materials to begin cost tracking and material planning.
+                </span>
               </div>
             )}
           </div>
-        </div>
-      )}
+        </CardContent>
+      </Card>
     </div>
   );
 };

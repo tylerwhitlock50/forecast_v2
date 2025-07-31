@@ -463,43 +463,37 @@ const BOMManagement = () => {
 
         {/* Tab Content */}
         {activeTab === 'table' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>All BOMs ({filteredBOMs.length})</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  data={filteredBOMs}
-                  columns={bomColumns}
-                  onEdit={(bom) => {
-                    setEditingBOM(bom);
-                    setShowBOMModal(true);
-                  }}
-                  onDelete={(bom) => handleDeleteBOM(bom.bom_id)}
-                  emptyMessage="No BOMs found. Click 'Add BOM' to get started."
-                />
-              </CardContent>
-            </Card>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>All BOMs ({filteredBOMs.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                data={filteredBOMs}
+                columns={bomColumns}
+                onEdit={(bom) => {
+                  setEditingBOM(bom);
+                  setShowBOMModal(true);
+                }}
+                onDelete={(bom) => handleDeleteBOM(bom.bom_id)}
+                emptyMessage="No BOMs found. Click 'Add BOM' to get started."
+              />
+            </CardContent>
+          </Card>
         )}
 
         {activeTab === 'summary' && (
-          <div className="space-y-6">
-            <BOMSummary 
-              boms={bomDefinitions} 
-              bomLines={data.bom || []}
-            />
-          </div>
+          <BOMSummary 
+            boms={bomDefinitions} 
+            bomLines={data.bom || []}
+          />
         )}
 
         {activeTab === 'validation' && (
-          <div className="space-y-6">
-            <BOMValidation 
-              boms={bomDefinitions} 
-              bomLines={data.bom || []}
-            />
-          </div>
+          <BOMValidation 
+            boms={bomDefinitions} 
+            bomLines={data.bom || []}
+          />
         )}
       </div>
 
