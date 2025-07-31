@@ -309,7 +309,7 @@ const RevenueForecasting = () => {
       <div className="flex flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-2">
           <Label>Segment:</Label>
-          <Select value={selectedSegment} onValueChange={setSelectedSegment}>
+          <Select value={selectedSegment} onChange={(e) => setSelectedSegment(e.target.value)}>
             <SelectOption value="all">All Segments</SelectOption>
             {segments.map(segment => (
               <SelectOption key={segment} value={segment}>{segment}</SelectOption>
@@ -319,7 +319,7 @@ const RevenueForecasting = () => {
         
         <div className="flex items-center gap-2">
           <Label>Time Range:</Label>
-          <Select value={timeRange} onValueChange={setTimeRange}>
+          <Select value={timeRange} onChange={(e) => setTimeRange(e.target.value)}>
             <SelectOption value="monthly">Monthly</SelectOption>
             <SelectOption value="quarterly">Quarterly</SelectOption>
           </Select>

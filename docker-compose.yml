@@ -7,6 +7,9 @@ services:
     volumes:
       - ./data:/data
       - ./app:/app
+    environment:
+      # Set to 'true' to force reload CSV data over existing database
+      - FORCE_DB_RELOAD=false
     depends_on:
       - ollama
       - whisper

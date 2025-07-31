@@ -4,64 +4,68 @@ import { Badge } from '../../ui/badge';
 
 const RouterSummary = ({ routers, routerOperations, machines, units, laborRates }) => {
   const summaryData = useMemo(() => {
-    const totalRouters = routers.length;
+    // Use router operations for analysis since that's where the actual data is
+    const operations = Array.isArray(routerOperations) ? routerOperations : [];
+    const routerDefs = Array.isArray(routers) ? routers : [];
+    const totalOperations = operations.length;
     
-    // Version breakdown
-    const versionBreakdown = routers.reduce((acc, router) => {
+    // Router breakdown by router ID
+    const routerBreakdown = operations.reduce((acc, op) => {
+      const routerId = op.router_id || 'Unknown';
+      acc[routerId] = (acc[routerId] || 0) + 1;
+      return acc;
+    }, {});
+    
+    // Version breakdown from router definitions
+    const versionBreakdown = routerDefs.reduce((acc, router) => {
       const version = router.version || '1.0';
       acc[version] = (acc[version] || 0) + 1;
       return acc;
     }, {});
     
-    // Unit breakdown
-    const unitBreakdown = routers.reduce((acc, router) => {
-      const unitId = router.unit_id || 'Unknown';
-      acc[unitId] = (acc[unitId] || 0) + 1;
+    // Machine utilization from operations
+    const machineUtilization = operations.reduce((acc, op) => {
+      const machineId = op.machine_id || 'Unknown';
+      acc[machineId] = (acc[machineId] || 0) + (op.machine_minutes || 0);
       return acc;
     }, {});
     
-    // Machine utilization
-    const machineUtilization = routers.reduce((acc, router) => {
-      const machineId = router.machine_id || 'Unknown';
-      acc[machineId] = (acc[machineId] || 0) + (router.machine_minutes || 0);
+    // Labor utilization from operations
+    const laborUtilization = operations.reduce((acc, op) => {
+      const laborId = op.labor_type_id || 'Unknown';
+      acc[laborId] = (acc[laborId] || 0) + (op.labor_minutes || 0);
       return acc;
     }, {});
     
-    // Labor utilization
-    const laborUtilization = routers.reduce((acc, router) => {
-      const laborId = router.labor_type_id || 'Unknown';
-      acc[laborId] = (acc[laborId] || 0) + (router.labor_minutes || 0);
-      return acc;
-    }, {});
+    // Time statistics from operations
+    const totalMachineMinutes = operations.reduce((sum, op) => sum + (op.machine_minutes || 0), 0);
+    const totalLaborMinutes = operations.reduce((sum, op) => sum + (op.labor_minutes || 0), 0);
+    const avgMachineMinutes = totalOperations > 0 ? totalMachineMinutes / totalOperations : 0;
+    const avgLaborMinutes = totalOperations > 0 ? totalLaborMinutes / totalOperations : 0;
     
-    // Time statistics
-    const totalMachineMinutes = routers.reduce((sum, r) => sum + (r.machine_minutes || 0), 0);
-    const totalLaborMinutes = routers.reduce((sum, r) => sum + (r.labor_minutes || 0), 0);
-    const avgMachineMinutes = totalRouters > 0 ? totalMachineMinutes / totalRouters : 0;
-    const avgLaborMinutes = totalRouters > 0 ? totalLaborMinutes / totalRouters : 0;
+    // Sequence analysis from operations
+    const maxSequence = operations.reduce((max, op) => Math.max(max, op.sequence || 0), 0);
+    const avgSequence = totalOperations > 0 ? 
+      operations.reduce((sum, op) => sum + (op.sequence || 0), 0) / totalOperations : 0;
     
-    // Sequence analysis
-    const maxSequence = routers.reduce((max, r) => Math.max(max, r.sequence || 0), 0);
-    const avgSequence = totalRouters > 0 ? 
-      routers.reduce((sum, r) => sum + (r.sequence || 0), 0) / totalRouters : 0;
+    // Data completeness from operations
+    const withMachine = operations.filter(op => op.machine_id).length;
+    const withLaborRate = operations.filter(op => op.labor_type_id).length;
+    const withMachineMinutes = operations.filter(op => op.machine_minutes && op.machine_minutes > 0).length;
+    const withLaborMinutes = operations.filter(op => op.labor_minutes && op.labor_minutes > 0).length;
+    const withDescription = operations.filter(op => op.operation_description).length;
     
-    // Data completeness
-    const withMachine = routers.filter(r => r.machine_id).length;
-    const withUnit = routers.filter(r => r.unit_id).length;
-    const withLaborRate = routers.filter(r => r.labor_type_id).length;
-    const withMachineMinutes = routers.filter(r => r.machine_minutes && r.machine_minutes > 0).length;
-    const withLaborMinutes = routers.filter(r => r.labor_minutes && r.labor_minutes > 0).length;
-    
-    // Complete profiles
-    const completeProfiles = routers.filter(r => 
-      r.router_id && r.unit_id && r.machine_id && r.sequence && 
-      (r.machine_minutes > 0 || r.labor_minutes > 0)
+    // Complete operation profiles
+    const completeProfiles = operations.filter(op => 
+      op.router_id && op.machine_id && op.sequence && op.labor_type_id &&
+      (op.machine_minutes > 0 || op.labor_minutes > 0)
     ).length;
     
     return {
-      totalRouters,
+      totalOperations,
+      totalRouters: routerDefs.length,
       versionBreakdown,
-      unitBreakdown,
+      routerBreakdown,
       machineUtilization,
       laborUtilization,
       timeStats: {
@@ -76,23 +80,23 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
       },
       completeness: {
         withMachine,
-        withUnit,
         withLaborRate,
         withMachineMinutes,
-        withLaborMinutes
+        withLaborMinutes,
+        withDescription
       },
       dataQuality: {
         completeProfiles,
-        incompleteProfiles: totalRouters - completeProfiles
+        incompleteProfiles: totalOperations - completeProfiles
       }
     };
-  }, [routers]);
+  }, [routers, routerOperations]);
 
   const topVersions = Object.entries(summaryData.versionBreakdown)
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5);
 
-  const topUnits = Object.entries(summaryData.unitBreakdown)
+  const topRouters = Object.entries(summaryData.routerBreakdown)
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5);
 
@@ -117,9 +121,9 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
     return machine ? machine.machine_name : machineId;
   };
 
-  const getUnitName = (unitId) => {
-    const unit = units.find(u => u.unit_id === unitId);
-    return unit ? unit.unit_name : unitId;
+  const getRouterName = (routerId) => {
+    const router = routers.find(r => r.router_id === routerId);
+    return router ? router.router_name : routerId;
   };
 
   const getLaborRateName = (rateId) => {
@@ -136,7 +140,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="flex items-center space-x-4">
               <div className="text-3xl">🔄</div>
               <div>
-                <p className="text-2xl font-bold">{summaryData.totalRouters}</p>
+                <p className="text-2xl font-bold">{summaryData.totalOperations}</p>
                 <p className="text-sm text-muted-foreground">Total Operations</p>
               </div>
             </div>
@@ -212,18 +216,18 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
         </CardContent>
       </Card>
 
-      {/* Unit Distribution */}
+      {/* Router Distribution */}
       <Card>
         <CardHeader>
-          <CardTitle>Unit Distribution</CardTitle>
+          <CardTitle>Router Distribution</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {topUnits.map(([unitId, count]) => (
-              <div key={unitId} className="flex items-center justify-between">
+            {topRouters.map(([routerId, count]) => (
+              <div key={routerId} className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <Badge variant="outline" className="bg-green-100 text-green-800">
-                    {getUnitName(unitId)}
+                    {getRouterName(routerId)}
                   </Badge>
                   <span className="text-sm text-muted-foreground">{count} operations</span>
                 </div>
@@ -231,12 +235,12 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div 
                       className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${(count / summaryData.totalRouters) * 100}%` }}
+                      style={{ width: `${(count / summaryData.totalOperations) * 100}%` }}
                     ></div>
                   </div>
                 </div>
                 <span className="text-sm font-medium">
-                  {((count / summaryData.totalRouters) * 100).toFixed(1)}%
+                  {((count / summaryData.totalOperations) * 100).toFixed(1)}%
                 </span>
               </div>
             ))}
@@ -345,12 +349,12 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>Complete Operations</span>
-                <span className="font-medium">{summaryData.dataQuality.completeProfiles} of {summaryData.totalRouters}</span>
+                <span className="font-medium">{summaryData.dataQuality.completeProfiles} of {summaryData.totalOperations}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalRouters) * 100}%` }}
+                  style={{ width: `${(summaryData.dataQuality.completeProfiles / summaryData.totalOperations) * 100}%` }}
                 ></div>
               </div>
             </div>
@@ -358,12 +362,12 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>With Machine</span>
-                <span className="font-medium">{summaryData.completeness.withMachine} of {summaryData.totalRouters}</span>
+                <span className="font-medium">{summaryData.completeness.withMachine} of {summaryData.totalOperations}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${(summaryData.completeness.withMachine / summaryData.totalRouters) * 100}%` }}
+                  style={{ width: `${(summaryData.completeness.withMachine / summaryData.totalOperations) * 100}%` }}
                 ></div>
               </div>
             </div>
@@ -371,12 +375,25 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>With Labor Rate</span>
-                <span className="font-medium">{summaryData.completeness.withLaborRate} of {summaryData.totalRouters}</span>
+                <span className="font-medium">{summaryData.completeness.withLaborRate} of {summaryData.totalOperations}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${(summaryData.completeness.withLaborRate / summaryData.totalRouters) * 100}%` }}
+                  style={{ width: `${(summaryData.completeness.withLaborRate / summaryData.totalOperations) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>With Description</span>
+                <span className="font-medium">{summaryData.completeness.withDescription} of {summaryData.totalOperations}</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="bg-cyan-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(summaryData.completeness.withDescription / summaryData.totalOperations) * 100}%` }}
                 ></div>
               </div>
             </div>
@@ -384,12 +401,12 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>With Time Data</span>
-                <span className="font-medium">{summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes} of {summaryData.totalRouters * 2}</span>
+                <span className="font-medium">{summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes} of {summaryData.totalOperations * 2}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="bg-purple-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${((summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes) / (summaryData.totalRouters * 2)) * 100}%` }}
+                  style={{ width: `${((summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes) / (summaryData.totalOperations * 2)) * 100}%` }}
                 ></div>
               </div>
             </div>
@@ -414,21 +431,21 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
               </div>
             )}
             
-            {summaryData.completeness.withMachineMinutes < summaryData.totalRouters * 0.8 && (
+            {summaryData.completeness.withMachineMinutes < summaryData.totalOperations * 0.8 && (
               <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
                 <span className="text-xl">⏰</span>
                 <span className="text-sm">
-                  Only {Math.round((summaryData.completeness.withMachineMinutes / summaryData.totalRouters) * 100)}% of operations have machine time data. 
+                  Only {Math.round((summaryData.completeness.withMachineMinutes / summaryData.totalOperations) * 100)}% of operations have machine time data. 
                   Machine time is crucial for capacity planning.
                 </span>
               </div>
             )}
             
-            {summaryData.completeness.withLaborMinutes < summaryData.totalRouters * 0.8 && (
+            {summaryData.completeness.withLaborMinutes < summaryData.totalOperations * 0.8 && (
               <div className="flex items-start space-x-3 p-3 bg-green-50 rounded-lg">
                 <span className="text-xl">👷</span>
                 <span className="text-sm">
-                  Only {Math.round((summaryData.completeness.withLaborMinutes / summaryData.totalRouters) * 100)}% of operations have labor time data. 
+                  Only {Math.round((summaryData.completeness.withLaborMinutes / summaryData.totalOperations) * 100)}% of operations have labor time data. 
                   Labor time is essential for cost calculations.
                 </span>
               </div>

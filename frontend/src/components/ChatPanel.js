@@ -70,19 +70,19 @@ const ChatPanel = ({ expanded, onToggle }) => {
         
         const aiMessage = {
           id: Date.now() + 1,
-          text: response.data.content,
+          text: response.content,
           sender: 'ai',
           serviceType: 'agents',
-          agent: response.data.agent,
+          agent: response.agent,
           timestamp: new Date().toLocaleTimeString(),
-          metadata: response.data.metadata || {}
+          metadata: response.metadata || {}
         };
         
         setMessages(prev => [...prev, aiMessage]);
         
         // Update current agent if it changed
-        if (response.data.agent && response.data.agent !== currentAgent) {
-          setCurrentAgent(response.data.agent);
+        if (response.agent && response.agent !== currentAgent) {
+          setCurrentAgent(response.agent);
         }
         
       } else {

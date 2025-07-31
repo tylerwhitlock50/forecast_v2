@@ -276,7 +276,7 @@ const CustomerManagement = () => {
         
         <div className="flex items-center gap-2">
           <Label>Customer Type:</Label>
-          <Select value={filterSegment} onValueChange={setFilterSegment}>
+          <Select value={filterSegment} onChange={(e) => setFilterSegment(e.target.value)}>
             <SelectOption value="all">All Types</SelectOption>
             {customerTypes.map(type => (
               <SelectOption key={type} value={type}>{type}</SelectOption>

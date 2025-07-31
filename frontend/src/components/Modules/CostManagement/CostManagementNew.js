@@ -254,7 +254,7 @@ const CostManagement = () => {
         {activeTab !== 'overview' && (
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium">View Period:</label>
-            <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+            <Select value={selectedPeriod} onChange={(e) => setSelectedPeriod(e.target.value)}>
               <SelectOption value="all">All Periods Combined</SelectOption>
               {availablePeriods.map(period => (
                 <SelectOption key={period} value={period}>{period}</SelectOption>

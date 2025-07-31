@@ -308,7 +308,7 @@ const ProductManagement = () => {
         
         <div className="flex items-center gap-2">
           <Label>Type:</Label>
-          <Select value={filterType} onValueChange={setFilterType}>
+          <Select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
             <SelectOption value="all">All Types</SelectOption>
             {productTypes.map(type => (
               <SelectOption key={type} value={type}>{type}</SelectOption>

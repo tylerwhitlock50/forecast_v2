@@ -910,12 +910,48 @@ class DatabaseManager:
         """Initialize database - create tables and load data"""
         print(f"Initializing database at: {self.database_path}")
         print(f"Data directory: {self.data_dir}")
+        
+        # Check if database already exists and has data
+        database_exists = os.path.exists(self.database_path)
+        has_existing_data = False
+        
+        if database_exists:
+            try:
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                # Check if key tables have data
+                for table in ['customers', 'units', 'sales', 'bom']:
+                    try:
+                        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                        count = cursor.fetchone()[0]
+                        if count > 0:
+                            has_existing_data = True
+                            break
+                    except:
+                        continue  # Table might not exist yet
+                conn.close()
+            except:
+                pass  # Database might be corrupted or inaccessible
+        
         self.create_tables()
         print("Tables created successfully")
         self.migrate_payroll_table()
         print("Payroll table migration completed")
-        self.load_csv_data()
-        print("Database initialization complete")
+        
+        # Check for force reload environment variable
+        force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'
+        
+        if has_existing_data and not force_reload:
+            print("Database already contains data - skipping CSV data loading")
+            print("Database initialization complete (existing data preserved)")
+            print("Note: Set FORCE_DB_RELOAD=true environment variable to force reload CSV data")
+        else:
+            if force_reload:
+                print("Force reload requested - loading CSV data over existing data")
+            else:
+                print("Loading fresh data from CSV files")
+            self.load_csv_data()
+            print("Database initialization complete")
 
     def get_execution_logs(self, limit: int = None, user_id: str = None, 
                           session_id: str = None, status: str = None) -> Dict[str, Any]:

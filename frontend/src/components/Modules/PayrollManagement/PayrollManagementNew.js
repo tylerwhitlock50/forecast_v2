@@ -383,7 +383,7 @@ const PayrollManagement = () => {
       <div className="flex flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-2">
           <Label>Department:</Label>
-          <Select value={filters.department} onValueChange={(value) => setFilters(prev => ({ ...prev, department: value }))}>
+          <Select value={filters.department} onChange={(e) => setFilters(prev => ({ ...prev, department: e.target.value }))}>
             <SelectOption value="">All Departments</SelectOption>
             {departments.map(dept => (
               <SelectOption key={dept} value={dept}>{dept}</SelectOption>
@@ -393,7 +393,7 @@ const PayrollManagement = () => {
         
         <div className="flex items-center gap-2">
           <Label>Status:</Label>
-          <Select value={filters.status} onValueChange={(value) => setFilters(prev => ({ ...prev, status: value }))}>
+          <Select value={filters.status} onChange={(e) => setFilters(prev => ({ ...prev, status: e.target.value }))}>
             <SelectOption value="">All Status</SelectOption>
             <SelectOption value="active">Active</SelectOption>
             <SelectOption value="inactive">Inactive</SelectOption>

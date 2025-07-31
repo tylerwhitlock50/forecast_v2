@@ -366,11 +366,14 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
         # Special handling for BOM table with composite keys
         if table_name == 'bom' and '-' in record_id:
             # Handle composite key format: bom_id-version-bom_line
+            # For BOM-001-1.0-1, we need to parse more carefully
             parts = record_id.split('-')
             if len(parts) >= 3:
-                bom_id = parts[0]
-                version = parts[1] 
-                bom_line = parts[2]
+                # Handle cases where BOM ID contains hyphens (e.g., BOM-001)
+                # Last part is bom_line, second to last is version
+                bom_line = parts[-1]
+                version = parts[-2]
+                bom_id = '-'.join(parts[:-2])
                 
                 # Build update query for composite key
                 set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
@@ -468,11 +471,14 @@ async def delete_forecast_record(table_name: str, record_id: str):
         # Special handling for BOM table with composite keys
         if table_name == 'bom' and '-' in record_id:
             # Handle composite key format: bom_id-version-bom_line
+            # For BOM-001-1.0-1, we need to parse more carefully
             parts = record_id.split('-')
             if len(parts) >= 3:
-                bom_id = parts[0]
-                version = parts[1]
-                bom_line = parts[2]
+                # Handle cases where BOM ID contains hyphens (e.g., BOM-001)
+                # Last part is bom_line, second to last is version
+                bom_line = parts[-1]
+                version = parts[-2]
+                bom_id = '-'.join(parts[:-2])
                 
                 # Check if the record exists
                 cursor.execute("SELECT COUNT(*) FROM bom WHERE bom_id = ? AND version = ? AND bom_line = ?", (bom_id, version, bom_line))

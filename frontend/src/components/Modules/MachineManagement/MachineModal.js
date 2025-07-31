@@ -187,16 +187,9 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
                 <Select
                   id="labor_type"
                   value={formData.labor_type}
-                  onValueChange={(value) => handleInputChange('labor_type', value)}
+                  onChange={(e) => handleInputChange('labor_type', e.target.value)}
                 >
-                  <SelectOption value="">Select Type</SelectOption>
-                  <SelectOption value="CNC">CNC</SelectOption>
-                  <SelectOption value="Manual">Manual</SelectOption>
-                  <SelectOption value="Assembly">Assembly</SelectOption>
-                  <SelectOption value="Inspection">Inspection</SelectOption>
-                  <SelectOption value="Shipping">Shipping</SelectOption>
-                  <SelectOption value="General">General</SelectOption>
-                  <SelectOption value="MACHINE SHOP">Machine Shop</SelectOption>
+                  <SelectOption value="">Select Labor Type</SelectOption>
                   {Array.isArray(data.labor_rates) && data.labor_rates.map(rate => (
                     <SelectOption key={rate.rate_id} value={rate.rate_name}>
                       {rate.rate_name} (${rate.rate_amount}/hr)

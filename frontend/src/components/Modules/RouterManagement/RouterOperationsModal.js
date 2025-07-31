@@ -181,8 +181,8 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
   if (!isOpen || !router) return null;
 
   return (
-    <div className="router-modal-overlay" onClick={onClose}>
-      <div className="router-modal-content" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '1200px', maxHeight: '90vh' }}>
         <div className="modal-header">
           <h2>Manage Operations: {router.router_name}</h2>
           <button className="close-button" onClick={onClose}>×</button>

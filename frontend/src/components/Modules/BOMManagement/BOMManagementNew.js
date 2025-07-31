@@ -408,7 +408,7 @@ const BOMManagement = () => {
         
         <div className="flex items-center gap-2">
           <Label>Version:</Label>
-          <Select value={filterVersion} onValueChange={setFilterVersion}>
+          <Select value={filterVersion} onChange={(e) => setFilterVersion(e.target.value)}>
             <SelectOption value="all">All Versions</SelectOption>
             {versions.map(version => (
               <SelectOption key={version} value={version}>{version}</SelectOption>
@@ -485,7 +485,8 @@ const BOMManagement = () => {
         {activeTab === 'summary' && (
           <BOMSummary 
             boms={bomDefinitions} 
-            bomLines={data.bom || []}
+            bomItems={data.bom || []}
+            units={data.units || []}
           />
         )}
 

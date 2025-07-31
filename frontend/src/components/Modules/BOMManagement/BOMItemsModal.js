@@ -3,9 +3,9 @@ import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 
 
-const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
+const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
   const { actions } = useForecast();
-  const [bomItems, setBomItems] = useState([]);
+  const [localBomItems, setLocalBomItems] = useState([]);
   const [editingItem, setEditingItem] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [formData, setFormData] = useState({
@@ -19,15 +19,15 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
 
   // Filter items for this BOM
   const currentBomItems = useMemo(() => {
-    if (!bom) return [];
-    return items.filter(item => 
+    if (!bom || !bomItems) return [];
+    return bomItems.filter(item => 
       item.bom_id === bom.bom_id && 
       (item.version || '1.0') === (bom.version || '1.0')
     ).sort((a, b) => (a.bom_line || 0) - (b.bom_line || 0));
-  }, [items, bom]);
+  }, [bomItems, bom]);
 
   useEffect(() => {
-    setBomItems(currentBomItems);
+    setLocalBomItems(currentBomItems);
   }, [currentBomItems]);
 
   // Calculate material cost when qty or unit_price changes
@@ -115,7 +115,7 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
   };
 
   const getNextLineNumber = () => {
-    const maxLine = Math.max(...bomItems.map(item => item.bom_line || 0), 0);
+    const maxLine = Math.max(...localBomItems.map(item => item.bom_line || 0), 0);
     return maxLine + 1;
   };
 
@@ -123,15 +123,15 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
     return `$${Number(value || 0).toFixed(2)}`;
   };
 
-  const totalMaterialCost = bomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
-  const totalTargetCost = bomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
+  const totalMaterialCost = localBomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
+  const totalTargetCost = localBomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
   const costVariance = totalMaterialCost - totalTargetCost;
 
   if (!isOpen || !bom) return null;
 
   return (
-    <div className="bom-items-modal-overlay" onClick={onClose}>
-      <div className="bom-items-modal-content" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '1000px', maxHeight: '90vh' }}>
         <div className="modal-header">
           <h2>Manage BOM Items - {bom.bom_name}</h2>
           <button className="close-button" onClick={onClose}>×</button>
@@ -142,7 +142,7 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
           <div className="bom-summary">
             <div className="summary-item">
               <span className="summary-label">Total Items:</span>
-              <span className="summary-value">{bomItems.length}</span>
+              <span className="summary-value">{localBomItems.length}</span>
             </div>
             <div className="summary-item">
               <span className="summary-label">Material Cost:</span>
@@ -259,7 +259,7 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
               )}
             </div>
 
-            {bomItems.length === 0 ? (
+            {localBomItems.length === 0 ? (
               <div className="no-items">
                 <p>No items in this BOM yet.</p>
                 <button 
@@ -284,7 +284,7 @@ const BOMItemsModal = ({ isOpen, onClose, bom, items, onSave }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {bomItems.map(item => (
+                  {localBomItems.map(item => (
                     <tr key={`${item.bom_id}-${item.version}-${item.bom_line}`}>
                       <td>{item.bom_line}</td>
                       <td>{item.material_description}</td>
