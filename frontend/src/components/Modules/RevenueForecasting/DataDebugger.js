@@ -3,7 +3,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 
-const DataDebugger = ({ data }) => {
+const DataDebugger = ({ data, timePeriods }) => {
   const { activeScenario } = useForecast();
   
   const debugInfo = {
@@ -32,6 +32,12 @@ const DataDebugger = ({ data }) => {
       count: data.sales_forecast?.filter(s => s.forecast_id === (activeScenario || 'F001')).length || 0,
       sample: data.sales_forecast?.filter(s => s.forecast_id === (activeScenario || 'F001')).slice(0, 2) || [],
       hasData: Array.isArray(data.sales_forecast) && data.sales_forecast.filter(s => s.forecast_id === (activeScenario || 'F001')).length > 0
+    },
+    // Add time periods debugging
+    timePeriods: {
+      count: timePeriods?.length || 0,
+      sample: timePeriods?.slice(0, 5) || [],
+      hasData: Array.isArray(timePeriods) && timePeriods.length > 0
     }
   };
 
@@ -46,7 +52,7 @@ const DataDebugger = ({ data }) => {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-gray-700">Products:</span>
@@ -121,6 +127,21 @@ const DataDebugger = ({ data }) => {
               </div>
             )}
           </div>
+          
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-gray-700">Time Periods:</span>
+              <span className="font-mono text-lg">{debugInfo.timePeriods.count}</span>
+              <Badge variant={debugInfo.timePeriods.hasData ? "default" : "destructive"} className="text-xs">
+                {debugInfo.timePeriods.hasData ? '✅' : '❌'}
+              </Badge>
+            </div>
+            {debugInfo.timePeriods.sample.length > 0 && (
+              <div className="text-xs text-gray-600 bg-white p-2 rounded border">
+                Sample: {debugInfo.timePeriods.sample.map(p => `${p.key} (${p.label})`).join(', ')}
+              </div>
+            )}
+          </div>
         </div>
         
         {debugInfo.scenario_sales.sample.length > 0 && (
@@ -131,6 +152,25 @@ const DataDebugger = ({ data }) => {
             <pre className="mt-2 bg-white p-4 rounded border text-xs overflow-auto max-h-64">
               {JSON.stringify(debugInfo.scenario_sales.sample, null, 2)}
             </pre>
+          </details>
+        )}
+        
+        {debugInfo.timePeriods.sample.length > 0 && (
+          <details className="mt-6">
+            <summary className="cursor-pointer text-orange-700 font-medium hover:text-orange-800">
+              Time Periods Debug Info
+            </summary>
+            <div className="mt-2 bg-white p-4 rounded border text-xs">
+              <div className="mb-2">
+                <strong>Current Date:</strong> {new Date().toISOString().split('T')[0]}
+              </div>
+              <div className="mb-2">
+                <strong>First 10 Periods:</strong>
+              </div>
+              <pre className="overflow-auto max-h-32">
+                {JSON.stringify(debugInfo.timePeriods.sample, null, 2)}
+              </pre>
+            </div>
           </details>
         )}
       </CardContent>

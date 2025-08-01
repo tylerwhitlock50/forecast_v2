@@ -6,6 +6,70 @@ import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 
+// Utility function to get the start of the current week
+const getStartOfWeek = (date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+  return new Date(d.setDate(diff));
+};
+
+// Utility function to get the end of the current year
+const getEndOfYear = (date) => {
+  return new Date(date.getFullYear(), 11, 31);
+};
+
+// Utility function to get the first day of the current month
+const getFirstDayOfMonth = (date) => {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+};
+
+// Utility function to get the first day of the current quarter
+const getFirstDayOfQuarter = (date) => {
+  const quarter = Math.floor(date.getMonth() / 3);
+  return new Date(date.getFullYear(), quarter * 3, 1);
+};
+
+// Utility function to calculate periods between two dates based on period type
+const calculatePeriodsBetween = (startDate, endDate, periodType) => {
+  const periods = [];
+  const current = new Date(startDate);
+  
+  while (current <= endDate) {
+    let periodKey, periodLabel;
+    
+    if (periodType === 'weekly') {
+      const weekStart = getStartOfWeek(current);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
+      
+      const weekNumber = Math.ceil((weekStart.getDate() + weekStart.getDay()) / 7);
+      periodKey = `${weekStart.getFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+      periodLabel = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+      
+      // Move to next week
+      current.setDate(current.getDate() + 7);
+    } else if (periodType === 'monthly') {
+      periodKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
+      periodLabel = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
+      
+      // Move to next month
+      current.setMonth(current.getMonth() + 1);
+    } else if (periodType === 'quarterly') {
+      const quarter = Math.floor(current.getMonth() / 3) + 1;
+      periodKey = `${current.getFullYear()}-Q${quarter}`;
+      periodLabel = `Q${quarter} ${current.getFullYear()}`;
+      
+      // Move to next quarter
+      current.setMonth(current.getMonth() + 3);
+    }
+    
+    periods.push({ key: periodKey, label: periodLabel });
+  }
+  
+  return periods;
+};
+
 const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
   const { data, activeScenario } = useForecast();
   
@@ -15,8 +79,8 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
     customer_id: '',
     segment: '',
     period_type: 'monthly', // monthly, weekly, quarterly
-    start_period: '',
-    end_period: '',
+    start_date: '',
+    end_date: '',
     quantity: 0,
     unit_price: 0,
     operation: 'add' // add, subtract, replace
@@ -24,24 +88,6 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
 
   // Validation state
   const [errors, setErrors] = useState({});
-
-  // Generate available periods
-  const availablePeriods = useMemo(() => {
-    const periods = [];
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
-    
-    // Generate periods for the next 24 months
-    for (let i = 0; i < 24; i++) {
-      const date = new Date(currentYear, currentMonth + i, 1);
-      const periodKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const periodLabel = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
-      periods.push({ key: periodKey, label: periodLabel });
-    }
-    
-    return periods;
-  }, []);
 
   // Get unique segments from customers
   const segments = useMemo(() => {
@@ -57,25 +103,57 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
     );
   }, [data.customers, formData.segment]);
 
+  // Calculate periods between start and end dates
+  const calculatedPeriods = useMemo(() => {
+    if (!formData.start_date || !formData.end_date) return [];
+    
+    const startDate = new Date(formData.start_date);
+    const endDate = new Date(formData.end_date);
+    
+    if (startDate > endDate) return [];
+    
+    return calculatePeriodsBetween(startDate, endDate, formData.period_type);
+  }, [formData.start_date, formData.end_date, formData.period_type]);
+
   // Initialize form with current date if no initial data
   useEffect(() => {
     if (!initialData && isOpen) {
       const now = new Date();
-      const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      let startDate, endDate;
+      
+      if (formData.period_type === 'weekly') {
+        startDate = getStartOfWeek(now);
+        endDate = getEndOfYear(now);
+      } else if (formData.period_type === 'quarterly') {
+        startDate = getFirstDayOfQuarter(now);
+        endDate = getEndOfYear(now);
+      } else {
+        startDate = getFirstDayOfMonth(now);
+        endDate = getEndOfYear(now);
+      }
+      
       setFormData({
         product_id: '',
         customer_id: '',
         segment: '',
         period_type: 'monthly',
-        start_period: currentPeriod,
-        end_period: currentPeriod,
+        start_date: startDate.toISOString().split('T')[0],
+        end_date: endDate.toISOString().split('T')[0],
         quantity: 0,
         unit_price: 0,
         operation: 'add'
       });
       setErrors({});
     } else if (initialData && isOpen) {
-      setFormData(initialData);
+      // Convert period-based data to date-based data if needed
+      const convertedData = { ...initialData };
+      if (initialData.start_period && !initialData.start_date) {
+        // Convert period to date (this is a simplified conversion)
+        const now = new Date();
+        convertedData.start_date = now.toISOString().split('T')[0];
+        convertedData.end_date = now.toISOString().split('T')[0];
+      }
+      setFormData(convertedData);
       setErrors({});
     }
   }, [isOpen, initialData]);
@@ -86,15 +164,17 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
     
     if (!formData.product_id) newErrors.product_id = 'Product is required';
     if (!formData.customer_id) newErrors.customer_id = 'Customer is required';
-    if (!formData.start_period) newErrors.start_period = 'Start period is required';
-    if (!formData.end_period) newErrors.end_period = 'End period is required';
+    if (!formData.start_date) newErrors.start_date = 'Start date is required';
+    if (!formData.end_date) newErrors.end_date = 'End date is required';
     if (formData.quantity <= 0) newErrors.quantity = 'Quantity must be greater than 0';
     if (formData.unit_price <= 0) newErrors.unit_price = 'Unit price must be greater than 0';
     
-    // Validate period range
-    if (formData.start_period && formData.end_period) {
-      if (formData.start_period > formData.end_period) {
-        newErrors.end_period = 'End period must be after start period';
+    // Validate date range
+    if (formData.start_date && formData.end_date) {
+      const startDate = new Date(formData.start_date);
+      const endDate = new Date(formData.end_date);
+      if (startDate > endDate) {
+        newErrors.end_date = 'End date must be after start date';
       }
     }
     
@@ -113,50 +193,15 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
 
     try {
       // Generate sales records for each period in the range
-      const salesRecords = [];
-      const startDate = new Date(formData.start_period + '-01');
-      const endDate = new Date(formData.end_period + '-01');
-      
-      // Use a more reliable date iteration method
-      let currentYear = startDate.getFullYear();
-      let currentMonth = startDate.getMonth();
-      
-      while (true) {
-        // Create period key for current month
-        const periodKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
-        
-        // Calculate quantity for this period based on period type
-        let periodQuantity = formData.quantity;
-        if (formData.period_type === 'weekly') {
-          // Convert weekly to monthly (assuming 4.33 weeks per month)
-          periodQuantity = Math.round(formData.quantity * 4.33);
-        } else if (formData.period_type === 'quarterly') {
-          // Convert quarterly to monthly
-          periodQuantity = Math.round(formData.quantity / 3);
-        }
-        
-        salesRecords.push({
-          unit_id: formData.product_id,
-          customer_id: formData.customer_id,
-          period: periodKey,
-          quantity: periodQuantity,
-          unit_price: formData.unit_price,
-          total_revenue: periodQuantity * formData.unit_price,
-          forecast_id: activeScenario
-        });
-        
-        // Check if we've reached the end date
-        if (currentYear === endDate.getFullYear() && currentMonth === endDate.getMonth()) {
-          break;
-        }
-        
-        // Move to next month safely
-        currentMonth++;
-        if (currentMonth > 11) {
-          currentMonth = 0;
-          currentYear++;
-        }
-      }
+      const salesRecords = calculatedPeriods.map(period => ({
+        unit_id: formData.product_id,
+        customer_id: formData.customer_id,
+        period: period.key,
+        quantity: formData.quantity,
+        unit_price: formData.unit_price,
+        total_revenue: formData.quantity * formData.unit_price,
+        forecast_id: activeScenario
+      }));
 
       // Call the save function
       await onSave(salesRecords, formData.operation);
@@ -182,6 +227,30 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
     // If segment changes, reset customer selection
     if (field === 'segment') {
       setFormData(prev => ({ ...prev, customer_id: '' }));
+    }
+    
+    // If period type changes, update dates to match the new period type
+    if (field === 'period_type') {
+      const now = new Date();
+      let startDate, endDate;
+      
+      if (value === 'weekly') {
+        startDate = getStartOfWeek(now);
+        endDate = getEndOfYear(now);
+      } else if (value === 'quarterly') {
+        startDate = getFirstDayOfQuarter(now);
+        endDate = getEndOfYear(now);
+      } else {
+        startDate = getFirstDayOfMonth(now);
+        endDate = getEndOfYear(now);
+      }
+      
+      setFormData(prev => ({ 
+        ...prev, 
+        [field]: value,
+        start_date: startDate.toISOString().split('T')[0],
+        end_date: endDate.toISOString().split('T')[0]
+      }));
     }
   };
 
@@ -280,43 +349,27 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="start_period">Start Period *</Label>
-                  <select
-                    id="start_period"
-                    value={formData.start_period}
-                    onChange={(e) => handleInputChange('start_period', e.target.value)}
-                    className={`w-full p-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                      errors.start_period ? 'border-red-500' : 'border-gray-300'
-                    }`}
-                  >
-                    <option value="">Select Start Period</option>
-                    {availablePeriods.map(period => (
-                      <option key={period.key} value={period.key}>
-                        {period.label}
-                      </option>
-                    ))}
-                  </select>
-                  {errors.start_period && <span className="text-sm text-red-600">{errors.start_period}</span>}
+                  <Label htmlFor="start_date">Start Date *</Label>
+                  <Input
+                    id="start_date"
+                    type="date"
+                    value={formData.start_date}
+                    onChange={(e) => handleInputChange('start_date', e.target.value)}
+                    className={errors.start_date ? 'border-red-500' : ''}
+                  />
+                  {errors.start_date && <span className="text-sm text-red-600">{errors.start_date}</span>}
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="end_period">End Period *</Label>
-                  <select
-                    id="end_period"
-                    value={formData.end_period}
-                    onChange={(e) => handleInputChange('end_period', e.target.value)}
-                    className={`w-full p-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                      errors.end_period ? 'border-red-500' : 'border-gray-300'
-                    }`}
-                  >
-                    <option value="">Select End Period</option>
-                    {availablePeriods.map(period => (
-                      <option key={period.key} value={period.key}>
-                        {period.label}
-                      </option>
-                    ))}
-                  </select>
-                  {errors.end_period && <span className="text-sm text-red-600">{errors.end_period}</span>}
+                  <Label htmlFor="end_date">End Date *</Label>
+                  <Input
+                    id="end_date"
+                    type="date"
+                    value={formData.end_date}
+                    onChange={(e) => handleInputChange('end_date', e.target.value)}
+                    className={errors.end_date ? 'border-red-500' : ''}
+                  />
+                  {errors.end_date && <span className="text-sm text-red-600">{errors.end_date}</span>}
                 </div>
               </div>
             </div>
@@ -381,55 +434,37 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium text-gray-700">Total Periods:</span>
                   <span className="font-semibold text-gray-900">
-                    {formData.start_period && formData.end_period ? 
-                      (() => {
-                        const start = new Date(formData.start_period + '-01');
-                        const end = new Date(formData.end_period + '-01');
-                        const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
-                        return months;
-                      })() : 0
-                    }
+                    {calculatedPeriods.length}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium text-gray-700">Total Quantity:</span>
                   <span className="font-semibold text-gray-900">
-                    {formData.start_period && formData.end_period && formData.quantity ? 
-                      (() => {
-                        const start = new Date(formData.start_period + '-01');
-                        const end = new Date(formData.end_period + '-01');
-                        const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
-                        let periodQuantity = formData.quantity;
-                        if (formData.period_type === 'weekly') {
-                          periodQuantity = Math.round(formData.quantity * 4.33);
-                        } else if (formData.period_type === 'quarterly') {
-                          periodQuantity = Math.round(formData.quantity / 3);
-                        }
-                        return (periodQuantity * months).toLocaleString();
-                      })() : 0
+                    {calculatedPeriods.length && formData.quantity ? 
+                      (calculatedPeriods.length * formData.quantity).toLocaleString() : 0
                     }
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium text-gray-700">Total Revenue:</span>
                   <span className="font-semibold text-green-600">
-                    {formData.start_period && formData.end_period && formData.quantity && formData.unit_price ? 
-                      (() => {
-                        const start = new Date(formData.start_period + '-01');
-                        const end = new Date(formData.end_period + '-01');
-                        const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
-                        let periodQuantity = formData.quantity;
-                        if (formData.period_type === 'weekly') {
-                          periodQuantity = Math.round(formData.quantity * 4.33);
-                        } else if (formData.period_type === 'quarterly') {
-                          periodQuantity = Math.round(formData.quantity / 3);
-                        }
-                        return `$${(periodQuantity * months * formData.unit_price).toLocaleString()}`;
-                      })() : '$0'
+                    {calculatedPeriods.length && formData.quantity && formData.unit_price ? 
+                      `$${(calculatedPeriods.length * formData.quantity * formData.unit_price).toLocaleString()}` : '$0'
                     }
                   </span>
                 </div>
               </div>
+              
+              {/* Period Preview */}
+              {calculatedPeriods.length > 0 && (
+                <div className="bg-blue-50 p-4 rounded-lg">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Period Preview:</h4>
+                  <div className="text-sm text-gray-600">
+                    {calculatedPeriods.slice(0, 5).map(period => period.label).join(', ')}
+                    {calculatedPeriods.length > 5 && ` ... and ${calculatedPeriods.length - 5} more periods`}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Form Actions */}

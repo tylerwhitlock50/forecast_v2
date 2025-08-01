@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 
-const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
+const CustomerModal = ({ isOpen, onClose, onSave, customer, existingCustomers = [] }) => {
   const [formData, setFormData] = useState({
     customer_id: '',
     customer_name: '',
@@ -9,6 +9,25 @@ const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
     region: ''
   });
   const [errors, setErrors] = useState({});
+
+  // Generate next customer ID
+  const generateNextCustomerId = () => {
+    const existingIds = existingCustomers.map(c => c.customer_id);
+    let nextNumber = 1;
+    
+    // Find the highest existing number
+    existingIds.forEach(id => {
+      const match = id.match(/CUST-(\d+)/);
+      if (match) {
+        const num = parseInt(match[1]);
+        if (num >= nextNumber) {
+          nextNumber = num + 1;
+        }
+      }
+    });
+    
+    return `CUST-${nextNumber.toString().padStart(3, '0')}`;
+  };
 
   // Initialize form when modal opens or customer changes
   useEffect(() => {
@@ -22,9 +41,9 @@ const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
           region: customer.region || ''
         });
       } else {
-        // Creating new customer
+        // Creating new customer - auto-generate ID
         setFormData({
-          customer_id: '',
+          customer_id: generateNextCustomerId(),
           customer_name: '',
           customer_type: '',
           region: ''
@@ -32,7 +51,7 @@ const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
       }
       setErrors({});
     }
-  }, [isOpen, customer]);
+  }, [isOpen, customer, existingCustomers]);
 
   // Validate form
   const validateForm = () => {
@@ -110,10 +129,16 @@ const CustomerModal = ({ isOpen, onClose, onSave, customer }) => {
               onChange={(e) => handleInputChange('customer_id', e.target.value)}
               className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
                 errors.customer_id ? 'border-red-500' : 'border-gray-300'
-              }`}
+              } ${!customer ? 'bg-gray-100 cursor-not-allowed' : ''}`}
               placeholder="e.g., CUST-001"
-              disabled={customer} // Disable editing of ID for existing customers
+              disabled={!customer} // Disable for new customers, allow editing for existing
+              readOnly={!customer} // Make it read-only for new customers
             />
+            {!customer && (
+              <p className="mt-1 text-sm text-gray-500">
+                Customer ID will be auto-generated
+              </p>
+            )}
             {errors.customer_id && (
               <p className="mt-1 text-sm text-red-600">{errors.customer_id}</p>
             )}

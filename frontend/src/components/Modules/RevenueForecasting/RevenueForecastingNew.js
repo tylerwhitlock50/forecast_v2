@@ -18,6 +18,46 @@ import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
 import ForecastLineModal from './ForecastLineModal';
 
+// Utility function to generate time periods
+const generateTimePeriods = (timeRange, count = 12) => {
+  const periods = [];
+  const now = new Date();
+  
+  for (let i = 0; i < count; i++) {
+    let date, key, label;
+    
+    if (timeRange === 'weekly') {
+      // Start from the beginning of the current week
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+      date = new Date(startOfWeek);
+      date.setDate(startOfWeek.getDate() + (i * 7));
+      
+      const weekStart = new Date(date);
+      const weekEnd = new Date(date);
+      weekEnd.setDate(date.getDate() + 6);
+      
+      // Calculate week number more accurately
+      const weekNumber = Math.ceil((date.getDate() + date.getDay()) / 7);
+      key = `${date.getFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+      label = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+    } else if (timeRange === 'monthly') {
+      date = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
+    } else if (timeRange === 'quarterly') {
+      date = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const quarter = Math.floor(date.getMonth() / 3) + 1;
+      key = `${date.getFullYear()}-Q${quarter}`;
+      label = `Q${quarter} ${date.getFullYear()}`;
+    }
+    
+    periods.push({ key, label });
+  }
+  
+  return periods;
+};
+
 const RevenueForecasting = () => {
   const { data, actions, loading, scenarios, activeScenario } = useForecast();
   const [activeTab, setActiveTab] = useState('matrix');
@@ -28,25 +68,96 @@ const RevenueForecasting = () => {
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
   const [showDataDebugger, setShowDataDebugger] = useState(false);
+  const [customDateRange, setCustomDateRange] = useState(null); // { start: { month: 9, year: 2025 }, end: { month: 12, year: 2025 } }
 
-  // Generate time periods
+  // Generate months and years for dropdowns
+  const months = [
+    { value: 1, label: 'January' },
+    { value: 2, label: 'February' },
+    { value: 3, label: 'March' },
+    { value: 4, label: 'April' },
+    { value: 5, label: 'May' },
+    { value: 6, label: 'June' },
+    { value: 7, label: 'July' },
+    { value: 8, label: 'August' },
+    { value: 9, label: 'September' },
+    { value: 10, label: 'October' },
+    { value: 11, label: 'November' },
+    { value: 12, label: 'December' }
+  ];
+
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 10 }, (_, i) => currentYear + i);
+
+  // Helper function to format date range for period generation
+  const getFormattedDateRange = () => {
+    if (!customDateRange) return null;
+    
+    const startMonth = String(customDateRange.start.month).padStart(2, '0');
+    const endMonth = String(customDateRange.end.month).padStart(2, '0');
+    
+    return {
+      start: `${customDateRange.start.year}-${startMonth}`,
+      end: `${customDateRange.end.year}-${endMonth}`
+    };
+  };
+
+  // Generate time periods with improved logic
   const timePeriods = useMemo(() => {
-    const periods = [];
-    const now = new Date();
-    const monthCount = timeRange === 'monthly' ? 12 : 4;
+    const formattedRange = getFormattedDateRange();
     
-    for (let i = 0; i < monthCount; i++) {
-      const date = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      periods.push({
-        key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
-        label: timeRange === 'monthly' 
-          ? `${date.toLocaleDateString('en-US', { month: 'short' })}${date.getFullYear().toString().slice(-2)}`
-          : `Q${Math.floor(date.getMonth() / 3) + 1}${date.getFullYear().toString().slice(-2)}`
-      });
+    if (formattedRange) {
+      // Generate periods for custom date range
+      const periods = [];
+      
+      // Parse periods correctly (YYYY-MM format)
+      const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
+      const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
+      
+      let currentYear = startYear;
+      let currentMonth = startMonth - 1; // JavaScript months are 0-based
+      
+      while (true) {
+        let key, label;
+        
+        if (timeRange === 'weekly') {
+          // For weekly, we'll use monthly periods but with weekly labels
+          const date = new Date(currentYear, currentMonth, 1);
+          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
+        } else if (timeRange === 'monthly') {
+          const date = new Date(currentYear, currentMonth, 1);
+          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+          label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
+        } else if (timeRange === 'quarterly') {
+          const date = new Date(currentYear, currentMonth, 1);
+          const quarter = Math.floor(date.getMonth() / 3) + 1;
+          key = `${date.getFullYear()}-Q${quarter}`;
+          label = `Q${quarter} ${date.getFullYear()}`;
+        }
+        
+        periods.push({ key, label });
+        
+        // Check if we've reached the end
+        if (currentYear === endYear && currentMonth === (endMonth - 1)) {
+          break;
+        }
+        
+        // Move to next month
+        currentMonth++;
+        if (currentMonth > 11) {
+          currentMonth = 0;
+          currentYear++;
+        }
+      }
+      
+      return periods;
+    } else {
+      // Use default logic (current date + next N months)
+      const monthCount = timeRange === 'monthly' ? 12 : timeRange === 'quarterly' ? 4 : 52;
+      return generateTimePeriods(timeRange, monthCount);
     }
-    
-    return periods;
-  }, [timeRange]);
+  }, [timeRange, customDateRange]);
 
   // Handle matrix data changes
   const handleMatrixDataChange = (newData) => {
@@ -200,6 +311,30 @@ const RevenueForecasting = () => {
     try {
       await actions.bulkUpdateForecast(salesRecords, operation);
       await actions.fetchAllData();
+      
+      // Auto-set custom date range based on the periods being added
+      if (salesRecords.length > 0) {
+        const periods = salesRecords.map(s => s.period).sort();
+        const startPeriod = periods[0];
+        const endPeriod = periods[periods.length - 1];
+        
+        // Extract year and month from period keys
+        const startMatch = startPeriod.match(/^(\d{4})-(\d{2})/);
+        const endMatch = endPeriod.match(/^(\d{4})-(\d{2})/);
+        
+        if (startMatch && endMatch) {
+          const startMonth = parseInt(startMatch[2]);
+          const startYear = parseInt(startMatch[1]);
+          const endMonth = parseInt(endMatch[2]);
+          const endYear = parseInt(endMatch[1]);
+          
+          setCustomDateRange({
+            start: { month: startMonth, year: startYear },
+            end: { month: endMonth, year: endYear }
+          });
+          toast.success(`Matrix view updated to show periods: ${startMonth}/${startYear} to ${endMonth}/${endYear}`);
+        }
+      }
     } catch (error) {
       console.error('Error saving forecast line:', error);
       throw error;
@@ -322,8 +457,109 @@ const RevenueForecasting = () => {
           <Select value={timeRange} onChange={(e) => setTimeRange(e.target.value)}>
             <SelectOption value="monthly">Monthly</SelectOption>
             <SelectOption value="quarterly">Quarterly</SelectOption>
+            <SelectOption value="weekly">Weekly</SelectOption>
           </Select>
         </div>
+        
+        <div className="flex items-center gap-2">
+          <Label>Date Range:</Label>
+          <Select 
+            value={customDateRange ? 'custom' : 'default'} 
+            onChange={(e) => {
+              if (e.target.value === 'default') {
+                setCustomDateRange(null);
+              } else if (e.target.value === 'custom') {
+                // Set a default custom range
+                const now = new Date();
+                setCustomDateRange({ 
+                  start: { month: now.getMonth() + 1, year: now.getFullYear() }, 
+                  end: { month: 12, year: now.getFullYear() } 
+                });
+              }
+            }}
+          >
+            <SelectOption value="default">Current + 12 months</SelectOption>
+            <SelectOption value="custom">Custom Range</SelectOption>
+          </Select>
+        </div>
+        
+        {customDateRange && (
+          <>
+            <div className="flex items-center gap-2">
+              <Label>Start:</Label>
+              <div className="flex gap-1">
+                <Select
+                  value={customDateRange.start.month}
+                  onChange={(e) => setCustomDateRange(prev => ({ 
+                    ...prev, 
+                    start: { ...prev.start, month: parseInt(e.target.value) }
+                  }))}
+                  className="w-24"
+                >
+                  {months.map(month => (
+                    <SelectOption key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectOption>
+                  ))}
+                </Select>
+                <Select
+                  value={customDateRange.start.year}
+                  onChange={(e) => setCustomDateRange(prev => ({ 
+                    ...prev, 
+                    start: { ...prev.start, year: parseInt(e.target.value) }
+                  }))}
+                  className="w-20"
+                >
+                  {years.map(year => (
+                    <SelectOption key={year} value={year}>
+                      {year}
+                    </SelectOption>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label>End:</Label>
+              <div className="flex gap-1">
+                <Select
+                  value={customDateRange.end.month}
+                  onChange={(e) => setCustomDateRange(prev => ({ 
+                    ...prev, 
+                    end: { ...prev.end, month: parseInt(e.target.value) }
+                  }))}
+                  className="w-24"
+                >
+                  {months.map(month => (
+                    <SelectOption key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectOption>
+                  ))}
+                </Select>
+                <Select
+                  value={customDateRange.end.year}
+                  onChange={(e) => setCustomDateRange(prev => ({ 
+                    ...prev, 
+                    end: { ...prev.end, year: parseInt(e.target.value) }
+                  }))}
+                  className="w-20"
+                >
+                  {years.map(year => (
+                    <SelectOption key={year} value={year}>
+                      {year}
+                    </SelectOption>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCustomDateRange(null)}
+            >
+              Reset
+            </Button>
+          </>
+        )}
       </div>
 
       {/* Bulk Import Panel */}
@@ -391,7 +627,7 @@ const RevenueForecasting = () => {
         onSave={handleForecastLineSave}
       />
 
-      {showDataDebugger && <DataDebugger data={data} />}
+      {showDataDebugger && <DataDebugger data={data} timePeriods={timePeriods} />}
 
       <RevenueSummary 
         data={data} 

@@ -373,6 +373,7 @@ const CustomerManagement = () => {
         }}
         onSave={handleSaveCustomer}
         customer={editingCustomer}
+        existingCustomers={data.customers || []}
       />
     </div>
   );
