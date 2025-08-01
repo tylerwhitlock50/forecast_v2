@@ -215,7 +215,7 @@ const ProductManagement = () => {
       type: 'currency'
     },
     {
-      key: 'bom_id',
+      key: 'bom',
       title: 'BOM',
       render: (value) => value ? (
         <Badge variant="outline">{value}</Badge>
@@ -224,7 +224,7 @@ const ProductManagement = () => {
       )
     },
     {
-      key: 'router_id',
+      key: 'router',
       title: 'Router',
       render: (value) => value ? (
         <Badge variant="outline">{value}</Badge>
@@ -407,6 +407,7 @@ const ProductManagement = () => {
         product={editingProduct}
         bomData={data.bom_definitions || []}
         routerData={data.router_definitions || []}
+        actions={actions}
       />
     </div>
   );

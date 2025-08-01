@@ -4,9 +4,24 @@
 export const calculateProductCostSummary = (data) => {
   const { sales_forecast = [], products = [], bom = [], router_operations = [], machines = [], labor_rates = [] } = data;
   
+  console.log('Cost calculation data:', {
+    sales_forecast_count: sales_forecast.length,
+    products_count: products.length,
+    bom_count: bom.length,
+    router_operations_count: router_operations.length,
+    machines_count: machines.length,
+    labor_rates_count: labor_rates.length
+  });
+  
   const productCostSummary = products.map(product => {
     // Get all forecast entries for this product
     const productForecasts = sales_forecast.filter(forecast => forecast.unit_id === product.unit_id);
+    
+    console.log(`Product ${product.unit_id} (${product.unit_name}):`, {
+      forecasts: productForecasts.length,
+      bom_id: product.bom,
+      router_id: product.router
+    });
     
     // Calculate total forecasted revenue
     const forecastedRevenue = productForecasts.reduce((sum, forecast) => sum + (forecast.total_revenue || 0), 0);
@@ -14,6 +29,11 @@ export const calculateProductCostSummary = (data) => {
     // Calculate material costs from BOM
     const productBOM = bom.filter(bomItem => bomItem.bom_id === product.bom);
     const materialCost = productBOM.reduce((sum, bomItem) => sum + (bomItem.material_cost || 0), 0);
+    
+    console.log(`BOM for ${product.unit_id}:`, {
+      bom_items: productBOM.length,
+      material_cost: materialCost
+    });
     
     // Calculate labor and machine costs from routing
     const productRouting = router_operations.filter(operation => operation.router_id === product.router);
@@ -33,6 +53,12 @@ export const calculateProductCostSummary = (data) => {
       if (machine) {
         machineCost += (operation.machine_minutes / 60) * machine.machine_rate;
       }
+    });
+    
+    console.log(`Routing for ${product.unit_id}:`, {
+      routing_operations: productRouting.length,
+      labor_cost: laborCost,
+      machine_cost: machineCost
     });
     
     // Calculate totals per unit produced
@@ -67,12 +93,19 @@ export const calculateProductCostSummary = (data) => {
     };
   });
   
+  console.log('Product cost summary:', productCostSummary);
   return productCostSummary;
 };
 
 // Calculate materials usage by period
 export const calculateMaterialsUsage = (data) => {
   const { sales_forecast = [], products = [], bom = [] } = data;
+  
+  console.log('Materials calculation data:', {
+    sales_forecast_count: sales_forecast.length,
+    products_count: products.length,
+    bom_count: bom.length
+  });
   
   // Group forecasts by period
   const forecastsByPeriod = sales_forecast.reduce((acc, forecast) => {
@@ -81,6 +114,8 @@ export const calculateMaterialsUsage = (data) => {
     acc[period].push(forecast);
     return acc;
   }, {});
+  
+  console.log('Forecasts by period:', Object.keys(forecastsByPeriod));
   
   // Calculate material usage for each period
   const materialUsageByPeriod = {};
@@ -123,12 +158,20 @@ export const calculateMaterialsUsage = (data) => {
     materialUsageByPeriod[period] = Object.values(materialUsage);
   });
   
+  console.log('Material usage by period:', materialUsageByPeriod);
   return materialUsageByPeriod;
 };
 
-// Calculate machine utilization
+// Calculate machine utilization by period
 export const calculateMachineUtilization = (data) => {
   const { sales_forecast = [], products = [], router_operations = [], machines = [] } = data;
+  
+  console.log('Machine calculation data:', {
+    sales_forecast_count: sales_forecast.length,
+    products_count: products.length,
+    router_operations_count: router_operations.length,
+    machines_count: machines.length
+  });
   
   // Group forecasts by period
   const forecastsByPeriod = sales_forecast.reduce((acc, forecast) => {
@@ -162,36 +205,47 @@ export const calculateMachineUtilization = (data) => {
                 total_minutes_required: 0,
                 total_cost: 0,
                 utilization_percent: 0,
-                capacity_exceeded: false
+                capacity_exceeded: false,
+                products_involved: new Set()
               };
             }
             
             const minutesNeeded = operation.machine_minutes * forecast.quantity;
             machineUsage[machine.machine_id].total_minutes_required += minutesNeeded;
             machineUsage[machine.machine_id].total_cost += (minutesNeeded / 60) * machine.machine_rate;
+            machineUsage[machine.machine_id].products_involved.add(product.unit_name);
           }
         });
       }
     });
     
-    // Calculate utilization percentages
+    // Calculate utilization percentages for this period
     Object.keys(machineUsage).forEach(machineId => {
       const machine = machineUsage[machineId];
       if (machine.available_minutes_per_month > 0) {
         machine.utilization_percent = (machine.total_minutes_required / machine.available_minutes_per_month) * 100;
         machine.capacity_exceeded = machine.utilization_percent > 100;
       }
+      machine.products_involved = Array.from(machine.products_involved);
     });
     
     machineUtilizationByPeriod[period] = Object.values(machineUsage);
   });
   
+  console.log('Machine utilization by period:', machineUtilizationByPeriod);
   return machineUtilizationByPeriod;
 };
 
-// Calculate labor utilization and FTE
+// Calculate labor utilization and FTE by period
 export const calculateLaborUtilization = (data) => {
   const { sales_forecast = [], products = [], router_operations = [], labor_rates = [] } = data;
+  
+  console.log('Labor calculation data:', {
+    sales_forecast_count: sales_forecast.length,
+    products_count: products.length,
+    router_operations_count: router_operations.length,
+    labor_rates_count: labor_rates.length
+  });
   
   // Group forecasts by period
   const forecastsByPeriod = sales_forecast.reduce((acc, forecast) => {
@@ -240,7 +294,7 @@ export const calculateLaborUtilization = (data) => {
       }
     });
     
-    // Calculate FTE (assuming 2080 hours per year, 173.33 hours per month)
+    // Calculate FTE for this period (assuming 173.33 hours per month)
     const monthlyWorkingHours = 173.33;
     Object.keys(laborUsage).forEach(laborId => {
       const labor = laborUsage[laborId];
@@ -251,6 +305,7 @@ export const calculateLaborUtilization = (data) => {
     laborUtilizationByPeriod[period] = Object.values(laborUsage);
   });
   
+  console.log('Labor utilization by period:', laborUtilizationByPeriod);
   return laborUtilizationByPeriod;
 };
 
