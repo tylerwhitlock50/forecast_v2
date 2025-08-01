@@ -6,7 +6,7 @@ import { TrendingUp, Package, Users, DollarSign, BarChart3 } from 'lucide-react'
 const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
   const { activeScenario } = useForecast();
   
-  // Calculate summary statistics
+  // Calculate summary statistics based on visible time periods only
   const summaryStats = useMemo(() => {
     const products = Array.isArray(data.products) ? data.products : [];
     const customers = Array.isArray(data.customers) ? data.customers : [];
@@ -24,10 +24,16 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
       filteredSales = filteredSales.filter(s => segmentCustomerIds.includes(s.customer_id));
     }
     
-    const totalQuantity = filteredSales.reduce((sum, sale) => sum + (sale.quantity || 0), 0);
-    const totalRevenue = filteredSales.reduce((sum, sale) => sum + (sale.total_revenue || 0), 0);
-    const productCount = new Set(filteredSales.map(sale => sale.unit_id)).size;
-    const customerCount = new Set(filteredSales.map(sale => sale.customer_id)).size;
+    // Only include sales for the visible time periods
+    const visiblePeriodKeys = timePeriods.map(period => period.key);
+    const visibleSales = filteredSales.filter(sale => 
+      visiblePeriodKeys.includes(sale.period)
+    );
+    
+    const totalQuantity = visibleSales.reduce((sum, sale) => sum + (sale.quantity || 0), 0);
+    const totalRevenue = visibleSales.reduce((sum, sale) => sum + (sale.total_revenue || 0), 0);
+    const productCount = new Set(visibleSales.map(sale => sale.unit_id)).size;
+    const customerCount = new Set(visibleSales.map(sale => sale.customer_id)).size;
 
     return {
       totalQuantity,
@@ -36,7 +42,7 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
       customerCount,
       averagePrice: totalQuantity > 0 ? totalRevenue / totalQuantity : 0
     };
-  }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario]);
+  }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario, timePeriods]);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">

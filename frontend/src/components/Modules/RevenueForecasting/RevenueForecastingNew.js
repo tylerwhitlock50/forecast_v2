@@ -114,6 +114,15 @@ const RevenueForecasting = () => {
       const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
       const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
       
+      console.log('Generating periods for range:', {
+        start: formattedRange.start,
+        end: formattedRange.end,
+        startYear,
+        startMonth,
+        endYear,
+        endMonth
+      });
+      
       let currentYear = startYear;
       let currentMonth = startMonth - 1; // JavaScript months are 0-based
       
@@ -138,8 +147,11 @@ const RevenueForecasting = () => {
         
         periods.push({ key, label });
         
-        // Check if we've reached the end
+        console.log(`Added period: ${key} - ${label} (currentYear: ${currentYear}, currentMonth: ${currentMonth})`);
+        
+        // Check if we've reached the end (inclusive of end month)
         if (currentYear === endYear && currentMonth === (endMonth - 1)) {
+          console.log('Reached end condition, breaking loop');
           break;
         }
         
@@ -149,8 +161,15 @@ const RevenueForecasting = () => {
           currentMonth = 0;
           currentYear++;
         }
+        
+        // Additional safety check to prevent infinite loops
+        if (currentYear > endYear || (currentYear === endYear && currentMonth > (endMonth - 1))) {
+          console.log('Safety check triggered, breaking loop');
+          break;
+        }
       }
       
+      console.log(`Generated ${periods.length} periods:`, periods.map(p => p.key));
       return periods;
     } else {
       // Use default logic (current date + next N months)
