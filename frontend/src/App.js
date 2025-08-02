@@ -18,6 +18,7 @@ import LaborRateManagement from './components/Modules/LaborRateManagement/LaborR
 import PayrollManagement from './components/Modules/PayrollManagement/PayrollManagementNew';
 import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagementNew';
 import LoanManagement from './components/Modules/LoanManagement/LoanManagementNew';
+import ReportingDashboard from './components/Modules/ReportingAnalysis/ReportingDashboard';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -131,14 +132,14 @@ const CashFlow = () => (
 const IncomeStatement = () => (
   <PlaceholderComponent 
     title="Income Statement" 
-    description="Generate comprehensive income statements from your forecast data. View consolidated financial projections and performance metrics."
+    description="Generate comprehensive income statements from your forecast data. View consolidated financial projections and performance metrics. For the full reporting experience, visit the Financial Reports module."
   />
 );
 
 const ScenarioAnalysis = () => (
   <PlaceholderComponent 
     title="Scenario Analysis" 
-    description="Compare different forecast scenarios side-by-side. Analyze best case, worst case, and base case projections."
+    description="Compare different forecast scenarios side-by-side. Analyze best case, worst case, and base case projections. For comprehensive scenario mixing and analysis, visit the Financial Reports module."
   />
 );
 
@@ -228,6 +229,7 @@ function App() {
               <Route path="/cashflow" element={<CashFlow />} />
               
               {/* Reporting & Analysis */}
+              <Route path="/reporting" element={<ReportingDashboard />} />
               <Route path="/income-statement" element={<IncomeStatement />} />
               <Route path="/scenarios" element={<ScenarioAnalysis />} />
               <Route path="/data-check" element={<DataCompleteness />} />

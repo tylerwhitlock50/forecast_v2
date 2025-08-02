@@ -537,7 +537,7 @@ async def get_expense_forecast(
         
         return ForecastResponse(
             status="success",
-            data=forecasts,
+            data={"forecasts": forecasts},
             message=f"Retrieved expense forecast for {start_period} to {end_period}"
         )
         

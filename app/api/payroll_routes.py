@@ -437,12 +437,56 @@ async def get_payroll_forecast(
     """
     try:
         # Get all active employees
-        employees_response = await get_employees(status="active")
-        employees = employees_response.data["employees"]
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate, 
+                   rate_type, labor_type, start_date, end_date, next_review_date, 
+                   expected_raise, benefits_eligible, allocations
+            FROM payroll
+            WHERE end_date IS NULL OR end_date > date('now')
+            ORDER BY employee_name
+        """)
+        employee_rows = cursor.fetchall()
+        
+        columns = [description[0] for description in cursor.description]
+        employees = []
+        
+        for row in employee_rows:
+            employee_dict = dict(zip(columns, row))
+            
+            # Parse allocations JSON
+            if employee_dict.get('allocations'):
+                try:
+                    import json
+                    employee_dict['allocations'] = json.loads(employee_dict['allocations'])
+                except (json.JSONDecodeError, TypeError):
+                    employee_dict['allocations'] = {}
+            else:
+                employee_dict['allocations'] = {}
+            
+            employees.append(employee_dict)
         
         # Get payroll config
-        config_response = await get_payroll_config()
-        config = config_response.data["config"]
+        cursor.execute("SELECT * FROM payroll_config ORDER BY config_id DESC LIMIT 1")
+        config_row = cursor.fetchone()
+        
+        if config_row:
+            config_columns = [description[0] for description in cursor.description]
+            config = dict(zip(config_columns, config_row))
+        else:
+            # Return default configuration
+            config = {
+                "config_id": "default",
+                "federal_tax_rate": 0.22,
+                "state_tax_rate": 0.06,
+                "social_security_rate": 0.062,
+                "medicare_rate": 0.0145,
+                "unemployment_rate": 0.006,
+                "benefits_rate": 0.25,
+                "workers_comp_rate": 0.015
+            }
         
         # Generate forecast
         forecast = []
@@ -510,6 +554,8 @@ async def get_payroll_forecast(
                 "employee_count": len(employee_details),
                 "employee_details": employee_details
             })
+        
+        db_manager.close_connection(conn)
         
         return ForecastResponse(
             status="success",
