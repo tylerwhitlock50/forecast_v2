@@ -493,7 +493,7 @@ class TestDatabaseManager:
 
 
 def test_payroll_schema_preserved(test_db_manager):
-    """Ensure payroll table retains extended columns after CSV loading"""
+    """Test that the payroll table retains the 'department' and 'rate_type' columns after loading from CSV."""
     conn = test_db_manager.get_connection()
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(payroll)")
