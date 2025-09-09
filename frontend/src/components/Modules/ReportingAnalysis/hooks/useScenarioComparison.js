@@ -12,7 +12,7 @@ export const useScenarioComparison = () => {
     setLoading(true);
     setError(null);
     try {
-      const query = forecastIds.map(id => `forecast_ids=${id}`).join('&');
+      const query = `forecast_ids=${forecastIds.join(',')}`;
       const res = await api.get(`/forecast/comparison?${query}`, { suppressErrorToast: true });
       setData(res.data?.comparison || []);
     } catch (err) {
