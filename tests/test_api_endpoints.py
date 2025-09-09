@@ -56,13 +56,13 @@ class TestAPIEndpoints:
         assert data["status"] == "success"
         assert len(data["data"]) == 2  # We have 2 test machines
     
-    def test_get_table_data_routers(self, client: TestClient):
-        """Test getting routers table data"""
-        response = client.get("/data/routers")
+    def test_get_table_data_router_definitions(self, client: TestClient):
+        """Test getting router definitions table data"""
+        response = client.get("/data/router_definitions")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "success"
-        assert len(data["data"]) == 2  # We have 2 test routers
+        assert len(data["data"]) == 2  # We have 2 test router definitions
     
     def test_get_table_data_labor_rates(self, client: TestClient):
         """Test getting labor rates table data"""
@@ -79,13 +79,31 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["status"] == "success"
         assert len(data["data"]) == 2  # We have 2 test employees
-    
+
     def test_get_table_data_invalid_table(self, client: TestClient):
         """Test getting data from non-existent table"""
         response = client.get("/data/nonexistent_table")
         assert response.status_code == 500
         data = response.json()
         assert "no such table" in data["detail"]
+
+    def test_get_table_data_filtered(self, client: TestClient):
+        """Test filtering table data via query params"""
+        response = client.get("/data/customers", params={"customer_id": "CUST-001"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]) == 1
+        assert data["data"][0]["customer_id"] == "CUST-001"
+
+    def test_get_table_data_pagination(self, client: TestClient):
+        """Test limiting and offsetting table data"""
+        response = client.get("/data/customers", params={"limit": 1, "offset": 1})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]) == 1
+        assert data["data"][0]["customer_id"] == "CUST-002"
     
     def test_chat_endpoint(self, client: TestClient):
         """Test the chat endpoint"""

@@ -544,46 +544,74 @@ class DatabaseManager:
         
         conn.close()
     
-    def get_table_data(self, table_name: str, forecast_id: str = None) -> Dict[str, Any]:
-        """Get data from a specific table"""
+    def get_table_data(
+        self,
+        table_name: str,
+        forecast_id: str = None,
+        filters: Dict[str, Any] = None,
+        limit: int = None,
+        offset: int = None,
+    ) -> Dict[str, Any]:
+        """Get data from a specific table with optional filtering"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Get column names
             cursor.execute(f"PRAGMA table_info({table_name})")
             columns = [col[1] for col in cursor.fetchall()]
-            
-            # Build query with optional forecast_id filtering
+
+            # Build base query
             query = f"SELECT * FROM {table_name}"
             params = []
-            
-            if forecast_id and table_name == 'sales':
-                query += " WHERE forecast_id = ?"
+            where_clauses = []
+
+            # Apply forecast filtering when column exists
+            if forecast_id and "forecast_id" in columns:
+                where_clauses.append("forecast_id = ?")
                 params.append(forecast_id)
-            
+
+            # Apply column filters
+            if filters:
+                for col, val in filters.items():
+                    if col in columns:
+                        where_clauses.append(f"{col} = ?")
+                        params.append(val)
+
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+
+            # Add pagination
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+                if offset:
+                    query += " OFFSET ?"
+                    params.append(offset)
+            elif offset is not None:
+                query += " LIMIT -1 OFFSET ?"
+                params.append(offset)
+
             # Get data
             cursor.execute(query, params)
             rows = cursor.fetchall()
-            
+
             # Convert to list of dictionaries
-            data = []
-            for row in rows:
-                data.append(dict(zip(columns, row)))
-            
+            data = [dict(zip(columns, row)) for row in rows]
+
             result = {
                 "status": "success",
                 "data": data,
-                "columns": columns
+                "columns": columns,
             }
         except Exception as e:
             result = {
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
             }
         finally:
             conn.close()
-        
+
         return result
     
     def get_forecast_data(self) -> Dict[str, Any]:
@@ -1179,9 +1207,15 @@ def get_current_database_path() -> str:
     """Get the current database path"""
     return db_manager.database_path
 
-def get_table_data(table_name: str, forecast_id: str = None) -> Dict[str, Any]:
+def get_table_data(
+    table_name: str,
+    forecast_id: str = None,
+    filters: Dict[str, Any] = None,
+    limit: int = None,
+    offset: int = None,
+) -> Dict[str, Any]:
     """Get data from a specific table"""
-    return db_manager.get_table_data(table_name, forecast_id)
+    return db_manager.get_table_data(table_name, forecast_id, filters, limit, offset)
 
 def get_forecast_data() -> Dict[str, Any]:
     """Get comprehensive forecast data"""
