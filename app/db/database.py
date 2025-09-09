@@ -528,6 +528,9 @@ class DatabaseManager:
                     # Align DataFrame with existing table schema
                     cursor.execute(f"PRAGMA table_info({table_name})")
                     existing_cols = [col[1] for col in cursor.fetchall()]
+                    dropped_cols = [c for c in df.columns if c not in existing_cols]
+                    if dropped_cols:
+                        print(f"Warning: The following columns in {csv_file} are not present in the {table_name} table schema and will be dropped: {dropped_cols}")
                     df = df[[c for c in df.columns if c in existing_cols]]
 
                     # Preserve table schema by clearing existing rows and appending
