@@ -10,7 +10,7 @@ router = APIRouter(prefix="/source-data", tags=["source-data"])
 
 @router.get("/sales-forecast", response_model=ForecastResponse)
 async def get_sales_forecast_from_source(
-    forecast_id: str = Query(..., description="Forecast ID to filter sales data"),
+    forecast_id: Optional[str] = Query(None, description="Forecast ID to filter sales data"),
     start_period: Optional[str] = Query(None, description="Start period (YYYY-MM)"),
     end_period: Optional[str] = Query(None, description="End period (YYYY-MM)")
 ):
@@ -22,27 +22,33 @@ async def get_sales_forecast_from_source(
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
-        # Build query with optional period filtering
+        # Build query with optional period and forecast filtering
         query = """
-            SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity, 
+            SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity,
                    s.unit_price, s.total_revenue, s.forecast_id,
                    c.customer_name, c.customer_type, c.region,
                    u.unit_name, u.unit_description, u.base_price, u.bom_id, u.router_id
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.customer_id
             LEFT JOIN units u ON s.unit_id = u.unit_id
-            WHERE s.forecast_id = ?
         """
-        params = [forecast_id]
-        
+
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if forecast_id:
+            conditions.append("s.forecast_id = ?")
+            params.append(forecast_id)
         if start_period:
-            query += " AND s.period >= ?"
+            conditions.append("s.period >= ?")
             params.append(start_period)
-            
         if end_period:
-            query += " AND s.period <= ?"
+            conditions.append("s.period <= ?")
             params.append(end_period)
-            
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
         query += " ORDER BY s.period, s.customer_id, s.unit_id"
         
         cursor.execute(query, params)
@@ -176,7 +182,7 @@ async def get_sales_forecast_from_source(
                     "source": "calculated_from_source_tables"
                 }
             },
-            message=f"Retrieved and calculated forecast data for {forecast_id} with {len(forecast_data)} records"
+            message=f"Retrieved and calculated forecast data for {forecast_id or 'all forecasts'} with {len(forecast_data)} records"
         )
         
     except Exception as e:
@@ -184,7 +190,7 @@ async def get_sales_forecast_from_source(
 
 @router.get("/cost-breakdown", response_model=ForecastResponse)
 async def get_cost_breakdown_from_source(
-    forecast_id: str = Query(..., description="Forecast ID to analyze costs"),
+    forecast_id: Optional[str] = Query(None, description="Forecast ID to analyze costs"),
     unit_id: Optional[str] = Query(None, description="Specific unit ID to analyze")
 ):
     """
@@ -199,14 +205,21 @@ async def get_cost_breakdown_from_source(
             SELECT DISTINCT u.unit_id, u.unit_name, u.bom_id, u.router_id, u.base_price
             FROM sales s
             JOIN units u ON s.unit_id = u.unit_id
-            WHERE s.forecast_id = ?
         """
-        params = [forecast_id]
-        
+
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if forecast_id:
+            conditions.append("s.forecast_id = ?")
+            params.append(forecast_id)
         if unit_id:
-            query += " AND u.unit_id = ?"
+            conditions.append("u.unit_id = ?")
             params.append(unit_id)
-            
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
         cursor.execute(query, params)
         units = cursor.fetchall()
         
@@ -326,7 +339,7 @@ async def get_cost_breakdown_from_source(
 
 @router.get("/revenue-summary", response_model=ForecastResponse)
 async def get_revenue_summary_from_source(
-    forecast_id: str = Query(..., description="Forecast ID to summarize"),
+    forecast_id: Optional[str] = Query(None, description="Forecast ID to summarize"),
     group_by: str = Query("period", description="Group by: period, customer, unit, or customer_unit")
 ):
     """
@@ -337,20 +350,25 @@ async def get_revenue_summary_from_source(
         cursor = conn.cursor()
         
         # Build different grouping queries
+        params: List[Any] = []
+        forecast_filter = "WHERE s.forecast_id = ?" if forecast_id else ""
+        if forecast_id:
+            params.append(forecast_id)
+
         if group_by == "period":
-            query = """
-                SELECT s.period, 
+            query = f"""
+                SELECT s.period,
                        SUM(s.quantity) as total_quantity,
                        SUM(s.total_revenue) as total_revenue,
                        COUNT(DISTINCT s.customer_id) as customer_count,
                        COUNT(DISTINCT s.unit_id) as product_count
                 FROM sales s
-                WHERE s.forecast_id = ?
+                {forecast_filter}
                 GROUP BY s.period
                 ORDER BY s.period
             """
         elif group_by == "customer":
-            query = """
+            query = f"""
                 SELECT s.customer_id, c.customer_name, c.customer_type,
                        SUM(s.quantity) as total_quantity,
                        SUM(s.total_revenue) as total_revenue,
@@ -358,12 +376,12 @@ async def get_revenue_summary_from_source(
                        COUNT(DISTINCT s.unit_id) as products_ordered
                 FROM sales s
                 LEFT JOIN customers c ON s.customer_id = c.customer_id
-                WHERE s.forecast_id = ?
+                {forecast_filter}
                 GROUP BY s.customer_id, c.customer_name, c.customer_type
                 ORDER BY total_revenue DESC
             """
         elif group_by == "unit":
-            query = """
+            query = f"""
                 SELECT s.unit_id, u.unit_name, u.unit_type,
                        SUM(s.quantity) as total_quantity,
                        SUM(s.total_revenue) as total_revenue,
@@ -372,12 +390,12 @@ async def get_revenue_summary_from_source(
                        COUNT(DISTINCT s.period) as periods_active
                 FROM sales s
                 LEFT JOIN units u ON s.unit_id = u.unit_id
-                WHERE s.forecast_id = ?
+                {forecast_filter}
                 GROUP BY s.unit_id, u.unit_name, u.unit_type
                 ORDER BY total_revenue DESC
             """
         elif group_by == "customer_unit":
-            query = """
+            query = f"""
                 SELECT s.customer_id, c.customer_name, s.unit_id, u.unit_name,
                        SUM(s.quantity) as total_quantity,
                        SUM(s.total_revenue) as total_revenue,
@@ -386,21 +404,21 @@ async def get_revenue_summary_from_source(
                 FROM sales s
                 LEFT JOIN customers c ON s.customer_id = c.customer_id
                 LEFT JOIN units u ON s.unit_id = u.unit_id
-                WHERE s.forecast_id = ?
+                {forecast_filter}
                 GROUP BY s.customer_id, c.customer_name, s.unit_id, u.unit_name
                 ORDER BY total_revenue DESC
             """
         else:
             raise HTTPException(status_code=400, detail="Invalid group_by parameter. Use: period, customer, unit, or customer_unit")
-        
-        cursor.execute(query, (forecast_id,))
+
+        cursor.execute(query, params)
         summary_rows = cursor.fetchall()
         
         columns = [description[0] for description in cursor.description]
         summary_data = [dict(zip(columns, row)) for row in summary_rows]
         
         # Get overall totals
-        cursor.execute("""
+        totals_query = f"""
             SELECT COUNT(*) as total_records,
                    SUM(quantity) as total_quantity,
                    SUM(total_revenue) as total_revenue,
@@ -408,8 +426,10 @@ async def get_revenue_summary_from_source(
                    COUNT(DISTINCT unit_id) as unique_products,
                    COUNT(DISTINCT period) as periods_covered
             FROM sales
-            WHERE forecast_id = ?
-        """, (forecast_id,))
+            { 'WHERE forecast_id = ?' if forecast_id else '' }
+        """
+
+        cursor.execute(totals_query, params)
         
         totals_row = cursor.fetchone()
         totals = dict(zip([desc[0] for desc in cursor.description], totals_row))
@@ -423,7 +443,7 @@ async def get_revenue_summary_from_source(
                 "totals": totals,
                 "group_by": group_by
             },
-            message=f"Generated revenue summary grouped by {group_by} for forecast {forecast_id}"
+            message=f"Generated revenue summary grouped by {group_by} for {forecast_id or 'all forecasts'}"
         )
         
     except Exception as e:

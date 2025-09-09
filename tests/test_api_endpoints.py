@@ -80,6 +80,15 @@ class TestAPIEndpoints:
         assert data["status"] == "success"
         assert len(data["data"]) == 2  # We have 2 test employees
 
+    def test_get_table_data_payroll_with_forecast_filter(self, client: TestClient):
+        """Test filtering payroll by forecast_id"""
+        response = client.get("/data/payroll", params={"forecast_id": "F1"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]) == 1
+        assert data["data"][0]["forecast_id"] == "F1"
+
     def test_get_table_data_invalid_table(self, client: TestClient):
         """Test getting data from non-existent table"""
         response = client.get("/data/nonexistent_table")

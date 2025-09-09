@@ -192,7 +192,7 @@ export const ForecastProvider = ({ children }) => {
           `/data/units`,
           `/data/customers`,
           `/data/machines`,
-          `/data/payroll`,
+          `/data/payroll${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`,
           `/data/bom`,
           `/forecast/bom_definitions`,
           `/data/router_definitions`,
@@ -396,6 +396,32 @@ export const ForecastProvider = ({ children }) => {
       } catch (error) {
         console.error('Error creating scenario:', error);
         // Error is already handled by API client
+      }
+    },
+
+    duplicateScenario: async (scenarioId, scenarioData = {}) => {
+      try {
+        const response = await api.post(`/forecast/scenario/${scenarioId}/duplicate`, scenarioData);
+        const newScenario = response.data;
+        await actions.fetchScenarios();
+        actions.switchScenario(newScenario.forecast_id);
+        return newScenario;
+      } catch (error) {
+        console.error('Error duplicating scenario:', error);
+      }
+    },
+
+    deleteScenario: async (scenarioId) => {
+      try {
+        await api.delete(`/forecast/scenario/${scenarioId}`);
+        const response = await api.get('/data/forecast', { suppressErrorToast: true });
+        await actions.fetchScenarios();
+        if (state.activeScenario === scenarioId) {
+          const nextId = response?.data?.[0]?.forecast_id || null;
+          actions.switchScenario(nextId);
+        }
+      } catch (error) {
+        console.error('Error deleting scenario:', error);
       }
     },
 
@@ -1098,7 +1124,7 @@ export const ForecastProvider = ({ children }) => {
     fetchExpenses: async () => {
       try {
         actions.setLoading(true);
-        const response = await api.get('/expenses/', { suppressErrorToast: true });
+        const response = await api.get(`/expenses/${state.activeScenario ? `?forecast_id=${state.activeScenario}` : ''}`, { suppressErrorToast: true });
         
         // Update the data in the state
         dispatch({ 
@@ -1128,7 +1154,7 @@ export const ForecastProvider = ({ children }) => {
 
     fetchExpenseSummary: async () => {
       try {
-        const response = await api.get('/expenses/summary', { suppressErrorToast: true });
+        const response = await api.get(`/expenses/summary${state.activeScenario ? `?forecast_id=${state.activeScenario}` : ''}`, { suppressErrorToast: true });
         return response.data;
       } catch (error) {
         console.error('Error fetching expense summary:', error);
@@ -1139,7 +1165,11 @@ export const ForecastProvider = ({ children }) => {
     createExpense: async (expenseData) => {
       try {
         actions.setLoading(true);
-        const response = await api.post('/expenses/', expenseData);
+        const payload = { ...expenseData };
+        if (state.activeScenario && !payload.forecast_id) {
+          payload.forecast_id = state.activeScenario;
+        }
+        const response = await api.post('/expenses/', payload);
         
         // Refresh expenses data
         await actions.fetchExpenses();
@@ -1156,7 +1186,11 @@ export const ForecastProvider = ({ children }) => {
     updateExpense: async (expenseId, expenseData) => {
       try {
         actions.setLoading(true);
-        const response = await api.put(`/expenses/${expenseId}`, expenseData);
+        const payload = { ...expenseData };
+        if (state.activeScenario && !payload.forecast_id) {
+          payload.forecast_id = state.activeScenario;
+        }
+        const response = await api.put(`/expenses/${expenseId}`, payload);
         
         // Refresh expenses data
         await actions.fetchExpenses();

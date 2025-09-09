@@ -26,9 +26,9 @@ export const useReporting = () => {
           // Revenue and cost data from source tables (NEW - includes both revenue and COGS)
           api.get(`/source-data/sales-forecast?forecast_id=${forecastId}&start_period=${period.start}&end_period=${period.end}`, { suppressErrorToast: true }),
           // Payroll forecast data
-          api.get('/payroll/forecast?periods=26', { suppressErrorToast: true }),
+          api.get(`/payroll/forecast?periods=26&forecast_id=${forecastId}`, { suppressErrorToast: true }),
           // Expense forecast for the period
-          api.get(`/expenses/forecast?start_period=${period.start}&end_period=${period.end}`, { suppressErrorToast: true }),
+          api.get(`/expenses/forecast?start_period=${period.start}&end_period=${period.end}&forecast_id=${forecastId}`, { suppressErrorToast: true }),
           // Loan cash flow projection
           api.get(`/loans/cash-flow?start_period=${period.start}&end_period=${period.end}`, { suppressErrorToast: true })
         ]);

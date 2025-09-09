@@ -22,7 +22,8 @@ router = APIRouter(prefix="/payroll", tags=["payroll"])
 async def get_employees(
     department: Optional[str] = Query(None, description="Filter by department"),
     status: Optional[str] = Query(None, description="Filter by status (active/inactive)"),
-    business_unit: Optional[str] = Query(None, description="Filter by business unit allocation")
+    business_unit: Optional[str] = Query(None, description="Filter by business unit allocation"),
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
 ):
     """
     Get all employees with optional filtering
@@ -33,9 +34,9 @@ async def get_employees(
         
         # Base query
         query = """
-            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate, 
-                   rate_type, labor_type, start_date, end_date, next_review_date, 
-                   expected_raise, benefits_eligible, allocations
+            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate,
+                   rate_type, labor_type, start_date, end_date, next_review_date,
+                   expected_raise, benefits_eligible, allocations, forecast_id
             FROM payroll
         """
         
@@ -52,6 +53,9 @@ async def get_employees(
                 conditions.append("(end_date IS NULL OR end_date > date('now'))")
             elif status == "inactive":
                 conditions.append("end_date IS NOT NULL AND end_date <= date('now')")
+        if forecast_id:
+            conditions.append("forecast_id = ?")
+            params.append(forecast_id)
         
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -113,9 +117,9 @@ async def get_employee(employee_id: str):
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate, 
-                   rate_type, labor_type, start_date, end_date, next_review_date, 
-                   expected_raise, benefits_eligible, allocations
+            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate,
+                   rate_type, labor_type, start_date, end_date, next_review_date,
+                   expected_raise, benefits_eligible, allocations, forecast_id
             FROM payroll WHERE employee_id = ?
         """, (employee_id,))
         
@@ -182,14 +186,14 @@ async def create_employee(employee: PayrollCreate):
             INSERT INTO payroll (
                 employee_id, employee_name, department, weekly_hours, hourly_rate,
                 rate_type, labor_type, start_date, end_date, next_review_date,
-                expected_raise, benefits_eligible, allocations
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                expected_raise, benefits_eligible, allocations, forecast_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             employee_id, employee.employee_name, employee.department,
             employee.weekly_hours, employee.hourly_rate, employee.rate_type,
             employee.labor_type, employee.start_date, employee.end_date,
             next_review_date, employee.expected_raise, employee.benefits_eligible,
-            allocations_json
+            allocations_json, employee.forecast_id
         ))
         
         conn.commit()
@@ -430,24 +434,26 @@ async def calculate_employee_costs(
 @router.get("/forecast", response_model=ForecastResponse)
 async def get_payroll_forecast(
     periods: int = Query(26, description="Number of pay periods to forecast"),
-    include_raises: bool = Query(True, description="Include scheduled raises in forecast")
+    include_raises: bool = Query(True, description="Include scheduled raises in forecast"),
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
 ):
     """
     Generate payroll forecast for specified number of pay periods
     """
     try:
-        # Get all active employees
+        # Get all active employees, optionally scoped by forecast
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate, 
-                   rate_type, labor_type, start_date, end_date, next_review_date, 
-                   expected_raise, benefits_eligible, allocations
+            SELECT employee_id, employee_name, department, weekly_hours, hourly_rate,
+                   rate_type, labor_type, start_date, end_date, next_review_date,
+                   expected_raise, benefits_eligible, allocations, forecast_id
             FROM payroll
-            WHERE end_date IS NULL OR end_date > date('now')
+            WHERE (end_date IS NULL OR end_date > date('now'))
+              AND (? IS NULL OR forecast_id = ?)
             ORDER BY employee_name
-        """)
+        """, (forecast_id, forecast_id))
         employee_rows = cursor.fetchall()
         
         columns = [description[0] for description in cursor.description]

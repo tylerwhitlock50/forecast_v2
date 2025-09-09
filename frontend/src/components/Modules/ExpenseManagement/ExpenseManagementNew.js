@@ -9,9 +9,10 @@ import { StatsCard } from '../../ui/stats-card';
 import { DataTable } from '../../ui/data-table';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
+import ExpenseGrid from './ExpenseGrid';
 
 const ExpenseManagement = () => {
-    const { actions, loading } = useForecast();
+    const { state: { activeScenario }, actions, loading } = useForecast();
     
     const [expenses, setExpenses] = useState([]);
     const [expenseCategories, setExpenseCategories] = useState([]);
@@ -27,7 +28,7 @@ const ExpenseManagement = () => {
     const loadExpenses = async () => {
         actions.setLoading(true);
         try {
-            const response = await api.get('/expenses/', { suppressErrorToast: true });
+            const response = await api.get(`/expenses/${activeScenario ? `?forecast_id=${activeScenario}` : ''}`, { suppressErrorToast: true });
             setExpenses(response.data.expenses || []);
         } catch (error) {
             console.error('Error loading expenses:', error);
@@ -48,7 +49,7 @@ const ExpenseManagement = () => {
 
     const loadExpenseSummary = async () => {
         try {
-            const response = await api.get('/expenses/summary', { suppressErrorToast: true });
+            const response = await api.get(`/expenses/summary${activeScenario ? `?forecast_id=${activeScenario}` : ''}`, { suppressErrorToast: true });
             setExpenseSummary(response.data);
         } catch (error) {
             console.error('Error loading expense summary:', error);
@@ -176,9 +177,10 @@ const ExpenseManagement = () => {
             />
 
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-                <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-4">
                     <TabsTrigger value="overview">Overview</TabsTrigger>
                     <TabsTrigger value="expenses">Expenses</TabsTrigger>
+                    <TabsTrigger value="grid">Grid Editor</TabsTrigger>
                     <TabsTrigger value="categories">Categories</TabsTrigger>
                 </TabsList>
 
@@ -237,6 +239,17 @@ const ExpenseManagement = () => {
                                 onDelete={handleDeleteExpense}
                                 emptyMessage="No expenses found. Click 'Add New Expense' to get started."
                             />
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                <TabsContent value="grid" className="space-y-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Inline Expense Editor</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <ExpenseGrid expenses={expenses} onRefresh={loadExpenses} />
                         </CardContent>
                     </Card>
                 </TabsContent>

@@ -55,6 +55,7 @@ const navigationModules = {
     icon: "📈",
     routes: {
       "Financial Reports": "/reporting",
+      "Scenario Comparison": "/reporting/comparison",
       "Income Statement": "/income-statement",
       "Scenario Analysis": "/scenarios",
       "Data Completeness": "/data-check"
