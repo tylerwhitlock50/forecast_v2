@@ -230,7 +230,9 @@ class DatabaseManager:
                 next_review_date TEXT,
                 expected_raise REAL DEFAULT 0.0,
                 benefits_eligible BOOLEAN DEFAULT 1,
-                allocations TEXT  -- JSON string for business unit allocations
+                allocations TEXT,  -- JSON string for business unit allocations
+                forecast_id TEXT,
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
             )
         ''')
         
@@ -323,9 +325,11 @@ class DatabaseManager:
                 department TEXT,
                 cost_center TEXT,
                 is_active BOOLEAN DEFAULT 1,
+                forecast_id TEXT,
                 created_date TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (category_id) REFERENCES expense_categories (category_id)
+                FOREIGN KEY (category_id) REFERENCES expense_categories (category_id),
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
             )
         ''')
         
@@ -420,6 +424,8 @@ class DatabaseManager:
                 cursor.execute('ALTER TABLE payroll ADD COLUMN benefits_eligible BOOLEAN DEFAULT 1')
             if 'allocations' not in columns:
                 cursor.execute('ALTER TABLE payroll ADD COLUMN allocations TEXT')
+            if 'forecast_id' not in columns:
+                cursor.execute('ALTER TABLE payroll ADD COLUMN forecast_id TEXT')
             
             # Update department field with labor_type if empty
             cursor.execute('''
@@ -444,10 +450,28 @@ class DatabaseManager:
         finally:
             self.close_connection(conn)
 
+    def migrate_expenses_table(self):
+        """Add forecast_id column to expenses table if missing"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(expenses)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'forecast_id' not in columns:
+                cursor.execute('ALTER TABLE expenses ADD COLUMN forecast_id TEXT')
+            conn.commit()
+            print("Expenses table migration completed successfully")
+        except Exception as e:
+            print(f"Error migrating expenses table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
     def load_csv_data(self):
         """Load data from CSV files into the database"""
         conn = self.get_connection()
-        
+        cursor = conn.cursor()
+
         # Define CSV file mappings
         csv_mappings = {
             'customers.csv': 'customers',
@@ -456,6 +480,7 @@ class DatabaseManager:
             'bom.csv': 'bom',
             'routers.csv': 'router_definitions',
             'router_operations.csv': 'router_operations',
+            'routers_legacy.csv': 'routers',
             'machines.csv': 'machines',
             'labor_rates.csv': 'labor_rates',
             'payroll.csv': 'payroll',
@@ -499,8 +524,18 @@ class DatabaseManager:
                         # Add available_minutes_per_month if not present
                         if 'available_minutes_per_month' not in df.columns:
                             df['available_minutes_per_month'] = 10000  # Default capacity
-                    
-                    df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+                    # Align DataFrame with existing table schema
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    existing_cols = [col[1] for col in cursor.fetchall()]
+                    df = df[[c for c in df.columns if c in existing_cols]]
+
+                    # Preserve table schema by clearing existing rows and appending
+                    try:
+                        cursor.execute(f"DELETE FROM {table_name}")
+                    except Exception:
+                        pass
+                    df.to_sql(table_name, conn, if_exists='append', index=False)
                     print(f"Loaded {csv_file} into {table_name} table")
                 except Exception as e:
                     print(f"Error loading {csv_file}: {str(e)}")
@@ -620,14 +655,36 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         try:
-            # Clear previous forecast results
+            # Ensure forecast_results table exists and clear previous results
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS forecast_results (
+                    forecast_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    forecast_date TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    customer_id TEXT,
+                    customer_name TEXT,
+                    unit_id TEXT,
+                    unit_name TEXT,
+                    quantity INTEGER,
+                    unit_price REAL,
+                    total_revenue REAL,
+                    material_cost REAL,
+                    labor_cost REAL,
+                    machine_cost REAL,
+                    total_cost REAL,
+                    gross_margin REAL,
+                    margin_percentage REAL,
+                    FOREIGN KEY (customer_id) REFERENCES customers (customer_id),
+                    FOREIGN KEY (unit_id) REFERENCES units (unit_id)
+                )
+            ''')
             cursor.execute("DELETE FROM forecast_results")
             
             # Get sales with customer and unit information
             cursor.execute('''
-                SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity, 
+                SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity,
                        s.unit_price, s.total_revenue, s.forecast_id,
-                       c.customer_name, u.unit_name, u.base_price, u.bom, u.router
+                       c.customer_name, u.unit_name, u.base_price, u.bom_id, u.router_id
                 FROM sales s
                 LEFT JOIN customers c ON s.customer_id = c.customer_id
                 LEFT JOIN units u ON s.unit_id = u.unit_id
@@ -636,18 +693,24 @@ class DatabaseManager:
             sales_rows = cursor.fetchall()
             
             # Convert sales data to list of dictionaries
-            sales_columns = ['sale_id', 'customer_id', 'unit_id', 'period', 'quantity', 
-                           'unit_price', 'total_revenue', 'forecast_id', 'customer_name', 
-                           'unit_name', 'base_price', 'bom', 'router']
+            sales_columns = ['sale_id', 'customer_id', 'unit_id', 'period', 'quantity',
+                           'unit_price', 'total_revenue', 'forecast_id', 'customer_name',
+                           'unit_name', 'base_price', 'bom_id', 'router_id']
             sales_data = [dict(zip(sales_columns, row)) for row in sales_rows]
             
-            # Get BOM data with total cost per BOM
+            # Get BOM data with total cost per BOM and full BOM details
             cursor.execute('''
                 SELECT bom_id, SUM(material_cost) as total_bom_cost
-                FROM bom 
+                FROM bom
                 GROUP BY bom_id
             ''')
             bom_costs = {row[0]: row[1] for row in cursor.fetchall()}
+
+            cursor.execute('SELECT * FROM bom ORDER BY bom_id, bom_line')
+            bom_rows = cursor.fetchall()
+            cursor.execute('PRAGMA table_info(bom)')
+            bom_columns = [col[1] for col in cursor.fetchall()]
+            bom_data = [dict(zip(bom_columns, row)) for row in bom_rows]
             
             # Get routing information with machine costs - handle shared router_id and machine ID mapping
             cursor.execute('''
@@ -707,8 +770,8 @@ class DatabaseManager:
                 customer_name = sale['customer_name']
                 unit_name = sale['unit_name']
                 base_price = sale['base_price']
-                bom_id = sale['bom']
-                router_id = sale['router']
+                bom_id = sale['bom_id']
+                router_id = sale['router_id']
                 
                 # Get BOM cost for this unit
                 bom_cost = bom_costs.get(bom_id, 0.0)
@@ -767,6 +830,7 @@ class DatabaseManager:
                 "status": "success",
                 "data": {
                     "sales_forecast": sales_data,
+                    "bom_data": bom_data,
                     "bom_costs": bom_costs,
                     "router_data": router_data,
                     "payroll_data": payroll_data,
@@ -965,6 +1029,8 @@ class DatabaseManager:
         print("Tables created successfully")
         self.migrate_payroll_table()
         print("Payroll table migration completed")
+        self.migrate_expenses_table()
+        print("Expenses table migration completed")
         
         # Check for force reload environment variable
         force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'

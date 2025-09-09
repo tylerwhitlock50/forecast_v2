@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../../lib/apiClient';
+import { useForecast } from '../../../context/ForecastContext';
 
 const ExpenseReports = ({ expenses, categories, summaryStats }) => {
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const { state: { activeScenario } } = useForecast();
 
   useEffect(() => {
     fetchReportData();
@@ -12,7 +14,7 @@ const ExpenseReports = ({ expenses, categories, summaryStats }) => {
   const fetchReportData = async () => {
     setLoading(true);
     try {
-      const response = await api.get('/expenses/report', { suppressErrorToast: true });
+      const response = await api.get(`/expenses/report${activeScenario ? `?forecast_id=${activeScenario}` : ''}`, { suppressErrorToast: true });
       setReportData(response.data);
     } catch (error) {
       console.error('Error fetching report data:', error);

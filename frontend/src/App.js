@@ -19,6 +19,7 @@ import PayrollManagement from './components/Modules/PayrollManagement/PayrollMan
 import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseManagementNew';
 import LoanManagement from './components/Modules/LoanManagement/LoanManagementNew';
 import ReportingDashboard from './components/Modules/ReportingAnalysis/ReportingDashboard';
+import ScenarioComparison from './components/Modules/ReportingAnalysis/ScenarioComparison';
 import Dashboard from './components/Dashboard';
 
 // Placeholder components for modules not yet implemented
@@ -230,6 +231,7 @@ function App() {
               
               {/* Reporting & Analysis */}
               <Route path="/reporting" element={<ReportingDashboard />} />
+              <Route path="/reporting/comparison" element={<ScenarioComparison />} />
               <Route path="/income-statement" element={<IncomeStatement />} />
               <Route path="/scenarios" element={<ScenarioAnalysis />} />
               <Route path="/data-check" element={<DataCompleteness />} />

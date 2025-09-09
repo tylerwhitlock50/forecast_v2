@@ -36,32 +36,60 @@ class TestDatabaseManager:
         # Units
         units_csv = os.path.join(data_dir, "units.csv")
         with open(units_csv, 'w') as f:
-            f.write("unit_id,unit_name,unit_description,base_price,unit_type\n")
-            f.write("PROD-001,Test Product,Test description,50.00,Component\n")
-        
+            f.write(
+                "unit_id,unit_name,unit_description,base_price,unit_type,bom_id,bom_version,router_id,router_version\n"
+            )
+            f.write(
+                "PROD-001,Test Product,Test description,50.00,Component,BOM-001,1.0,R0001,1.0\n"
+            )
+
         # Sales
         sales_csv = os.path.join(data_dir, "sales.csv")
         with open(sales_csv, 'w') as f:
-            f.write("sale_id,customer_id,unit_id,period,quantity,unit_price,total_revenue\n")
-            f.write("SALE-001,CUST-001,PROD-001,2024-01,10,50.00,500.00\n")
+            f.write(
+                "sale_id,customer_id,unit_id,period,quantity,unit_price,total_revenue,forecast_id\n"
+            )
+            f.write("SALE-001,CUST-001,PROD-001,2024-01,10,50.00,500.00,F1\n")
         
+        # Forecast scenarios
+        forecast_csv = os.path.join(data_dir, "forecast.csv")
+        with open(forecast_csv, 'w') as f:
+            f.write("forecast_id,name,description\n")
+            f.write("F1,Base Case,Base scenario\n")
+
         # BOM
         bom_csv = os.path.join(data_dir, "bom.csv")
         with open(bom_csv, 'w') as f:
-            f.write("bom_id,unit_id,router_id,material_cost\n")
-            f.write("BOM-001,PROD-001,R0001,25.00\n")
-        
+            f.write(
+                "bom_id,version,bom_line,material_description,qty,unit,unit_price,material_cost,target_cost\n"
+            )
+            f.write("BOM-001,1.0,1,Steel,1,EA,25.00,25.00,25.00\n")
+
         # Machines
         machines_csv = os.path.join(data_dir, "machines.csv")
         with open(machines_csv, 'w') as f:
             f.write("machine_id,machine_name,machine_description,machine_rate,labor_type\n")
             f.write("M0001,Test Machine,Test description,100.00,Heavy Equipment\n")
         
-        # Routers
+        # Router definitions
         routers_csv = os.path.join(data_dir, "routers.csv")
         with open(routers_csv, 'w') as f:
-            f.write("router_id,unit_id,machine_id,machine_minutes,labor_minutes,sequence\n")
-            f.write("R0001,PROD-001,M0001,30,15,1\n")
+            f.write("router_id,router_name,router_description,version\n")
+            f.write("R0001,Router 1,Test router,1.0\n")
+
+        # Router operations
+        router_ops_csv = os.path.join(data_dir, "router_operations.csv")
+        with open(router_ops_csv, 'w') as f:
+            f.write(
+                "router_id,sequence,machine_id,machine_minutes,labor_minutes,labor_type_id,operation_description\n"
+            )
+            f.write("R0001,1,M0001,30,15,RATE-001,Op1\n")
+
+        # Legacy routers table for backward compatibility
+        routers_legacy_csv = os.path.join(data_dir, "routers_legacy.csv")
+        with open(routers_legacy_csv, 'w') as f:
+            f.write("router_id,version,unit_id,machine_id,machine_minutes,labor_minutes,labor_type_id,sequence\n")
+            f.write("R0001,1.0,PROD-001,M0001,30,15,RATE-001,1\n")
         
         # Labor Rates
         labor_rates_csv = os.path.join(data_dir, "labor_rates.csv")
@@ -72,8 +100,12 @@ class TestDatabaseManager:
         # Payroll
         payroll_csv = os.path.join(data_dir, "payroll.csv")
         with open(payroll_csv, 'w') as f:
-            f.write("employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date\n")
-            f.write("EMP-001,Test Employee,40,35.00,Heavy Equipment,2024-01-01,2024-12-31\n")
+            f.write(
+                "employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date,forecast_id\n"
+            )
+            f.write(
+                "EMP-001,Test Employee,40,35.00,Heavy Equipment,2024-01-01,2024-12-31,F1\n"
+            )
     
     def test_database_initialization(self, temp_db_manager):
         """Test database initialization"""
@@ -455,6 +487,17 @@ class TestDatabaseManager:
             database_path=custom_db_path,
             data_dir=custom_data_dir
         )
-        
+
         assert db_manager.database_path == custom_db_path
-        assert db_manager.data_dir == custom_data_dir 
+        assert db_manager.data_dir == custom_data_dir
+
+
+def test_payroll_schema_preserved(test_db_manager):
+    """Ensure payroll table retains extended columns after CSV loading"""
+    conn = test_db_manager.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(payroll)")
+    columns = [col[1] for col in cursor.fetchall()]
+    test_db_manager.close_connection(conn)
+    assert "department" in columns
+    assert "rate_type" in columns

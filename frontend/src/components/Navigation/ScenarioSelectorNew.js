@@ -110,7 +110,7 @@ const ScenarioSelector = () => {
                   "w-full justify-start p-3 h-auto rounded-none border-l-4 border-transparent",
                   id === activeScenario && "bg-accent"
                 )}
-                style={{ 
+                style={{
                   borderLeftColor: id === activeScenario ? 'hsl(var(--primary))' : 'transparent'
                 }}
                 onClick={() => handleScenarioChange(id)}
@@ -118,15 +118,24 @@ const ScenarioSelector = () => {
                 <span className="mr-3 text-lg">
                   {getScenarioIcon(id)}
                 </span>
-                <div className="flex flex-col items-start text-left">
+                <div className="flex flex-col items-start text-left flex-1">
                   <span className="font-medium text-sm">{`${id} | ${scenario.name || 'Unnamed Scenario'}`}</span>
-                  <Badge 
+                  <Badge
                     variant={getScenarioVariant(id)}
                     className="mt-1 text-xs"
                   >
                     {id === activeScenario ? 'Active' : 'Switch to'}
                   </Badge>
                 </div>
+                <span
+                  className="ml-2 text-xs underline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    actions.duplicateScenario(id);
+                  }}
+                >
+                  Duplicate
+                </span>
               </Button>
             ))}
           </div>

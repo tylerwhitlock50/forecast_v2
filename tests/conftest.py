@@ -324,24 +324,41 @@ def create_test_csv_files(data_dir):
     # Units
     units_csv = os.path.join(data_dir, "units.csv")
     with open(units_csv, 'w') as f:
-        f.write("unit_id,unit_name,unit_description,base_price,unit_type\n")
-        f.write("PROD-001,Test Product 1,Test description 1,50.00,Component\n")
-        f.write("PROD-002,Test Product 2,Test description 2,75.00,Assembly\n")
-    
+        f.write(
+            "unit_id,unit_name,unit_description,base_price,unit_type,bom_id,bom_version,router_id,router_version\n"
+        )
+        f.write(
+            "PROD-001,Test Product 1,Test description 1,50.00,Component,BOM-001,1.0,R0001,1.0\n"
+        )
+        f.write(
+            "PROD-002,Test Product 2,Test description 2,75.00,Assembly,BOM-002,1.0,R0002,1.0\n"
+        )
+
     # Sales
     sales_csv = os.path.join(data_dir, "sales.csv")
     with open(sales_csv, 'w') as f:
-        f.write("sale_id,customer_id,unit_id,period,quantity,unit_price,total_revenue\n")
-        f.write("SALE-001,CUST-001,PROD-001,2024-01,10,50.00,500.00\n")
-        f.write("SALE-002,CUST-002,PROD-002,2024-01,5,75.00,375.00\n")
+        f.write(
+            "sale_id,customer_id,unit_id,period,quantity,unit_price,total_revenue,forecast_id\n"
+        )
+        f.write("SALE-001,CUST-001,PROD-001,2024-01,10,50.00,500.00,F1\n")
+        f.write("SALE-002,CUST-002,PROD-002,2024-01,5,75.00,375.00,F2\n")
     
+    # Forecast scenarios
+    forecast_csv = os.path.join(data_dir, "forecast.csv")
+    with open(forecast_csv, 'w') as f:
+        f.write("forecast_id,name,description\n")
+        f.write("F1,Base Case,Base scenario\n")
+        f.write("F2,Alt Case,Alternate scenario\n")
+
     # BOM
     bom_csv = os.path.join(data_dir, "bom.csv")
     with open(bom_csv, 'w') as f:
-        f.write("bom_id,unit_id,router_id,material_cost\n")
-        f.write("BOM-001,PROD-001,R0001,25.00\n")
-        f.write("BOM-002,PROD-002,R0002,35.00\n")
-    
+        f.write(
+            "bom_id,version,bom_line,material_description,qty,unit,unit_price,material_cost,target_cost\n"
+        )
+        f.write("BOM-001,1.0,1,Steel,1,EA,25.00,25.00,25.00\n")
+        f.write("BOM-002,1.0,1,Aluminum,1,EA,35.00,35.00,35.00\n")
+
     # Machines
     machines_csv = os.path.join(data_dir, "machines.csv")
     with open(machines_csv, 'w') as f:
@@ -349,12 +366,28 @@ def create_test_csv_files(data_dir):
         f.write("M0001,Test Machine 1,Test machine description,100.00,Heavy Equipment\n")
         f.write("M0002,Test Machine 2,Test machine description,80.00,Light Equipment\n")
     
-    # Routers
+    # Router definitions
     routers_csv = os.path.join(data_dir, "routers.csv")
     with open(routers_csv, 'w') as f:
-        f.write("router_id,unit_id,machine_id,machine_minutes,labor_minutes,sequence\n")
-        f.write("R0001,PROD-001,M0001,30,15,1\n")
-        f.write("R0002,PROD-002,M0002,45,20,1\n")
+        f.write("router_id,router_name,router_description,version\n")
+        f.write("R0001,Router 1,Test router 1,1.0\n")
+        f.write("R0002,Router 2,Test router 2,1.0\n")
+
+    # Router operations
+    router_ops_csv = os.path.join(data_dir, "router_operations.csv")
+    with open(router_ops_csv, 'w') as f:
+        f.write(
+            "router_id,sequence,machine_id,machine_minutes,labor_minutes,labor_type_id,operation_description\n"
+        )
+        f.write("R0001,1,M0001,30,15,RATE-001,Op1\n")
+        f.write("R0002,1,M0002,45,20,RATE-002,Op1\n")
+
+    # Legacy routers table for backward compatibility
+    routers_legacy_csv = os.path.join(data_dir, "routers_legacy.csv")
+    with open(routers_legacy_csv, 'w') as f:
+        f.write("router_id,version,unit_id,machine_id,machine_minutes,labor_minutes,labor_type_id,sequence\n")
+        f.write("R0001,1.0,PROD-001,M0001,30,15,RATE-001,1\n")
+        f.write("R0002,1.0,PROD-002,M0002,45,20,RATE-002,1\n")
     
     # Labor Rates
     labor_rates_csv = os.path.join(data_dir, "labor_rates.csv")
@@ -366,6 +399,12 @@ def create_test_csv_files(data_dir):
     # Payroll
     payroll_csv = os.path.join(data_dir, "payroll.csv")
     with open(payroll_csv, 'w') as f:
-        f.write("employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date\n")
-        f.write("EMP-001,Test Employee 1,40,35.00,Heavy Equipment,2024-01-01,2024-12-31\n")
-        f.write("EMP-002,Test Employee 2,40,28.00,Light Equipment,2024-01-01,2024-12-31\n") 
+        f.write(
+            "employee_id,employee_name,weekly_hours,hourly_rate,labor_type,start_date,end_date,forecast_id\n"
+        )
+        f.write(
+            "EMP-001,Test Employee 1,40,35.00,Heavy Equipment,2024-01-01,2024-12-31,F1\n"
+        )
+        f.write(
+            "EMP-002,Test Employee 2,40,28.00,Light Equipment,2024-01-01,2024-12-31,F2\n"
+        )

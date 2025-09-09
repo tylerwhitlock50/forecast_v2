@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../../lib/apiClient';
+import { useForecast } from '../../../context/ForecastContext';
 
 const ExpenseForecast = ({ expenses, categories, allocations, onFetchAllocations }) => {
   const [forecastPeriods, setForecastPeriods] = useState(12); // months
+  const { state: { activeScenario } } = useForecast();
   const [selectedCategory, setSelectedCategory] = useState('');
   const [forecastData, setForecastData] = useState([]);
 
@@ -26,7 +28,7 @@ const ExpenseForecast = ({ expenses, categories, allocations, onFetchAllocations
         queryParams.append('category_type', selectedCategory);
       }
 
-      const response = await api.get(`/expenses/forecast?${queryParams}`, { suppressErrorToast: true });
+      const response = await api.get(`/expenses/forecast?${queryParams}${activeScenario ? `&forecast_id=${activeScenario}` : ''}`, { suppressErrorToast: true });
       setForecastData(response.data);
     } catch (error) {
       console.error('Error fetching forecast data:', error);

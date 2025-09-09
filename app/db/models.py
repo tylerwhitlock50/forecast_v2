@@ -142,6 +142,7 @@ class PayrollBase(BaseModel):
     expected_raise: float = 0.0
     benefits_eligible: bool = True
     allocations: Optional[Dict[str, float]] = None  # Business unit allocations
+    forecast_id: Optional[str] = None
 
 class Payroll(PayrollBase):
     employee_id: str
@@ -305,6 +306,7 @@ class ExpenseBase(BaseModel):
     department: Optional[str] = None
     cost_center: Optional[str] = None
     is_active: bool = True
+    forecast_id: Optional[str] = None
 
 class Expense(ExpenseBase):
     expense_id: str
@@ -388,6 +390,7 @@ class ExpenseWithDetails(BaseModel):
     is_active: bool
     created_date: str
     updated_date: str
+    forecast_id: Optional[str] = None
     next_payment_date: Optional[str] = None
     next_payment_amount: Optional[float] = None
     total_annual_cost: Optional[float] = None

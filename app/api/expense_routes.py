@@ -126,7 +126,8 @@ async def get_expenses(
     frequency: Optional[str] = Query(None, description="Filter by frequency"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     department: Optional[str] = Query(None, description="Filter by department"),
-    vendor: Optional[str] = Query(None, description="Filter by vendor")
+    vendor: Optional[str] = Query(None, description="Filter by vendor"),
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
 ):
     """
     Get all expenses with optional filtering and category details
@@ -141,7 +142,7 @@ async def get_expenses(
                    e.amount, e.frequency, e.start_date, e.end_date, e.vendor, e.description,
                    e.payment_method, e.approval_required, e.approved_by, e.approval_date,
                    e.expense_allocation, e.amortization_months, e.department, e.cost_center,
-                   e.is_active, e.created_date, e.updated_date
+                   e.is_active, e.forecast_id, e.created_date, e.updated_date
             FROM expenses e
             JOIN expense_categories c ON e.category_id = c.category_id
         """
@@ -169,6 +170,9 @@ async def get_expenses(
         if vendor:
             conditions.append("e.vendor LIKE ?")
             params.append(f"%{vendor}%")
+        if forecast_id:
+            conditions.append("e.forecast_id = ?")
+            params.append(forecast_id)
         
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -209,8 +213,9 @@ async def get_expenses(
                 department=row[17],
                 cost_center=row[18],
                 is_active=bool(row[19]),
-                created_date=row[20],
-                updated_date=row[21],
+                forecast_id=row[20],
+                created_date=row[21],
+                updated_date=row[22],
                 next_payment_date=next_payment_date,
                 next_payment_amount=next_payment_amount,
                 total_annual_cost=annual_cost
@@ -243,19 +248,19 @@ async def create_expense(expense: ExpenseCreate):
         
         # Insert expense
         cursor.execute("""
-            INSERT INTO expenses 
+            INSERT INTO expenses
             (expense_id, expense_name, category_id, amount, frequency, start_date, end_date,
              vendor, description, payment_method, approval_required, approved_by, approval_date,
              expense_allocation, amortization_months, department, cost_center, is_active,
-             created_date, updated_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             forecast_id, created_date, updated_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             expense_id, expense.expense_name, expense.category_id, expense.amount,
             expense.frequency, expense.start_date, expense.end_date, expense.vendor,
             expense.description, expense.payment_method, expense.approval_required,
             expense.approved_by, expense.approval_date, expense.expense_allocation,
             expense.amortization_months, expense.department, expense.cost_center,
-            expense.is_active, current_time, current_time
+            expense.is_active, expense.forecast_id, current_time, current_time
         ))
         
         # Generate allocations
@@ -407,7 +412,8 @@ async def delete_expense(expense_id: str):
 async def get_expense_allocations(
     expense_id: Optional[str] = Query(None, description="Filter by expense"),
     period: Optional[str] = Query(None, description="Filter by period (YYYY-MM)"),
-    payment_status: Optional[str] = Query(None, description="Filter by payment status")
+    payment_status: Optional[str] = Query(None, description="Filter by payment status"),
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
 ):
     """
     Get expense allocations with filtering
@@ -440,6 +446,9 @@ async def get_expense_allocations(
         if payment_status:
             conditions.append("a.payment_status = ?")
             params.append(payment_status)
+        if forecast_id:
+            conditions.append("e.forecast_id = ?")
+            params.append(forecast_id)
         
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -485,7 +494,8 @@ async def get_expense_allocations(
 async def get_expense_forecast(
     start_period: str = Query(..., description="Start period (YYYY-MM)"),
     end_period: str = Query(..., description="End period (YYYY-MM)"),
-    category_type: Optional[str] = Query(None, description="Filter by category type")
+    category_type: Optional[str] = Query(None, description="Filter by category type"),
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
 ):
     """
     Get expense forecast for a period range
@@ -508,10 +518,13 @@ async def get_expense_forecast(
         """
         
         params = [start_period, end_period]
-        
+
         if category_type:
             query += " AND c.category_type = ?"
             params.append(category_type)
+        if forecast_id:
+            query += " AND e.forecast_id = ?"
+            params.append(forecast_id)
             
         query += """
             GROUP BY a.period, c.category_id, c.category_name, c.category_type
@@ -547,7 +560,9 @@ async def get_expense_forecast(
         db_manager.close_connection(conn)
 
 @router.get("/report", response_model=ForecastResponse)
-async def get_expense_report():
+async def get_expense_report(
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
+):
     """
     Get comprehensive expense report with summary statistics
     """
@@ -556,20 +571,22 @@ async def get_expense_report():
         cursor = conn.cursor()
         
         # Calculate totals by frequency
-        cursor.execute("""
-            SELECT 
+        freq_query = """
+            SELECT
                 SUM(CASE WHEN frequency = 'monthly' THEN amount * 12 ELSE 0 END) as monthly_annual,
                 SUM(CASE WHEN frequency = 'quarterly' THEN amount * 4 ELSE 0 END) as quarterly_annual,
                 SUM(CASE WHEN frequency = 'annually' THEN amount ELSE 0 END) as annual_total,
                 SUM(CASE WHEN frequency = 'one_time' THEN amount ELSE 0 END) as one_time_total
-            FROM expenses WHERE is_active = 1
-        """)
+            FROM expenses WHERE is_active = 1{}
+        """.format(" AND forecast_id = ?" if forecast_id else "")
+        params: List[Any] = [forecast_id] if forecast_id else []
+        cursor.execute(freq_query, params)
         totals = cursor.fetchone()
         
         # Calculate totals by category type
-        cursor.execute("""
+        cat_query = """
             SELECT c.category_type, SUM(
-                CASE 
+                CASE
                     WHEN e.frequency = 'monthly' THEN e.amount * 12
                     WHEN e.frequency = 'quarterly' THEN e.amount * 4
                     WHEN e.frequency = 'biannually' THEN e.amount * 2
@@ -580,9 +597,10 @@ async def get_expense_report():
             ) as annual_total
             FROM expenses e
             JOIN expense_categories c ON e.category_id = c.category_id
-            WHERE e.is_active = 1
+            WHERE e.is_active = 1{}
             GROUP BY c.category_type
-        """)
+        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        cursor.execute(cat_query, params)
         category_totals = {row[0]: row[1] for row in cursor.fetchall()}
         
         # Get upcoming payments (next 30 days)
@@ -591,14 +609,18 @@ async def get_expense_report():
         current_period = today.strftime("%Y-%m")
         next_period = next_month.strftime("%Y-%m")
         
-        cursor.execute("""
+        upcoming_query = """
             SELECT e.expense_name, a.allocated_amount, a.period, c.category_name
             FROM expense_allocations a
             JOIN expenses e ON a.expense_id = e.expense_id
             JOIN expense_categories c ON e.category_id = c.category_id
-            WHERE a.period IN (?, ?) AND a.payment_status = 'pending'
+            WHERE a.period IN (?, ?) AND a.payment_status = 'pending'{}
             ORDER BY a.period, e.expense_name
-        """, (current_period, next_period))
+        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        upcoming_params: List[Any] = [current_period, next_period]
+        if forecast_id:
+            upcoming_params.append(forecast_id)
+        cursor.execute(upcoming_query, upcoming_params)
         upcoming_payments = [
             {
                 'expense_name': row[0],
@@ -609,14 +631,18 @@ async def get_expense_report():
         ]
         
         # Get overdue payments
-        cursor.execute("""
+        overdue_query = """
             SELECT e.expense_name, a.allocated_amount, a.period, c.category_name
             FROM expense_allocations a
             JOIN expenses e ON a.expense_id = e.expense_id
             JOIN expense_categories c ON e.category_id = c.category_id
-            WHERE a.period < ? AND a.payment_status = 'pending'
+            WHERE a.period < ? AND a.payment_status = 'pending'{}
             ORDER BY a.period, e.expense_name
-        """, (current_period,))
+        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        overdue_params: List[Any] = [current_period]
+        if forecast_id:
+            overdue_params.append(forecast_id)
+        cursor.execute(overdue_query, overdue_params)
         overdue_payments = [
             {
                 'expense_name': row[0],
