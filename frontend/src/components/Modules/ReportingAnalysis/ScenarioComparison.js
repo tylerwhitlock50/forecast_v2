@@ -52,10 +52,10 @@ const ScenarioComparison = () => {
               {data.map(row => (
                 <tr key={row.forecast_id}>
                   <td className="px-6 py-4 whitespace-nowrap">{row.forecast_id}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{row.revenue.toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{row.expenses.toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{row.payroll.toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{(row.revenue - row.expenses - row.payroll).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">{(row.revenue ?? 0).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">{(row.expenses ?? 0).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">{(row.payroll ?? 0).toFixed(2)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">{((row.revenue ?? 0) - (row.expenses ?? 0) - (row.payroll ?? 0)).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
