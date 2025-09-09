@@ -124,6 +124,30 @@ class TestDatabaseManager:
         assert len(result["data"]) == 1
         assert result["data"][0]["sale_id"] == "SALE-001"
         assert result["data"][0]["total_revenue"] == 500.00
+
+    def test_get_table_data_with_filters(self, temp_db_manager):
+        """Test filtering table data using manager helper"""
+        temp_db_manager.initialize()
+        result = temp_db_manager.get_table_data('customers', filters={'customer_id': 'CUST-001'})
+        assert result["status"] == "success"
+        assert len(result["data"]) == 1
+        assert result["data"][0]["customer_id"] == 'CUST-001'
+
+    def test_get_table_data_with_pagination(self, temp_db_manager):
+        """Test limiting and offsetting results"""
+        temp_db_manager.initialize()
+        conn = temp_db_manager.get_connection()
+        conn.execute(
+            "INSERT INTO customers (customer_id, customer_name, customer_type, region) VALUES (?,?,?,?)",
+            ("CUST-002", "Another Corp", "Manufacturing", "South"),
+        )
+        conn.commit()
+        conn.close()
+
+        result = temp_db_manager.get_table_data('customers', limit=1, offset=1)
+        assert result["status"] == "success"
+        assert len(result["data"]) == 1
+        assert result["data"][0]["customer_id"] == 'CUST-002'
     
     def test_get_forecast_data(self, temp_db_manager):
         """Test getting forecast data with joins"""

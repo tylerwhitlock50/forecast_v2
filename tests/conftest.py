@@ -3,7 +3,7 @@ import os
 import tempfile
 import shutil
 from fastapi.testclient import TestClient
-from fastapi import FastAPI, UploadFile, File, Query
+from fastapi import FastAPI, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import DatabaseManager
 from app.db import (
@@ -78,9 +78,26 @@ def test_app(test_db_manager):
         return {"message": "Forecast Model + AI Assistant API", "status": "running"}
     
     @test_app.get("/data/{table_name}")
-    async def get_table_data_endpoint(table_name: str):
+    async def get_table_data_endpoint(
+        request: Request,
+        table_name: str,
+        forecast_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ):
         """Get data from a specific table"""
-        result = get_table_data(table_name)
+        filters = dict(request.query_params)
+        filters.pop("forecast_id", None)
+        filters.pop("limit", None)
+        filters.pop("offset", None)
+
+        result = get_table_data(
+            table_name,
+            forecast_id=forecast_id,
+            filters=filters or None,
+            limit=limit,
+            offset=offset,
+        )
         if result["status"] == "error":
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=result["error"])
