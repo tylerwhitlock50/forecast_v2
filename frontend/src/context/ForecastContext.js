@@ -158,7 +158,16 @@ export const ForecastProvider = ({ children }) => {
     
     updateData: (type, data) => dispatch({ type: actionTypes.UPDATE_DATA, payload: { type, data } }),
     
-    switchScenario: (scenarioId) => dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarioId }),
+    switchScenario: (scenarioId) => {
+      if (scenarioId) {
+        try {
+          localStorage.setItem('activeScenario', scenarioId);
+        } catch (err) {
+          console.warn('Unable to persist active scenario', err);
+        }
+      }
+      dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarioId });
+    },
     
     updateScenario: (id, data) => dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id, data } }),
     
@@ -306,7 +315,18 @@ export const ForecastProvider = ({ children }) => {
         });
 
         // Set first scenario as active if no active scenario
-        if (forecast.length > 0 && !state.activeScenario) {
+        const storedScenario = (() => {
+          try {
+            return localStorage.getItem('activeScenario');
+          } catch {
+            return null;
+          }
+        })();
+
+        if (storedScenario && scenarioMap[storedScenario]) {
+          scenarioMap[storedScenario].isActive = true;
+          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: storedScenario });
+        } else if (forecast.length > 0 && !state.activeScenario) {
           scenarioMap[forecast[0].forecast_id].isActive = true;
           dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: forecast[0].forecast_id });
         }

@@ -236,7 +236,7 @@ const RevenueMatrix = ({
     );
 
     return columns;
-  }, [timePeriods]);
+  }, [timePeriods, handleRevenueCellClick]);
 
   return (
     <Card>
@@ -272,6 +272,7 @@ const RevenueMatrix = ({
           </div>
         ) : (
           <EditableGrid
+            key={`grid-${timePeriods.map(p => p.key).join('-')}`}
             data={filteredMatrixData}
             columns={matrixColumns}
             onDataChange={onDataChange}

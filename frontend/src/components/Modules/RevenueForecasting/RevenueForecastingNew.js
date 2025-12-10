@@ -18,6 +18,12 @@ import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
 import ForecastLineModal from './ForecastLineModal';
 
+// Format a week label with the date span
+const formatWeekLabel = (weekStart, weekEnd, weekNumber) => {
+  const span = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+  return `W${String(weekNumber).padStart(2, '0')} (${span})`;
+};
+
 // Normalize to Monday as start of week
 const getStartOfWeek = (date) => {
   const d = new Date(date);
@@ -55,7 +61,7 @@ const generateTimePeriods = (timeRange, count = 12) => {
       
       const { year, week } = getISOWeekInfo(weekStart);
       key = `${year}-W${String(week).padStart(2, '0')}`;
-      label = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+      label = formatWeekLabel(weekStart, weekEnd, week);
     } else if (timeRange === 'monthly') {
       date = new Date(now.getFullYear(), now.getMonth() + i, 1);
       key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -83,8 +89,41 @@ const RevenueForecasting = () => {
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
   const [showDataDebugger, setShowDataDebugger] = useState(false);
-  const [customDateRange, setCustomDateRange] = useState(null); // { start: { month: 9, year: 2025 }, end: { month: 12, year: 2025 } }
+  const [unsavedChanges, setUnsavedChanges] = useState(false);
+  const [customDateRange, setCustomDateRange] = useState(null);
 
+  // Load persisted preferences
+  useEffect(() => {
+    try {
+      const savedTimeRange = localStorage.getItem('revenue_timeRange');
+      const savedCustomRange = localStorage.getItem('revenue_customDateRange');
+      if (savedTimeRange) {
+        setTimeRange(savedTimeRange);
+      }
+      if (savedCustomRange) {
+        const parsed = JSON.parse(savedCustomRange);
+        if (parsed?.start && parsed?.end) {
+          setCustomDateRange(parsed);
+        }
+      }
+    } catch (err) {
+      console.warn('Unable to load saved preferences', err);
+    }
+  }, []);
+
+  // Persist preferences
+  useEffect(() => {
+    try {
+      localStorage.setItem('revenue_timeRange', timeRange);
+      if (customDateRange) {
+        localStorage.setItem('revenue_customDateRange', JSON.stringify(customDateRange));
+      } else {
+        localStorage.removeItem('revenue_customDateRange');
+      }
+    } catch (err) {
+      console.warn('Unable to persist preferences', err);
+    }
+  }, [timeRange, customDateRange]);
   // Generate months and years for dropdowns
   const months = [
     { value: 1, label: 'January' },
@@ -117,6 +156,82 @@ const RevenueForecasting = () => {
     };
   };
 
+  const rangeSummary = useMemo(() => {
+    if (customDateRange) {
+      const monthsInRange = (customDateRange.end.year - customDateRange.start.year) * 12 +
+        (customDateRange.end.month - customDateRange.start.month) + 1;
+      const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
+      return `${customDateRange.start.month}/${customDateRange.start.year} – ${customDateRange.end.month}/${customDateRange.end.year} • ${monthsInRange} ${unit}`;
+    }
+    const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
+    return `Default: next ${timePeriods.length} ${unit}`;
+  }, [customDateRange, timePeriods, timeRange]);
+
+  const applyPresetRange = (preset) => {
+    const now = new Date();
+    if (preset === 'current_fy') {
+      setCustomDateRange({
+        start: { month: 1, year: now.getFullYear() },
+        end: { month: 12, year: now.getFullYear() }
+      });
+      return;
+    }
+    if (preset === 'next_12') {
+      const startMonth = now.getMonth() + 1;
+      const startYear = now.getFullYear();
+      const endMonth = ((startMonth + 11) % 12) + 1;
+      const endYear = startYear + Math.floor((startMonth - 1 + 11) / 12);
+      setCustomDateRange({
+        start: { month: startMonth, year: startYear },
+        end: { month: endMonth, year: endYear }
+      });
+      return;
+    }
+    if (preset === 'next_qtr') {
+      const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
+      const start = { month: startQuarterMonth + 1, year: startDate.getFullYear() };
+      const endDate = new Date(startDate.getFullYear(), startQuarterMonth + 3, 0);
+      setCustomDateRange({
+        start,
+        end: { month: endDate.getMonth() + 1, year: endDate.getFullYear() }
+      });
+      return;
+    }
+  };
+
+  const defaultDateRange = useMemo(() => {
+    const toDateString = (year, month, day) => `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+    if (customDateRange) {
+      const start = toDateString(customDateRange.start.year, customDateRange.start.month, 1);
+      const endDate = new Date(customDateRange.end.year, customDateRange.end.month, 0);
+      const end = toDateString(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
+      return { start, end };
+    }
+
+    // Default to next calendar year
+    const nextYear = new Date().getFullYear() + 1;
+    const start = toDateString(nextYear, 1, 1);
+    const end = toDateString(nextYear, 12, 31);
+    return { start, end };
+  }, [customDateRange]);
+
+  // Warn on invalid custom date range
+  useEffect(() => {
+    const formattedRange = getFormattedDateRange();
+    if (!formattedRange) return;
+
+    const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
+    const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
+    const startDate = new Date(startYear, startMonth - 1, 1);
+    const endDate = new Date(endYear, endMonth, 0);
+
+    if (startDate > endDate) {
+      toast.error('Start date must be before end date for the custom range');
+    }
+  }, [customDateRange]);
+
   // Generate time periods with improved logic
   const timePeriods = useMemo(() => {
     const formattedRange = getFormattedDateRange();
@@ -146,7 +261,7 @@ const RevenueForecasting = () => {
 
           const { year, week } = getISOWeekInfo(weekStart);
           const key = `${year}-W${String(week).padStart(2, '0')}`;
-          const label = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+          const label = formatWeekLabel(weekStart, weekEnd, week);
 
           periods.push({ key, label });
           current.setDate(current.getDate() + 7);
@@ -216,6 +331,7 @@ const RevenueForecasting = () => {
     });
 
     actions.updateData('sales_forecast', updatedSales);
+    setUnsavedChanges(true);
   };
 
   // Handle cell changes
@@ -329,6 +445,7 @@ const RevenueForecasting = () => {
       const salesData = data.sales_forecast || [];
       if (salesData.length > 0) {
         await actions.bulkUpdateForecast(salesData);
+        setUnsavedChanges(false);
       } else {
         toast.info('No changes to save');
       }
@@ -471,6 +588,32 @@ const RevenueForecasting = () => {
         actions={headerActions}
       />
 
+      {unsavedChanges && (
+        <div className="sticky top-0 z-30 mb-4">
+          <div className="bg-orange-50 border border-orange-200 rounded-md p-3 shadow-sm flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-orange-800">
+              <span className="h-2 w-2 rounded-full bg-orange-600 animate-pulse"></span>
+              <span className="font-medium">You have unsaved changes</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => actions.fetchAllData().then(() => setUnsavedChanges(false))}>
+                Discard
+              </Button>
+              <Button size="sm" className="bg-orange-600 hover:bg-orange-700" onClick={handleSaveChanges}>
+                Save now
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <Badge variant="secondary">Active scenario: {activeScenario || 'F001'}</Badge>
+        <Button size="sm" variant="outline" onClick={() => setShowNewScenarioModal(true)}>
+          New Scenario
+        </Button>
+      </div>
+
       {/* Control Panel */}
       <div className="flex flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-2">
@@ -513,7 +656,16 @@ const RevenueForecasting = () => {
             <SelectOption value="custom">Custom Range</SelectOption>
           </Select>
         </div>
-        
+
+        <div className="flex items-center gap-3">
+          <Label className="text-sm text-muted-foreground">Presets:</Label>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => applyPresetRange('current_fy')}>Current FY</Button>
+            <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_12')}>Next 12M</Button>
+            <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_qtr')}>Next Quarter</Button>
+          </div>
+        </div>
+
         {customDateRange && (
           <>
             <div className="flex items-center gap-2">
@@ -591,6 +743,10 @@ const RevenueForecasting = () => {
             </Button>
           </>
         )}
+
+        <Badge variant="outline" className="h-9 flex items-center">
+          {rangeSummary}
+        </Badge>
       </div>
 
       {/* Bulk Import Panel */}
@@ -656,6 +812,7 @@ const RevenueForecasting = () => {
         isOpen={showForecastLineModal}
         onClose={() => setShowForecastLineModal(false)}
         onSave={handleForecastLineSave}
+        defaultDateRange={defaultDateRange}
       />
 
       {showDataDebugger && <DataDebugger data={data} timePeriods={timePeriods} />}
@@ -716,6 +873,7 @@ const RevenueForecasting = () => {
         {activeTab === 'matrix' && (
           <div className="space-y-6">
             <RevenueMatrix
+              key={`matrix-${timeRange}-${customDateRange ? `${customDateRange.start.year}-${customDateRange.start.month}-to-${customDateRange.end.year}-${customDateRange.end.month}` : 'default'}-${timePeriods.length}`}
               data={data}
               timePeriods={timePeriods}
               selectedSegment={selectedSegment}

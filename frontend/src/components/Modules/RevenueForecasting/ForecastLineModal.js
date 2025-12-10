@@ -98,7 +98,7 @@ const calculatePeriodsBetween = (startDate, endDate, periodType) => {
   return periods;
 };
 
-const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
+const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null, defaultDateRange = null }) => {
   const { data, activeScenario } = useForecast();
   
   // Form state
@@ -149,7 +149,10 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
       const now = new Date();
       let startDate, endDate;
       
-      if (formData.period_type === 'weekly') {
+      if (defaultDateRange) {
+        startDate = parseDateInput(defaultDateRange.start);
+        endDate = parseDateInput(defaultDateRange.end);
+      } else if (formData.period_type === 'weekly') {
         startDate = getStartOfWeek(now);
         endDate = getEndOfYear(now);
       } else if (formData.period_type === 'quarterly') {
