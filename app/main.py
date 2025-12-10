@@ -20,6 +20,7 @@ from api.expense_routes import router as expense_router
 from api.loan_routes import router as loan_router
 from api.reporting_routes import router as reporting_router
 from api.source_data_routes import router as source_data_router
+from api.database_management_routes import router as database_management_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,6 +64,7 @@ app.include_router(expense_router)
 app.include_router(loan_router)
 app.include_router(reporting_router)
 app.include_router(source_data_router)
+app.include_router(database_management_router)
 
 @app.get("/")
 async def root():

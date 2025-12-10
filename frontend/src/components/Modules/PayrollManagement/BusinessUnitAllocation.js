@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './PayrollManagement.css';
 
 const BusinessUnitAllocation = ({ 
   employees, 
@@ -77,10 +78,10 @@ const BusinessUnitAllocation = ({
 
   return (
     <div className="business-unit-allocation">
-      <div className="allocation-header">
+      <div className="payroll-forecast-header">
         <h2>Business Unit Allocation</h2>
-        <div className="allocation-controls">
-          <div className="view-toggle">
+        <div className="payroll-forecast-controls">
+          <div className="payroll-view-toggle">
             <button 
               className={viewMode === 'overview' ? 'active' : ''}
               onClick={() => setViewMode('overview')}

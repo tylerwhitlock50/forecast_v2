@@ -5,17 +5,30 @@ from typing import Dict, Any
 
 class DatabaseManager:
     def __init__(self, database_path: str = None, data_dir: str = None):
-        # Use local paths for development, Docker paths for production
-        if database_path is None:
-            if os.path.exists('/data'):  # Docker environment
-                self.database_path = '/data/forecast.db'
-                self.data_dir = '/data'
-            else:  # Local development
-                self.database_path = './data/forecast.db'
-                self.data_dir = './data'
+        # Allow environment overrides first
+        env_db_path = os.getenv('DATABASE_PATH')
+        env_data_dir = os.getenv('DATA_DIR')
+
+        if env_db_path:
+            # Full explicit path provided
+            self.database_path = env_db_path
+            self.data_dir = env_data_dir if env_data_dir else os.path.dirname(env_db_path)
+        elif env_data_dir and not database_path:
+            # Data directory provided; place DB inside it
+            self.data_dir = env_data_dir
+            self.database_path = os.path.join(self.data_dir, 'forecast.db')
         else:
-            self.database_path = database_path
-            self.data_dir = data_dir if data_dir is not None else os.path.dirname(database_path)
+            # Use local paths for development, Docker paths for production
+            if database_path is None:
+                if os.path.exists('/data'):  # Docker environment
+                    self.database_path = '/data/forecast.db'
+                    self.data_dir = '/data'
+                else:  # Local development
+                    self.database_path = './data/forecast.db'
+                    self.data_dir = './data'
+            else:
+                self.database_path = database_path
+                self.data_dir = data_dir if data_dir is not None else os.path.dirname(database_path)
         
         # Ensure data directory exists
         os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
@@ -34,6 +47,8 @@ class DatabaseManager:
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA cache_size=10000")
                 conn.execute("PRAGMA temp_store=MEMORY")
+                # Enforce FK constraints for data integrity
+                conn.execute("PRAGMA foreign_keys=ON")
                 return conn
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
@@ -468,7 +483,7 @@ class DatabaseManager:
             self.close_connection(conn)
 
     def load_csv_data(self):
-        """Load data from CSV files into the database"""
+        """Load data from CSV files into the database using staging + transaction per table"""
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -478,6 +493,7 @@ class DatabaseManager:
             'units.csv': 'units',
             'sales.csv': 'sales',
             'bom.csv': 'bom',
+            'bom_definitions.csv': 'bom_definitions',
             'routers.csv': 'router_definitions',
             'router_operations.csv': 'router_operations',
             'routers_legacy.csv': 'routers',
@@ -510,6 +526,25 @@ class DatabaseManager:
                             df['version'] = '1.0'
                         if 'labor_type_id' not in df.columns:
                             df['labor_type_id'] = 'RATE-001'  # Default to general rate
+                    elif table_name == 'loans':
+                        # Normalize critical fields to avoid NULLs breaking API models
+                        if 'payment_frequency' not in df.columns:
+                            df['payment_frequency'] = 'monthly'
+                        else:
+                            df['payment_frequency'] = df['payment_frequency'].fillna('monthly')
+                        if 'payment_type' not in df.columns:
+                            df['payment_type'] = 'amortizing'
+                        else:
+                            df['payment_type'] = df['payment_type'].fillna('amortizing')
+                        if 'is_active' in df.columns:
+                            df['is_active'] = df['is_active'].fillna(1).astype(int)
+                        if 'current_balance' in df.columns and 'principal_amount' in df.columns:
+                            df['current_balance'] = df['current_balance'].fillna(df['principal_amount'])
+                        if 'monthly_payment_amount' in df.columns:
+                            df['monthly_payment_amount'] = df['monthly_payment_amount'].fillna(0)
+                        if 'next_payment_date' in df.columns and 'start_date' in df.columns:
+                            # If next_payment_date missing, leave it null here; app will compute fallback
+                            df['next_payment_date'] = df['next_payment_date']
                     elif table_name == 'units':
                         # Update units table to support versioning
                         if 'bom_id' not in df.columns and 'bom' in df.columns:
@@ -533,13 +568,29 @@ class DatabaseManager:
                         print(f"Warning: The following columns in {csv_file} are not present in the {table_name} table schema and will be dropped: {dropped_cols}")
                     df = df[[c for c in df.columns if c in existing_cols]]
 
-                    # Preserve table schema by clearing existing rows and appending
+                    # Use a staging table to ensure atomic replace
+                    staging = f"{table_name}__staging"
+                    # Replace staging with DataFrame schema and data
+                    df.to_sql(staging, conn, if_exists='replace', index=False)
+
+                    # Build column list for deterministic insert order
+                    cols_csv = ', '.join(df.columns)
                     try:
+                        cursor.execute("BEGIN")
                         cursor.execute(f"DELETE FROM {table_name}")
-                    except Exception:
-                        pass
-                    df.to_sql(table_name, conn, if_exists='append', index=False)
-                    print(f"Loaded {csv_file} into {table_name} table")
+                        cursor.execute(f"INSERT INTO {table_name} ({cols_csv}) SELECT {cols_csv} FROM {staging}")
+                        cursor.execute(f"DROP TABLE IF EXISTS {staging}")
+                        conn.commit()
+                        print(f"Loaded {csv_file} into {table_name} table (transactional)")
+                    except Exception as tx_err:
+                        conn.rollback()
+                        # Drop staging to avoid clutter, ignore errors
+                        try:
+                            cursor.execute(f"DROP TABLE IF EXISTS {staging}")
+                            conn.commit()
+                        except Exception:
+                            pass
+                        raise tx_err
                 except Exception as e:
                     print(f"Error loading {csv_file}: {str(e)}")
             else:
@@ -653,12 +704,12 @@ class DatabaseManager:
         return result
     
     def get_forecast_data(self) -> Dict[str, Any]:
-        """Get comprehensive forecast data with joins and save results to database"""
+        """Get comprehensive forecast data with joins and append computed results to forecast_results"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
-            # Ensure forecast_results table exists and clear previous results
+            # Ensure forecast_results table exists
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS forecast_results (
                     forecast_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1214,7 +1265,14 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            tables_to_clear = ['customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates', 'payroll', 'forecast']
+            tables_to_clear = [
+                'customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates',
+                'payroll', 'forecast',
+                'router_definitions', 'router_operations',
+                'expense_categories', 'expenses', 'expense_allocations',
+                'loans', 'loan_payments',
+                'forecast_results'  # optional: clear computed results
+            ]
             
             for table in tables_to_clear:
                 cursor.execute(f"DELETE FROM {table}")

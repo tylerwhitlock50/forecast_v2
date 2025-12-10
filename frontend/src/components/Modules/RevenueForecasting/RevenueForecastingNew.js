@@ -18,6 +18,23 @@ import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
 import ForecastLineModal from './ForecastLineModal';
 
+// Normalize to Monday as start of week
+const getStartOfWeek = (date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday = 1
+  return new Date(d.setDate(diff));
+};
+
+// ISO week number and corresponding year
+const getISOWeekInfo = (date) => {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // nearest Thursday
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { year: d.getUTCFullYear(), week: weekNo };
+};
+
 // Utility function to generate time periods
 const generateTimePeriods = (timeRange, count = 12) => {
   const periods = [];
@@ -28,18 +45,16 @@ const generateTimePeriods = (timeRange, count = 12) => {
     
     if (timeRange === 'weekly') {
       // Start from the beginning of the current week
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+      const startOfWeek = getStartOfWeek(now);
       date = new Date(startOfWeek);
       date.setDate(startOfWeek.getDate() + (i * 7));
       
-      const weekStart = new Date(date);
-      const weekEnd = new Date(date);
-      weekEnd.setDate(date.getDate() + 6);
+      const weekStart = getStartOfWeek(date);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
       
-      // Calculate week number more accurately
-      const weekNumber = Math.ceil((date.getDate() + date.getDay()) / 7);
-      key = `${date.getFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+      const { year, week } = getISOWeekInfo(weekStart);
+      key = `${year}-W${String(week).padStart(2, '0')}`;
       label = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
     } else if (timeRange === 'monthly') {
       date = new Date(now.getFullYear(), now.getMonth() + i, 1);
@@ -107,69 +122,66 @@ const RevenueForecasting = () => {
     const formattedRange = getFormattedDateRange();
     
     if (formattedRange) {
-      // Generate periods for custom date range
-      const periods = [];
-      
-      // Parse periods correctly (YYYY-MM format)
       const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
       const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
-      
-      console.log('Generating periods for range:', {
-        start: formattedRange.start,
-        end: formattedRange.end,
-        startYear,
-        startMonth,
-        endYear,
-        endMonth
-      });
-      
-      let currentYear = startYear;
-      let currentMonth = startMonth - 1; // JavaScript months are 0-based
-      
-      while (true) {
-        let key, label;
-        
-        if (timeRange === 'weekly') {
-          // For weekly, we'll use monthly periods but with weekly labels
-          const date = new Date(currentYear, currentMonth, 1);
-          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-          label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
-        } else if (timeRange === 'monthly') {
-          const date = new Date(currentYear, currentMonth, 1);
-          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-          label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
-        } else if (timeRange === 'quarterly') {
-          const date = new Date(currentYear, currentMonth, 1);
-          const quarter = Math.floor(date.getMonth() / 3) + 1;
-          key = `${date.getFullYear()}-Q${quarter}`;
-          label = `Q${quarter} ${date.getFullYear()}`;
-        }
-        
-        periods.push({ key, label });
-        
-        console.log(`Added period: ${key} - ${label} (currentYear: ${currentYear}, currentMonth: ${currentMonth})`);
-        
-        // Check if we've reached the end (inclusive of end month)
-        if (currentYear === endYear && currentMonth === (endMonth - 1)) {
-          console.log('Reached end condition, breaking loop');
-          break;
-        }
-        
-        // Move to next month
-        currentMonth++;
-        if (currentMonth > 11) {
-          currentMonth = 0;
-          currentYear++;
-        }
-        
-        // Additional safety check to prevent infinite loops
-        if (currentYear > endYear || (currentYear === endYear && currentMonth > (endMonth - 1))) {
-          console.log('Safety check triggered, breaking loop');
-          break;
-        }
+
+      const startDate = new Date(startYear, startMonth - 1, 1);
+      const endDate = new Date(endYear, endMonth, 0); // last day of end month
+
+      if (startDate > endDate) {
+        console.warn('Custom date range start is after end; no periods generated.');
+        return [];
       }
-      
-      console.log(`Generated ${periods.length} periods:`, periods.map(p => p.key));
+
+      const periods = [];
+
+      if (timeRange === 'weekly') {
+        let current = getStartOfWeek(startDate);
+        const endBoundary = endDate;
+
+        while (current <= endBoundary) {
+          const weekStart = getStartOfWeek(current);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekStart.getDate() + 6);
+
+          const { year, week } = getISOWeekInfo(weekStart);
+          const key = `${year}-W${String(week).padStart(2, '0')}`;
+          const label = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+
+          periods.push({ key, label });
+          current.setDate(current.getDate() + 7);
+        }
+
+        return periods;
+      }
+
+      if (timeRange === 'quarterly') {
+        // Align start to the beginning of its quarter
+        const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
+        let current = new Date(startDate.getFullYear(), startQuarterMonth, 1);
+
+        while (current <= endDate) {
+          const quarter = Math.floor(current.getMonth() / 3) + 1;
+          const key = `${current.getFullYear()}-Q${quarter}`;
+          const label = `Q${quarter} ${current.getFullYear()}`;
+
+          periods.push({ key, label });
+          current.setMonth(current.getMonth() + 3, 1);
+        }
+
+        return periods;
+      }
+
+      // Monthly
+      let current = new Date(startDate);
+      while (current <= endDate) {
+        const key = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
+        const label = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
+
+        periods.push({ key, label });
+        current.setMonth(current.getMonth() + 1, 1);
+      }
+
       return periods;
     } else {
       // Use default logic (current date + next N months)

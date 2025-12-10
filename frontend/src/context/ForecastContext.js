@@ -174,32 +174,50 @@ export const ForecastProvider = ({ children }) => {
         // Use the current active scenario if no forecastId provided
         const activeForecastId = forecastId || state.activeScenario;
         
-        const [
-          salesRes,
-          unitsRes,
-          customersRes,
-          machinesRes,
-          payrollRes,
-          bomRes,
-          bomDefinitionsRes,
-          routerDefinitionsRes,
-          routerOperationsRes,
-          laborRatesRes,
-          forecastRes
-        ] = await api.batchGet([
-          // Filter sales by forecast_id if we have an active scenario
-          `/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`,
-          `/data/units`,
-          `/data/customers`,
-          `/data/machines`,
-          `/data/payroll${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`,
-          `/data/bom`,
-          `/forecast/bom_definitions`,
-          `/data/router_definitions`,
-          `/data/router_operations`,
-          `/data/labor_rates`,
-          `/data/forecast` // Get forecast data directly from forecast table
-        ], { suppressErrorToast: true });
+        // Make API calls individually with better error handling for empty database
+        const apiCalls = [
+          { url: `/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`, key: 'sales' },
+          { url: `/data/units`, key: 'units' },
+          { url: `/data/customers`, key: 'customers' },
+          { url: `/data/machines`, key: 'machines' },
+          { url: `/data/payroll${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`, key: 'payroll' },
+          { url: `/data/bom`, key: 'bom' },
+          { url: `/forecast/bom_definitions`, key: 'bomDefinitions' },
+          { url: `/data/router_definitions`, key: 'routerDefinitions' },
+          { url: `/data/router_operations`, key: 'routerOperations' },
+          { url: `/data/labor_rates`, key: 'laborRates' },
+          { url: `/data/forecast`, key: 'forecast' }
+        ];
+
+        // Execute API calls with individual error handling
+        const results = {};
+        for (const call of apiCalls) {
+          try {
+            const response = await api.get(call.url, { suppressErrorToast: true });
+            results[call.key] = response;
+          } catch (error) {
+            console.warn(`Failed to load ${call.key}:`, error.message);
+            // Set empty response for failed calls
+            results[call.key] = { 
+              status: 'success', 
+              data: [], 
+              metadata: { has_data: false, row_count: 0 } 
+            };
+          }
+        }
+
+        // Extract responses (keeping original variable names for compatibility)
+        const salesRes = results.sales;
+        const unitsRes = results.units;
+        const customersRes = results.customers;
+        const machinesRes = results.machines;
+        const payrollRes = results.payroll;
+        const bomRes = results.bom;
+        const bomDefinitionsRes = results.bomDefinitions;
+        const routerDefinitionsRes = results.routerDefinitions;
+        const routerOperationsRes = results.routerOperations;
+        const laborRatesRes = results.laborRates;
+        const forecastRes = results.forecast;
 
         // Map backend data to frontend expected format - API client already handles response format
         const units = unitsRes?.data || [];
@@ -335,8 +353,19 @@ export const ForecastProvider = ({ children }) => {
           productsCount: data.products?.length || 0,
           customersCount: data.customers?.length || 0
         });
+        
         actions.setData(data);
-        toast.success('Data loaded successfully');
+        
+        // Show appropriate message based on data availability
+        const totalRecords = (data.sales_forecast?.length || 0) + 
+                           (data.products?.length || 0) + 
+                           (data.customers?.length || 0);
+        
+        if (totalRecords === 0) {
+          toast.success('Database is empty - ready for new data');
+        } else {
+          toast.success(`Data loaded successfully (${totalRecords} records)`);
+        }
       } catch (error) {
         console.error('Error fetching data:', error);
         actions.setError('Failed to load data');
@@ -355,22 +384,34 @@ export const ForecastProvider = ({ children }) => {
         
         const scenarioMap = {};
         
-        scenarios.forEach(scenario => {
-          scenarioMap[scenario.forecast_id] = {
-            id: scenario.forecast_id,
-            name: scenario.name || 'Unnamed Scenario',
-            description: scenario.description || '',
-            isActive: false
+        if (scenarios.length === 0) {
+          console.log('No scenarios found - creating default scenario');
+          // Create a default scenario for empty database
+          scenarioMap['default'] = {
+            id: 'default',
+            name: 'Default Scenario',
+            description: 'Default scenario for new database',
+            isActive: true
           };
-        });
+          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: 'default' });
+        } else {
+          scenarios.forEach(scenario => {
+            scenarioMap[scenario.forecast_id] = {
+              id: scenario.forecast_id,
+              name: scenario.name || 'Unnamed Scenario',
+              description: scenario.description || '',
+              isActive: false
+            };
+          });
+          
+          // Set first scenario as active if no active scenario
+          if (!state.activeScenario) {
+            scenarioMap[scenarios[0].forecast_id].isActive = true;
+            dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
+          }
+        }
         
         console.log('Processed scenario map:', scenarioMap);
-        
-        // Set first scenario as active if no active scenario
-        if (scenarios.length > 0 && !state.activeScenario) {
-          scenarioMap[scenarios[0].forecast_id].isActive = true;
-          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
-        }
         
         // Store scenarios in both locations for compatibility
         dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
@@ -379,6 +420,18 @@ export const ForecastProvider = ({ children }) => {
         console.log('Scenarios loaded successfully');
       } catch (error) {
         console.error('Error fetching scenarios:', error);
+        // Create a default scenario on error
+        const defaultScenarioMap = {
+          'default': {
+            id: 'default',
+            name: 'Default Scenario',
+            description: 'Default scenario (database unavailable)',
+            isActive: true
+          }
+        };
+        dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: defaultScenarioMap } });
+        dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: defaultScenarioMap } });
+        dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: 'default' });
         toast.error('Failed to load forecast scenarios');
       }
     },
@@ -518,7 +571,12 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         // Map frontend table names to backend table names
         const backendTableName = tableName === 'forecasts' ? 'sales' : tableName;
-        const response = await api.delete(`/forecast/delete/${backendTableName}/${recordId}`);
+        // Add cascade + scenario when deleting customers/units to avoid FK errors
+        const isCascadeTable = backendTableName === 'customers' || backendTableName === 'units';
+        const params = isCascadeTable
+          ? { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) }
+          : undefined;
+        const response = await api.delete(`/forecast/delete/${backendTableName}/${recordId}`, { params });
         // API client already handles response format
         toast.success('Forecast deleted successfully');
         actions.fetchAllData(); // Refresh data
@@ -611,8 +669,9 @@ export const ForecastProvider = ({ children }) => {
     deleteCustomer: async (tableName, customerId) => {
       try {
         actions.setLoading(true);
-        
-        const response = await api.delete(`/forecast/delete/${tableName}/${customerId}`);
+        // Cascade delete related sales for the active scenario when removing a customer
+        const params = { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) };
+        const response = await api.delete(`/forecast/delete/${tableName}/${customerId}`, { params });
         
         // API client already handles response format
         toast.success('Customer deleted successfully');

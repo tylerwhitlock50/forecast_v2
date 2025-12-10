@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './PayrollManagement.css';
 
 const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'chart'
@@ -76,9 +77,9 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
 
   return (
     <div className="payroll-forecast">
-      <div className="forecast-header">
+      <div className="payroll-forecast-header">
         <h2>Payroll Cash Flow Forecast</h2>
-        <div className="forecast-controls">
+        <div className="payroll-forecast-controls">
           <label>
             Forecast Horizon:
             <select value={forecastHorizon} onChange={(e) => onHorizonChange(Number(e.target.value))}>
@@ -88,7 +89,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
             </select>
           </label>
           
-          <div className="view-toggle">
+          <div className="payroll-view-toggle">
             <button 
               className={viewMode === 'table' ? 'active' : ''}
               onClick={() => setViewMode('table')}
@@ -105,58 +106,58 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
         </div>
       </div>
 
-      <div className="forecast-summary">
-        <div className="summary-card">
+      <div className="payroll-forecast-summary">
+        <div className="payroll-summary-card">
           <h3>Next Payroll</h3>
-          <div className="summary-value">
+          <div className="payroll-summary-value">
             {formatCurrency(safeForecast[0]?.totalCost || 0)}
           </div>
-          <div className="summary-detail">
+          <div className="payroll-summary-detail">
             {formatDate(safeForecast[0]?.date)} • {safeForecast[0]?.employeeCount} employees
           </div>
         </div>
         
-        <div className="summary-card">
+        <div className="payroll-summary-card">
           <h3>Monthly Average</h3>
-          <div className="summary-value">
+          <div className="payroll-summary-value">
             {formatCurrency(
               monthlyRollups.reduce((sum, month) => sum + month.totalCost, 0) / 
               Math.max(monthlyRollups.length, 1)
             )}
           </div>
-          <div className="summary-detail">
+          <div className="payroll-summary-detail">
             Based on {monthlyRollups.length} months
           </div>
         </div>
         
-        <div className="summary-card">
+        <div className="payroll-summary-card">
           <h3>Annual Projection</h3>
-          <div className="summary-value">
+          <div className="payroll-summary-value">
             {formatCurrency(
               safeForecast.slice(0, 26).reduce((sum, period) => sum + period.totalCost, 0)
             )}
           </div>
-          <div className="summary-detail">
+          <div className="payroll-summary-detail">
             26 pay periods
           </div>
         </div>
         
-        <div className="summary-card">
+        <div className="payroll-summary-card">
           <h3>Total Forecast</h3>
-          <div className="summary-value">
+          <div className="payroll-summary-value">
             {formatCurrency(
               safeForecast.reduce((sum, period) => sum + period.totalCost, 0)
             )}
           </div>
-          <div className="summary-detail">
+          <div className="payroll-summary-detail">
             {forecastHorizon} pay periods
           </div>
         </div>
       </div>
 
       {viewMode === 'table' && (
-        <div className="forecast-table-container">
-          <table className="forecast-table">
+        <div className="payroll-forecast-table-container">
+          <table className="payroll-forecast-table">
             <thead>
               <tr>
                 <th>Period</th>
@@ -177,19 +178,19 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                   <td>{period.employeeCount}</td>
                   <td>
                     {formatCurrency(
-                      period.employeeDetails.reduce((sum, emp) => 
-                        sum + emp.compensation.grossPay, 0
-                      )
+                      period.employeeDetails?.reduce((sum, emp) => 
+                        sum + (emp.compensation?.grossPay || 0), 0
+                      ) || 0
                     )}
                   </td>
                   <td>{formatCurrency(period.totalCost)}</td>
-                  <td className={period.percentChange > 0 ? 'positive' : period.percentChange < 0 ? 'negative' : ''}>
+                  <td className={period.percentChange > 0 ? 'payroll-change-positive' : period.percentChange < 0 ? 'payroll-change-negative' : ''}>
                     {period.percentChange > 0 ? '+' : ''}{period.percentChange.toFixed(1)}%
                   </td>
                   <td>{formatCurrency(period.runningTotal)}</td>
                   <td>
                     <button 
-                      className="btn-small"
+                      className="payroll-btn-small"
                       onClick={() => {
                         setSelectedPeriod(period);
                         setShowDetails(true);
@@ -206,24 +207,24 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
       )}
 
       {viewMode === 'chart' && (
-        <div className="forecast-chart">
+        <div className="payroll-forecast-chart">
           <PayrollChart data={trendData} />
         </div>
       )}
 
-      <div className="monthly-rollups">
+      <div className="payroll-monthly-rollups">
         <h3>Monthly Summary</h3>
-        <div className="monthly-cards">
+        <div className="payroll-monthly-cards">
           {monthlyRollups.map(month => (
-            <div key={month.month} className="monthly-card">
-              <div className="month-label">
+            <div key={month.month} className="payroll-monthly-card">
+              <div className="payroll-month-label">
                 {new Date(month.month + '-01').toLocaleDateString('en-US', { 
                   month: 'long', 
                   year: 'numeric' 
                 })}
               </div>
-              <div className="month-cost">{formatCurrency(month.totalCost)}</div>
-              <div className="month-details">
+              <div className="payroll-month-cost">{formatCurrency(month.totalCost)}</div>
+              <div className="payroll-month-details">
                 {month.payrollCount} payrolls • {month.avgEmployeeCount} avg employees
               </div>
             </div>
@@ -233,54 +234,54 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
 
       {/* Period Details Modal */}
       {showDetails && selectedPeriod && (
-        <div className="modal-overlay" onClick={() => setShowDetails(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
+        <div className="payroll-modal-overlay" onClick={() => setShowDetails(false)}>
+          <div className="payroll-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="payroll-modal-header">
               <h3>Payroll Details - {formatDate(selectedPeriod.date)}</h3>
-              <button className="close-btn" onClick={() => setShowDetails(false)}>×</button>
+              <button className="payroll-close-btn" onClick={() => setShowDetails(false)}>×</button>
             </div>
             
-            <div className="modal-content">
-              <div className="period-summary">
-                <div className="summary-row">
+            <div className="payroll-modal-content">
+              <div className="payroll-period-summary">
+                <div className="payroll-summary-row">
                   <span>Total Employees:</span>
                   <span>{selectedPeriod.employeeCount}</span>
                 </div>
-                <div className="summary-row">
+                <div className="payroll-summary-row">
                   <span>Gross Pay:</span>
                   <span>{formatCurrency(
-                    selectedPeriod.employeeDetails.reduce((sum, emp) => 
-                      sum + emp.compensation.grossPay, 0
-                    )
+                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
+                      sum + (emp.compensation?.grossPay || 0), 0
+                    ) || 0
                   )}</span>
                 </div>
-                <div className="summary-row">
+                <div className="payroll-summary-row">
                   <span>Total Taxes:</span>
                   <span>{formatCurrency(
-                    selectedPeriod.employeeDetails.reduce((sum, emp) => 
-                      sum + emp.compensation.federalTax + 
-                      emp.compensation.stateTax + 
-                      emp.compensation.socialSecurity + 
-                      emp.compensation.medicare + 
-                      emp.compensation.unemployment, 0
-                    )
+                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
+                      sum + (emp.compensation?.federalTax || 0) + 
+                      (emp.compensation?.stateTax || 0) + 
+                      (emp.compensation?.socialSecurity || 0) + 
+                      (emp.compensation?.medicare || 0) + 
+                      (emp.compensation?.unemployment || 0), 0
+                    ) || 0
                   )}</span>
                 </div>
-                <div className="summary-row">
+                <div className="payroll-summary-row">
                   <span>Benefits:</span>
                   <span>{formatCurrency(
-                    selectedPeriod.employeeDetails.reduce((sum, emp) => 
-                      sum + emp.compensation.benefits, 0
-                    )
+                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
+                      sum + (emp.compensation?.benefits || 0), 0
+                    ) || 0
                   )}</span>
                 </div>
-                <div className="summary-row total">
+                <div className="payroll-summary-row total">
                   <span>Total Cost:</span>
                   <span>{formatCurrency(selectedPeriod.totalCost)}</span>
                 </div>
               </div>
 
-              <div className="employee-details">
+              <div className="payroll-employee-details">
                 <h4>Employee Breakdown</h4>
                 <table>
                   <thead>
@@ -292,14 +293,14 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedPeriod.employeeDetails.map(emp => (
+                    {selectedPeriod.employeeDetails?.map(emp => (
                       <tr key={emp.employee_id}>
                         <td>{emp.employee_name}</td>
                         <td>{emp.department}</td>
-                        <td>{formatCurrency(emp.compensation.grossPay)}</td>
-                        <td>{formatCurrency(emp.compensation.totalCost)}</td>
+                        <td>{formatCurrency(emp.compensation?.grossPay || 0)}</td>
+                        <td>{formatCurrency(emp.compensation?.totalCost || 0)}</td>
                       </tr>
-                    ))}
+                    )) || []}
                   </tbody>
                 </table>
               </div>
@@ -318,27 +319,27 @@ const PayrollChart = ({ data }) => {
   const range = maxCost - minCost;
 
   return (
-    <div className="simple-chart">
-      <div className="chart-header">
+    <div className="payroll-simple-chart">
+      <div className="payroll-chart-header">
         <h4>Payroll Cost Trend</h4>
       </div>
-      <div className="chart-container">
-        <div className="y-axis">
-          <div className="y-label">${(maxCost / 1000).toFixed(0)}k</div>
-          <div className="y-label">${((maxCost + minCost) / 2000).toFixed(0)}k</div>
-          <div className="y-label">${(minCost / 1000).toFixed(0)}k</div>
+      <div className="payroll-chart-container">
+        <div className="payroll-y-axis">
+          <div className="payroll-y-label">${(maxCost / 1000).toFixed(0)}k</div>
+          <div className="payroll-y-label">${((maxCost + minCost) / 2000).toFixed(0)}k</div>
+          <div className="payroll-y-label">${(minCost / 1000).toFixed(0)}k</div>
         </div>
-        <div className="chart-area">
+        <div className="payroll-chart-area">
           {data.slice(0, 26).map((period, index) => {
             const height = range > 0 ? ((period.totalCost - minCost) / range * 200) : 100;
             return (
-              <div key={period.period} className="chart-bar">
+              <div key={period.period} className="payroll-chart-bar">
                 <div 
-                  className="bar"
+                  className="payroll-bar"
                   style={{ height: `${height}px` }}
                   title={`Period ${period.period}: $${period.totalCost.toLocaleString()}`}
                 />
-                <div className="bar-label">
+                <div className="payroll-bar-label">
                   {index % 4 === 0 ? period.period : ''}
                 </div>
               </div>

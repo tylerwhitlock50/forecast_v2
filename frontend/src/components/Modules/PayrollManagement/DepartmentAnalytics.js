@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './PayrollManagement.css';
 
 const DepartmentAnalytics = ({ departmentCosts }) => {
   const [sortBy, setSortBy] = useState('totalCost');
@@ -60,9 +61,9 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
 
   return (
     <div className="department-analytics">
-      <div className="analytics-header">
+      <div className="payroll-forecast-header">
         <h2>Department Cost Analysis</h2>
-        <div className="analytics-controls">
+        <div className="payroll-forecast-controls">
           <div className="sort-controls">
             <label>Sort by:</label>
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>

@@ -10,28 +10,28 @@ services:
     environment:
       # Set to 'true' to force reload CSV data over existing database
       - FORCE_DB_RELOAD=false
-    depends_on:
-      - ollama
-      - whisper
+    # depends_on:
+      # - ollama
+      # - whisper
     networks:
       - forecast-network
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - forecast-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-    runtime: nvidia
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - forecast-network
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - capabilities: [gpu]
+  #   runtime: nvidia
 
   whisper:
     image: onerahmet/openai-whisper-asr-webservice:latest
@@ -55,8 +55,8 @@ services:
     networks:
       - forecast-network
 
-volumes:
-  ollama_data:
+# volumes:
+#   # ollama_data:
 
 networks:
   forecast-network:

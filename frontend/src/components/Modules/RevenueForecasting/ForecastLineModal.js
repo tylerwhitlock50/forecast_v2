@@ -30,12 +30,40 @@ const getFirstDayOfQuarter = (date) => {
   return new Date(date.getFullYear(), quarter * 3, 1);
 };
 
+// Get ISO week number and corresponding year
+const getISOWeekInfo = (date) => {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  // Set to nearest Thursday to determine week/year
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { year: d.getUTCFullYear(), week: weekNo };
+};
+
+// Parse a YYYY-MM-DD string without timezone shifts
+const parseDateInput = (value) => {
+  if (!value) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day, 12); // noon avoids DST edge cases
+};
+
+// Normalize a date to the start of the requested period
+const normalizeDateForPeriod = (date, periodType) => {
+  if (!date) return null;
+  if (periodType === 'weekly') return getStartOfWeek(date);
+  if (periodType === 'quarterly') return getFirstDayOfQuarter(date);
+  return getFirstDayOfMonth(date);
+};
+
 // Utility function to calculate periods between two dates based on period type
 const calculatePeriodsBetween = (startDate, endDate, periodType) => {
   const periods = [];
-  const current = new Date(startDate);
-  
-  while (current <= endDate) {
+  const current = normalizeDateForPeriod(startDate, periodType);
+  const endBoundary = normalizeDateForPeriod(endDate, periodType);
+
+  if (!current || !endBoundary) return periods;
+
+  while (current <= endBoundary) {
     let periodKey, periodLabel;
     
     if (periodType === 'weekly') {
@@ -43,8 +71,8 @@ const calculatePeriodsBetween = (startDate, endDate, periodType) => {
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekStart.getDate() + 6);
       
-      const weekNumber = Math.ceil((weekStart.getDate() + weekStart.getDay()) / 7);
-      periodKey = `${weekStart.getFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+      const { year, week } = getISOWeekInfo(weekStart);
+      periodKey = `${year}-W${String(week).padStart(2, '0')}`;
       periodLabel = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
       
       // Move to next week
@@ -54,14 +82,14 @@ const calculatePeriodsBetween = (startDate, endDate, periodType) => {
       periodLabel = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
       
       // Move to next month
-      current.setMonth(current.getMonth() + 1);
+      current.setMonth(current.getMonth() + 1, 1);
     } else if (periodType === 'quarterly') {
       const quarter = Math.floor(current.getMonth() / 3) + 1;
       periodKey = `${current.getFullYear()}-Q${quarter}`;
       periodLabel = `Q${quarter} ${current.getFullYear()}`;
       
       // Move to next quarter
-      current.setMonth(current.getMonth() + 3);
+      current.setMonth(current.getMonth() + 3, 1);
     }
     
     periods.push({ key: periodKey, label: periodLabel });
@@ -107,8 +135,8 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null }) => {
   const calculatedPeriods = useMemo(() => {
     if (!formData.start_date || !formData.end_date) return [];
     
-    const startDate = new Date(formData.start_date);
-    const endDate = new Date(formData.end_date);
+    const startDate = parseDateInput(formData.start_date);
+    const endDate = parseDateInput(formData.end_date);
     
     if (startDate > endDate) return [];
     

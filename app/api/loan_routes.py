@@ -280,6 +280,38 @@ async def get_loans(active_only: bool = Query(True)):
             payments_made = loan_dict.get('payments_made', 0)
             payments_remaining = total_payments - payments_made
             
+            # Normalize nullable DB fields to safe defaults expected by the model/UI
+            normalized_payment_type = loan_dict.get('payment_type') or 'amortizing'
+            normalized_payment_frequency = loan_dict.get('payment_frequency') or 'monthly'
+
+            # Compute sensible fallbacks for required fields that may be NULL in legacy data
+            principal = loan_dict['principal_amount']
+            annual_rate_pct = loan_dict['interest_rate']
+            term_months = loan_dict['loan_term_months']
+            start_date_val = loan_dict['start_date']
+
+            computed_monthly_payment = calculate_loan_payment(
+                principal,
+                (annual_rate_pct or 0) / 100,
+                term_months or 1,
+                normalized_payment_type
+            )
+
+            current_balance_val = loan_dict.get('current_balance')
+            if current_balance_val is None:
+                current_balance_val = principal
+
+            monthly_payment_amount_val = loan_dict.get('monthly_payment_amount')
+            if monthly_payment_amount_val is None:
+                monthly_payment_amount_val = computed_monthly_payment
+
+            next_payment_date_val = loan_dict.get('next_payment_date')
+            if not next_payment_date_val and start_date_val:
+                next_payment_date_val = (datetime.strptime(start_date_val, '%Y-%m-%d') + timedelta(days=30)).strftime('%Y-%m-%d')
+
+            created_date_val = loan_dict.get('created_date') or start_date_val or ''
+            updated_date_val = loan_dict.get('updated_date') or created_date_val
+
             loan_with_details = LoanWithDetails(
                 loan_id=loan_dict['loan_id'],
                 loan_name=loan_dict['loan_name'],
@@ -288,9 +320,9 @@ async def get_loans(active_only: bool = Query(True)):
                 principal_amount=loan_dict['principal_amount'],
                 interest_rate=loan_dict['interest_rate'],
                 loan_term_months=loan_dict['loan_term_months'],
-                start_date=loan_dict['start_date'],
-                payment_type=loan_dict['payment_type'],
-                payment_frequency=loan_dict['payment_frequency'],
+                start_date=start_date_val,
+                payment_type=normalized_payment_type,
+                payment_frequency=normalized_payment_frequency,
                 balloon_payment=loan_dict.get('balloon_payment'),
                 balloon_date=loan_dict.get('balloon_date'),
                 description=loan_dict.get('description'),
@@ -299,11 +331,11 @@ async def get_loans(active_only: bool = Query(True)):
                 loan_officer=loan_dict.get('loan_officer'),
                 account_number=loan_dict.get('account_number'),
                 is_active=bool(loan_dict['is_active']),
-                created_date=loan_dict['created_date'],
-                updated_date=loan_dict['updated_date'],
-                current_balance=loan_dict['current_balance'],
-                next_payment_date=loan_dict['next_payment_date'],
-                monthly_payment_amount=loan_dict['monthly_payment_amount'],
+                created_date=created_date_val,
+                updated_date=updated_date_val,
+                current_balance=current_balance_val,
+                next_payment_date=next_payment_date_val,
+                monthly_payment_amount=monthly_payment_amount_val,
                 payments_made=payments_made,
                 payments_remaining=payments_remaining,
                 total_interest_paid=loan_dict.get('total_interest_paid', 0) or 0,

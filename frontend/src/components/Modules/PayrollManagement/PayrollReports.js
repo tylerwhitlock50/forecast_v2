@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './PayrollManagement.css';
 
 const PayrollReports = ({ 
   employees, 

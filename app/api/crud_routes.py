@@ -299,7 +299,11 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Error creating forecast: {str(e)}")
     finally:
         if conn:
-            db_manager.close_connection(conn)
+            try:
+                db_manager.close_connection(conn)
+            except NameError:
+                # db_manager import failed earlier; nothing to close
+                pass
 
 @router.post("/update", response_model=ForecastResponse)
 async def update_forecast_endpoint(update_data: Dict[str, Any]):
@@ -357,11 +361,14 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             else:
                 primary_key = 'id'
         
-        # Validate that update columns exist in the table
+        # Validate update columns and filter out unknown keys (be forgiving)
         column_names = [col[1] for col in columns]
         invalid_columns = [col for col in updates.keys() if col not in column_names]
-        if invalid_columns:
-            raise HTTPException(status_code=400, detail=f"Invalid columns for table {table_name}: {invalid_columns}. Valid columns: {column_names}")
+        # Only keep valid columns in the update set
+        updates = {k: v for k, v in updates.items() if k in column_names}
+        if not updates:
+            # No valid fields to update
+            raise HTTPException(status_code=400, detail=f"No valid columns to update for table {table_name}. Valid columns: {column_names}")
         
         # Special handling for BOM table with composite keys
         if table_name == 'bom' and '-' in record_id:
@@ -407,11 +414,18 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
         
         conn.commit()
         
+        # Build a helpful message including ignored columns if any
+        extra = f" (ignored unknown: {invalid_columns})" if invalid_columns else ""
         return ForecastResponse(
             status="success",
-            message=f"Record updated successfully in {table_name}"
+            message=f"Record updated successfully in {table_name}{extra}"
         )
         
+    except HTTPException:
+        # Preserve explicit HTTP errors (e.g., 400s) instead of masking as 500
+        if conn:
+            conn.rollback()
+        raise
     except Exception as e:
         if conn:
             conn.rollback()
@@ -421,7 +435,12 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             db_manager.close_connection(conn)
 
 @router.delete("/delete/{table_name}/{record_id}", response_model=ForecastResponse)
-async def delete_forecast_record(table_name: str, record_id: str):
+async def delete_forecast_record(
+    table_name: str,
+    record_id: str,
+    cascade: bool = Query(False),
+    forecast_id: Optional[str] = Query(None)
+):
     """
     Delete a specific record from a table
     """
@@ -521,8 +540,37 @@ async def delete_forecast_record(table_name: str, record_id: str):
             if count == 0:
                 raise HTTPException(status_code=404, detail=f"Record with {primary_key} '{record_id}' not found in {table_name}")
             
+            # Optional cascade for known relationships to avoid FK errors
+            if cascade:
+                try:
+                    if table_name == 'customers':
+                        if forecast_id:
+                            cursor.execute("DELETE FROM sales WHERE customer_id = ? AND forecast_id = ?", (record_id, forecast_id))
+                        else:
+                            cursor.execute("DELETE FROM sales WHERE customer_id = ?", (record_id,))
+                    elif table_name == 'units':
+                        if forecast_id:
+                            cursor.execute("DELETE FROM sales WHERE unit_id = ? AND forecast_id = ?", (record_id, forecast_id))
+                        else:
+                            cursor.execute("DELETE FROM sales WHERE unit_id = ?", (record_id,))
+                except Exception:
+                    # Best-effort; let the main delete surface any remaining FK issues
+                    pass
+
             # Delete the record
-            cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+            try:
+                cursor.execute(f"DELETE FROM {table_name} WHERE {primary_key} = ?", (record_id,))
+            except sqlite3.IntegrityError as ie:
+                # Likely FK constraint; return a helpful message
+                deps = []
+                if table_name == 'customers':
+                    deps.append('sales')
+                if table_name == 'units':
+                    deps.append('sales')
+                detail = f"Cannot delete from {table_name}: dependent rows exist"
+                if deps:
+                    detail += f" in {', '.join(deps)}. Use ?cascade=true{'&forecast_id=FXXX' if table_name in ('customers','units') else ''} to remove dependents first."
+                raise HTTPException(status_code=409, detail=detail)
             rows_affected = cursor.rowcount
         
         if rows_affected == 0:
