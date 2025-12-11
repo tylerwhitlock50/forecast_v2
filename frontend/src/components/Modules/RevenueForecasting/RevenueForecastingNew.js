@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -17,6 +19,7 @@ import RevenueVisualizations from './RevenueVisualizations';
 import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
 import ForecastLineModal from './ForecastLineModal';
+import DateRangeModal from './DateRangeModal';
 
 // Format a week label with the date span
 const formatWeekLabel = (weekStart, weekEnd, weekNumber) => {
@@ -91,12 +94,21 @@ const RevenueForecasting = () => {
   const [showDataDebugger, setShowDataDebugger] = useState(false);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [customDateRange, setCustomDateRange] = useState(null);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [dateRangeStart, setDateRangeStart] = useState(null);
+  const [dateRangeEnd, setDateRangeEnd] = useState(null);
+  const [showDateRangeModal, setShowDateRangeModal] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState(null);
+  const [groupByYear, setGroupByYear] = useState(false);
 
   // Load persisted preferences
   useEffect(() => {
     try {
       const savedTimeRange = localStorage.getItem('revenue_timeRange');
       const savedCustomRange = localStorage.getItem('revenue_customDateRange');
+      const savedVisibleColumns = localStorage.getItem('revenue_visibleColumns');
+      const savedGroupByYear = localStorage.getItem('revenue_groupByYear');
+      
       if (savedTimeRange) {
         setTimeRange(savedTimeRange);
       }
@@ -105,6 +117,12 @@ const RevenueForecasting = () => {
         if (parsed?.start && parsed?.end) {
           setCustomDateRange(parsed);
         }
+      }
+      if (savedVisibleColumns) {
+        setVisibleColumns(JSON.parse(savedVisibleColumns));
+      }
+      if (savedGroupByYear) {
+        setGroupByYear(savedGroupByYear === 'true');
       }
     } catch (err) {
       console.warn('Unable to load saved preferences', err);
@@ -120,10 +138,14 @@ const RevenueForecasting = () => {
       } else {
         localStorage.removeItem('revenue_customDateRange');
       }
+      if (visibleColumns) {
+        localStorage.setItem('revenue_visibleColumns', JSON.stringify(visibleColumns));
+      }
+      localStorage.setItem('revenue_groupByYear', groupByYear.toString());
     } catch (err) {
       console.warn('Unable to persist preferences', err);
     }
-  }, [timeRange, customDateRange]);
+  }, [timeRange, customDateRange, visibleColumns, groupByYear]);
   // Generate months and years for dropdowns
   const months = [
     { value: 1, label: 'January' },
@@ -515,13 +537,23 @@ const RevenueForecasting = () => {
     }
   }, [data.products, data.customers, data.sales_forecast]);
 
+  // Skeleton loader component
+  const SkeletonLoader = () => (
+    <div className="space-y-4">
+      <div className="h-8 bg-gray-200 rounded animate-pulse w-1/3"></div>
+      <div className="grid grid-cols-5 gap-4">
+        {[...Array(5)].map((_, i) => (
+          <div key={i} className="h-24 bg-gray-200 rounded animate-pulse"></div>
+        ))}
+      </div>
+      <div className="h-96 bg-gray-200 rounded animate-pulse"></div>
+    </div>
+  );
+
   if (loading) {
     return (
       <div className="container mx-auto px-6 py-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="ml-4 text-muted-foreground">Loading revenue data...</p>
-        </div>
+        <SkeletonLoader />
       </div>
     );
   }
@@ -541,6 +573,8 @@ const RevenueForecasting = () => {
     );
   }
 
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+
   const headerActions = [
     {
       label: 'Add Forecast Line',
@@ -559,12 +593,28 @@ const RevenueForecasting = () => {
       variant: 'outline'
     },
     {
-      label: 'Save Changes',
-      onClick: handleSaveChanges,
-      variant: 'default',
-      className: 'bg-orange-600 hover:bg-orange-700'
+      label: 'Keyboard Shortcuts',
+      onClick: () => setShowKeyboardShortcuts(true),
+      variant: 'outline'
     }
   ];
+  
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Press ? to show shortcuts
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setShowKeyboardShortcuts(true);
+      }
+      // Press Escape to close shortcuts
+      if (e.key === 'Escape' && showKeyboardShortcuts) {
+        setShowKeyboardShortcuts(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showKeyboardShortcuts]);
 
   if (showDataDebugger) {
     headerActions.push({
@@ -614,140 +664,84 @@ const RevenueForecasting = () => {
         </Button>
       </div>
 
-      {/* Control Panel */}
-      <div className="flex flex-wrap gap-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Label>Segment:</Label>
-          <Select value={selectedSegment} onChange={(e) => setSelectedSegment(e.target.value)}>
-            <SelectOption value="all">All Segments</SelectOption>
-            {segments.map(segment => (
-              <SelectOption key={segment} value={segment}>{segment}</SelectOption>
-            ))}
-          </Select>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <Label>Time Range:</Label>
-          <Select value={timeRange} onChange={(e) => setTimeRange(e.target.value)}>
-            <SelectOption value="monthly">Monthly</SelectOption>
-            <SelectOption value="quarterly">Quarterly</SelectOption>
-            <SelectOption value="weekly">Weekly</SelectOption>
-          </Select>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <Label>Date Range:</Label>
-          <Select 
-            value={customDateRange ? 'custom' : 'default'} 
-            onChange={(e) => {
-              if (e.target.value === 'default') {
-                setCustomDateRange(null);
-              } else if (e.target.value === 'custom') {
-                // Set a default custom range
-                const now = new Date();
-                setCustomDateRange({ 
-                  start: { month: now.getMonth() + 1, year: now.getFullYear() }, 
-                  end: { month: 12, year: now.getFullYear() } 
-                });
-              }
-            }}
-          >
-            <SelectOption value="default">Current + 12 months</SelectOption>
-            <SelectOption value="custom">Custom Range</SelectOption>
-          </Select>
-        </div>
+      {/* Compact Filter Bar */}
+      <Card className="mb-6">
+        <CardContent className="py-4">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Date Range Presets - Primary */}
+            <div className="flex items-center gap-2 border-r pr-3">
+              <Label className="text-sm font-medium text-gray-700">Range:</Label>
+              <div className="flex gap-1.5">
+                <Button 
+                  size="sm" 
+                  variant={!customDateRange ? "default" : "outline"}
+                  onClick={() => setCustomDateRange(null)}
+                  className={!customDateRange ? "bg-orange-600 hover:bg-orange-700 text-white" : ""}
+                >
+                  Default
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => applyPresetRange('current_fy')}>
+                  Current FY
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_12')}>
+                  Next 12M
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_qtr')}>
+                  Next Qtr
+                </Button>
+                <Button 
+                  size="sm" 
+                  variant={customDateRange ? "default" : "outline"}
+                  onClick={() => setShowDateRangeModal(true)}
+                  className={customDateRange ? "bg-orange-600 hover:bg-orange-700 text-white" : ""}
+                >
+                  Custom
+                </Button>
+              </div>
+            </div>
 
-        <div className="flex items-center gap-3">
-          <Label className="text-sm text-muted-foreground">Presets:</Label>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => applyPresetRange('current_fy')}>Current FY</Button>
-            <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_12')}>Next 12M</Button>
-            <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_qtr')}>Next Quarter</Button>
+            {/* Period Type */}
+            <div className="flex items-center gap-2 border-r pr-3">
+              <Label className="text-sm font-medium text-gray-700">Period:</Label>
+              <Select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="w-28">
+                <SelectOption value="monthly">Monthly</SelectOption>
+                <SelectOption value="quarterly">Quarterly</SelectOption>
+                <SelectOption value="weekly">Weekly</SelectOption>
+              </Select>
+            </div>
+
+            {/* Segment Filter */}
+            <div className="flex items-center gap-2 border-r pr-3">
+              <Label className="text-sm font-medium text-gray-700">Segment:</Label>
+              <Select value={selectedSegment} onChange={(e) => setSelectedSegment(e.target.value)} className="w-36">
+                <SelectOption value="all">All Segments</SelectOption>
+                {segments.map(segment => (
+                  <SelectOption key={segment} value={segment}>{segment}</SelectOption>
+                ))}
+              </Select>
+            </div>
+
+            {/* Range Summary */}
+            <Badge variant="outline" className="ml-auto bg-gray-50">
+              {rangeSummary}
+            </Badge>
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        {customDateRange && (
-          <>
-            <div className="flex items-center gap-2">
-              <Label>Start:</Label>
-              <div className="flex gap-1">
-                <Select
-                  value={customDateRange.start.month}
-                  onChange={(e) => setCustomDateRange(prev => ({ 
-                    ...prev, 
-                    start: { ...prev.start, month: parseInt(e.target.value) }
-                  }))}
-                  className="w-24"
-                >
-                  {months.map(month => (
-                    <SelectOption key={month.value} value={month.value}>
-                      {month.label}
-                    </SelectOption>
-                  ))}
-                </Select>
-                <Select
-                  value={customDateRange.start.year}
-                  onChange={(e) => setCustomDateRange(prev => ({ 
-                    ...prev, 
-                    start: { ...prev.start, year: parseInt(e.target.value) }
-                  }))}
-                  className="w-20"
-                >
-                  {years.map(year => (
-                    <SelectOption key={year} value={year}>
-                      {year}
-                    </SelectOption>
-                  ))}
-                </Select>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Label>End:</Label>
-              <div className="flex gap-1">
-                <Select
-                  value={customDateRange.end.month}
-                  onChange={(e) => setCustomDateRange(prev => ({ 
-                    ...prev, 
-                    end: { ...prev.end, month: parseInt(e.target.value) }
-                  }))}
-                  className="w-24"
-                >
-                  {months.map(month => (
-                    <SelectOption key={month.value} value={month.value}>
-                      {month.label}
-                    </SelectOption>
-                  ))}
-                </Select>
-                <Select
-                  value={customDateRange.end.year}
-                  onChange={(e) => setCustomDateRange(prev => ({ 
-                    ...prev, 
-                    end: { ...prev.end, year: parseInt(e.target.value) }
-                  }))}
-                  className="w-20"
-                >
-                  {years.map(year => (
-                    <SelectOption key={year} value={year}>
-                      {year}
-                    </SelectOption>
-                  ))}
-                </Select>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setCustomDateRange(null)}
-            >
-              Reset
-            </Button>
-          </>
-        )}
-
-        <Badge variant="outline" className="h-9 flex items-center">
-          {rangeSummary}
-        </Badge>
-      </div>
+      {/* Date Range Modal */}
+      <DateRangeModal
+        isOpen={showDateRangeModal}
+        onClose={() => setShowDateRangeModal(false)}
+        onApply={(range) => {
+          setCustomDateRange(range);
+          const start = new Date(range.start.year, range.start.month - 1, 1);
+          const end = new Date(range.end.year, range.end.month, 0);
+          setDateRangeStart(start);
+          setDateRangeEnd(end);
+        }}
+        currentRange={customDateRange}
+      />
 
       {/* Bulk Import Panel */}
       {bulkImportMode && (
@@ -815,12 +809,65 @@ const RevenueForecasting = () => {
         defaultDateRange={defaultDateRange}
       />
 
+      {/* Keyboard Shortcuts Modal */}
+      {showKeyboardShortcuts && (
+        <Modal onClick={() => setShowKeyboardShortcuts(false)}>
+          <div onClick={e => e.stopPropagation()}>
+            <ModalHeader>
+              <ModalTitle>Keyboard Shortcuts</ModalTitle>
+              <ModalClose onClick={() => setShowKeyboardShortcuts(false)} />
+            </ModalHeader>
+            <ModalContent>
+              <div className="space-y-4">
+                <div>
+                  <h3 className="font-semibold mb-2">Navigation</h3>
+                  <ul className="space-y-1 text-sm">
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Arrow Keys</kbd> - Navigate cells</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Enter</kbd> or <kbd className="px-2 py-1 bg-gray-100 rounded">F2</kbd> - Edit cell</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Tab</kbd> - Next cell</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Esc</kbd> - Cancel editing</li>
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Actions</h3>
+                  <ul className="space-y-1 text-sm">
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+C</kbd> - Copy cells</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+V</kbd> - Paste cells</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Delete</kbd> - Clear cell</li>
+                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">?</kbd> - Show this help</li>
+                  </ul>
+                </div>
+              </div>
+            </ModalContent>
+            <ModalFooter>
+              <Button onClick={() => setShowKeyboardShortcuts(false)}>Close</Button>
+            </ModalFooter>
+          </div>
+        </Modal>
+      )}
+
+      {/* Floating Action Button */}
+      <button
+        onClick={() => setShowForecastLineModal(true)}
+        className="fixed bottom-8 right-8 bg-orange-600 hover:bg-orange-700 text-white rounded-full p-4 shadow-lg z-50 transition-all hover:scale-110"
+        title="Add Forecast Line"
+      >
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
+
       {showDataDebugger && <DataDebugger data={data} timePeriods={timePeriods} />}
 
       <RevenueSummary 
         data={data} 
         timePeriods={timePeriods} 
-        selectedSegment={selectedSegment} 
+        selectedSegment={selectedSegment}
+        onCardClick={(cardType) => {
+          // Handle card click - could filter or navigate
+          console.log('Card clicked:', cardType);
+          // For now, just log. Can be extended to filter matrix
+        }}
       />
 
       {/* Custom Tab Navigation */}
@@ -879,7 +926,12 @@ const RevenueForecasting = () => {
               selectedSegment={selectedSegment}
               onDataChange={handleMatrixDataChange}
               onCellChange={handleCellChange}
-              onAddForecastLine={() => setShowForecastLineModal(true)}
+              timeRange={timeRange}
+              onTimeRangeChange={setTimeRange}
+              visibleColumns={visibleColumns}
+              onColumnVisibilityChange={setVisibleColumns}
+              groupByYear={groupByYear}
+              onGroupByYear={setGroupByYear}
             />
           </div>
         )}

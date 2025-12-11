@@ -114,6 +114,25 @@
   border-left: 3px solid #ef4444;
 }
 
+/* Sticky column styles */
+.header-cell.sticky-column,
+.grid-cell.sticky-column {
+  background-color: #ffffff !important;
+  border-right: 2px solid #e2e8f0 !important;
+}
+
+.header-cell.sticky-column {
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%) !important;
+}
+
+.grid-cell.sticky-column:hover {
+  background-color: #f8f9fa !important;
+}
+
+.grid-cell.sticky-column.selected {
+  background-color: #fef3c7 !important;
+}
+
 .grid-cell.warning {
   background: #fffbeb;
   border-left: 3px solid #f59e0b;

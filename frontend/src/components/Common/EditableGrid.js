@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { FixedSizeGrid as Grid } from 'react-window';
+import AutoSizer from 'react-virtualized-auto-sizer';
 import { useForecast } from '../../context/ForecastContext';
 import ValidationIndicator from './ValidationIndicator';
+import { Button } from '../ui/button';
 import './EditableGrid.css';
 
 const EditableGrid = ({ 
@@ -25,10 +27,13 @@ const EditableGrid = ({
   const [copiedCells, setCopiedCells] = useState([]);
   const [validationErrors, setValidationErrors] = useState(new Map());
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+  const [selectedRows, setSelectedRows] = useState(new Set());
+  const [bulkEditMode, setBulkEditMode] = useState(false);
   
   const gridRef = useRef(null);
   const editInputRef = useRef(null);
   const containerRef = useRef(null);
+  const gridContainerRef = useRef(null);
 
   // Grid dimensions
   const rowHeight = 40;
@@ -43,6 +48,26 @@ const EditableGrid = ({
 
   // Calculate total width for the grid
   const totalWidth = columns.reduce((sum, column) => sum + (column.width || columnWidth), 0);
+
+  // Calculate sticky column left offsets
+  const getStickyLeftOffset = (columnIndex) => {
+    let offset = 0;
+    for (let i = 0; i < columnIndex; i++) {
+      if (columns[i]?.sticky) {
+        offset += getColumnWidth(i);
+      }
+    }
+    if (enableBulkEdit) {
+      offset += 40; // Checkbox column width
+    }
+    return offset;
+  };
+
+  // Check if column is sticky
+  const isColumnSticky = (columnIndex) => {
+    const column = columns[columnIndex];
+    return column?.sticky === true;
+  };
 
   // Sort and filter data
   const sortedData = React.useMemo(() => {
@@ -268,38 +293,100 @@ const EditableGrid = ({
     }));
   }, []);
 
-  // Cell component for rendering individual cells
-  const Cell = ({ columnIndex, rowIndex, style }) => {
-    const column = columns[columnIndex];
-    const rowData = sortedData[rowIndex];
+  // Memoized cell renderer for react-window
+  const Cell = useCallback(({ columnIndex, rowIndex, style }) => {
+    // Adjust rowIndex: row 0 is header, data starts at row 1
+    const actualRowIndex = rowIndex - 1;
+    
+    if (rowIndex === 0) {
+      // Header row - checkbox column is handled separately in header rendering
+      const adjustedColIndex = getAdjustedColumnIndex(columnIndex);
+      if (adjustedColIndex === -1) {
+        // This is the checkbox column header, already rendered
+        return null;
+      }
+      const column = columns[adjustedColIndex];
+      if (!column) return null;
+      const isSticky = isColumnSticky(adjustedColIndex);
+      const stickyLeft = isSticky ? getStickyLeftOffset(adjustedColIndex) : undefined;
+      
+      return (
+        <div
+          className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''} ${isSticky ? 'sticky-column' : ''}`}
+          style={{
+            ...style,
+            width: column.width || columnWidth,
+            minWidth: column.width || columnWidth,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 8px',
+            fontWeight: '600',
+            fontSize: '14px',
+            color: '#374151',
+            borderRight: '1px solid #e2e8f0',
+            backgroundColor: 'white',
+            position: isSticky ? 'sticky' : 'relative',
+            top: 0,
+            left: stickyLeft,
+            zIndex: isSticky ? 20 : 10,
+            boxShadow: isSticky && adjustedColIndex > 0 ? '2px 0 4px rgba(0,0,0,0.1)' : 'none'
+          }}
+          onClick={() => handleSort(column.key)}
+        >
+          {column.title}
+          {sortConfig.key === column.key && (
+            <span className="sort-indicator ml-1">
+              {sortConfig.direction === 'asc' ? '↑' : '↓'}
+            </span>
+          )}
+          {column.required && <span className="required-indicator ml-1 text-red-500">*</span>}
+        </div>
+      );
+    }
+    
+    // Data row
+    const adjustedColIndex = getAdjustedColumnIndex(columnIndex);
+    if (adjustedColIndex === -1) {
+      // Checkbox column - handled in first column logic below
+      return null;
+    }
+    const column = columns[adjustedColIndex];
+    if (!column) return null;
+    const rowData = sortedData[actualRowIndex];
+    if (!rowData) return null;
+    
     const value = rowData[column.key];
-    const isEditing = editingCell?.row === rowIndex && editingCell?.col === columnIndex;
-    const isSelected = selectedCells.some(([r, c]) => r === rowIndex && c === columnIndex);
-    const hasError = validationErrors.has(`${rowIndex}-${columnIndex}`);
+    const isEditing = editingCell?.row === actualRowIndex && editingCell?.col === columnIndex;
+    const isSelected = selectedCells.some(([r, c]) => r === actualRowIndex && c === columnIndex);
+    const hasError = validationErrors.has(`${actualRowIndex}-${columnIndex}`);
 
     const handleClick = (e) => {
       e.stopPropagation();
       
       if (column.onClick) {
-        column.onClick(rowIndex, columnIndex, rowData);
+        column.onClick(actualRowIndex, columnIndex, rowData);
         return;
       }
 
       if (enableKeyboardNavigation) {
-        setSelectedCells([[rowIndex, columnIndex]]);
-        startEditing(rowIndex, columnIndex);
+        setSelectedCells([[actualRowIndex, adjustedColIndex]]);
+        startEditing(actualRowIndex, adjustedColIndex);
       }
     };
 
     const handleDoubleClick = () => {
       if (enableKeyboardNavigation) {
-        startEditing(rowIndex, columnIndex);
+        startEditing(actualRowIndex, adjustedColIndex);
       }
     };
 
+    const isSticky = isColumnSticky(adjustedColIndex);
+    const stickyLeft = isSticky ? getStickyLeftOffset(adjustedColIndex) : undefined;
+    const isRowSelected = selectedRows.has(actualRowIndex);
+    
     return (
       <div
-        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''}`}
+        className={`grid-cell ${isSelected ? 'selected' : ''} ${hasError ? 'error' : ''} ${isSticky ? 'sticky-column' : ''}`}
         style={{
           ...style,
           width: column.width || columnWidth,
@@ -309,20 +396,24 @@ const EditableGrid = ({
           padding: '0 8px',
           cursor: 'pointer',
           borderRight: '1px solid #f3f4f6',
-          backgroundColor: isSelected ? '#fef3c7' : 'white',
-          position: 'relative'
+          backgroundColor: isSelected || isRowSelected ? '#fef3c7' : 'white',
+          position: isSticky ? 'sticky' : 'relative',
+          left: stickyLeft,
+          zIndex: isSticky ? 15 : 1,
+          borderBottom: '1px solid #f3f4f6',
+          boxShadow: isSticky && adjustedColIndex > 0 ? '2px 0 4px rgba(0,0,0,0.1)' : 'none'
         }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
       >
         {isEditing ? (
           <input
-            ref={editInputRef}
+            ref={isEditing && editingCell?.row === actualRowIndex && editingCell?.col === columnIndex ? editInputRef : null}
             type={column.type === 'number' ? 'number' : 'text'}
             value={value || ''}
             onChange={(e) => {
               const newValue = column.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value;
-              handleCellChange(rowIndex, columnIndex, newValue);
+              handleCellChange(actualRowIndex, adjustedColIndex, newValue);
             }}
             onBlur={stopEditing}
             onKeyDown={(e) => {
@@ -355,6 +446,16 @@ const EditableGrid = ({
         )}
       </div>
     );
+  }, [columns, sortedData, editingCell, selectedCells, selectedRows, validationErrors, sortConfig, enableKeyboardNavigation, enableBulkEdit, startEditing, stopEditing, handleCellChange, handleSort, getAdjustedColumnIndex, isColumnSticky, getStickyLeftOffset]);
+  
+  // Calculate grid dimensions
+  const gridRowCount = useMemo(() => sortedData.length + 1, [sortedData.length]); // +1 for header
+  const gridColumnCount = useMemo(() => columns.length + (enableBulkEdit ? 1 : 0), [columns.length, enableBulkEdit]);
+  
+  // Adjust column index for checkbox column
+  const getAdjustedColumnIndex = (columnIndex) => {
+    if (enableBulkEdit && columnIndex === 0) return -1; // Checkbox column
+    return enableBulkEdit ? columnIndex - 1 : columnIndex;
   };
 
   // Add keyboard event listener
@@ -374,88 +475,95 @@ const EditableGrid = ({
       style={{ 
         width: '100%', 
         height: '100%',
-        outline: 'none'
+        outline: 'none',
+        display: 'flex',
+        flexDirection: 'column'
       }}
     >
-      {/* Single scrollable container for both header and data */}
-      <div className="grid-container" style={{ height: '400px', overflow: 'auto' }}>
-        <div className="grid-content" style={{ width: totalWidth }}>
-          {/* Header that scrolls with the data */}
-          <div className="grid-header" style={{ 
-            height: headerHeight,
-            display: 'flex',
-            width: totalWidth,
-            position: 'sticky',
-            top: 0,
-            backgroundColor: 'white',
-            zIndex: 10,
-            borderBottom: '1px solid #e2e8f0'
-          }}>
-            {columns.map((column, index) => (
-              <div
-                key={column.key}
-                className={`header-cell ${sortConfig.key === column.key ? 'sorted' : ''}`}
-                style={{ 
-                  width: column.width || columnWidth, 
-                  minWidth: column.width || columnWidth,
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0 8px',
-                  fontWeight: '600',
-                  fontSize: '14px',
-                  color: '#374151',
-                  borderRight: '1px solid #e2e8f0'
-                }}
-                onClick={() => handleSort(column.key)}
-              >
-                {column.title}
-                {sortConfig.key === column.key && (
-                  <span className="sort-indicator ml-1">
-                    {sortConfig.direction === 'asc' ? '↑' : '↓'}
-                  </span>
-                )}
-                {column.required && <span className="required-indicator ml-1 text-red-500">*</span>}
-              </div>
-            ))}
-          </div>
-          
-          {/* Data rows */}
-          <div className="grid-rows">
-            {sortedData.map((rowData, rowIndex) => (
-              <div 
-                key={rowIndex} 
-                className="grid-row"
-                style={{ 
-                  height: rowHeight,
-                  display: 'flex',
-                  width: totalWidth,
-                  borderBottom: '1px solid #f3f4f6'
-                }}
-              >
-                {columns.map((column, colIndex) => (
-                  <Cell 
-                    key={colIndex}
-                    columnIndex={colIndex} 
-                    rowIndex={rowIndex} 
-                    style={{ height: '100%' }}
-                  />
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Virtualized grid container */}
+      <div 
+        ref={gridContainerRef}
+        className="grid-container" 
+        style={{ 
+          flex: 1,
+          minHeight: 0,
+          overflow: 'hidden'
+        }}
+      >
+        <AutoSizer>
+          {({ height, width }) => (
+            <Grid
+              ref={gridRef}
+              columnCount={gridColumnCount}
+              rowCount={gridRowCount}
+              columnWidth={(index) => {
+                if (enableBulkEdit && index === 0) return 40; // Checkbox column
+                const adjustedIndex = enableBulkEdit ? index - 1 : index;
+                return getColumnWidth(adjustedIndex);
+              }}
+              rowHeight={(index) => index === 0 ? headerHeight : rowHeight}
+              height={height}
+              width={width}
+              overscanRowCount={5}
+              overscanColumnCount={2}
+            >
+              {Cell}
+            </Grid>
+          )}
+        </AutoSizer>
       </div>
       
       {/* Bulk actions toolbar */}
-      {enableBulkEdit && selectedCells.length > 1 && (
-        <div className="bulk-actions">
-          <button onClick={handleCopy}>Copy</button>
-          <button onClick={handlePaste}>Paste</button>
-          <button onClick={() => {
-            selectedCells.forEach(([row, col]) => {
-              handleCellChange(row, col, '');
-            });
-          }}>Clear</button>
+      {enableBulkEdit && (selectedCells.length > 1 || selectedRows.size > 0) && (
+        <div className="bulk-actions bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 flex items-center gap-3">
+          <span className="text-sm font-medium text-gray-700">
+            {selectedRows.size > 0 ? `${selectedRows.size} row${selectedRows.size !== 1 ? 's' : ''} selected` : `${selectedCells.length} cell${selectedCells.length !== 1 ? 's' : ''} selected`}
+          </span>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={handleCopy}>Copy</Button>
+            <Button size="sm" variant="outline" onClick={handlePaste}>Paste</Button>
+            <Button size="sm" variant="outline" onClick={() => {
+              if (selectedRows.size > 0) {
+                // Bulk clear selected rows
+                const updatedData = [...sortedData];
+                selectedRows.forEach(rowIndex => {
+                  columns.forEach((column, colIndex) => {
+                    if (column.type !== 'text' || !column.required) {
+                      updatedData[rowIndex][column.key] = '';
+                    }
+                  });
+                });
+                onDataChange(updatedData);
+                setSelectedRows(new Set());
+              } else {
+                selectedCells.forEach(([row, col]) => {
+                  handleCellChange(row, col, '');
+                });
+              }
+            }}>Clear</Button>
+            {selectedRows.size > 0 && (
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={() => {
+                  setBulkEditMode(true);
+                }}
+                className="bg-orange-600 text-white hover:bg-orange-700"
+              >
+                Bulk Edit
+              </Button>
+            )}
+            <Button 
+              size="sm" 
+              variant="ghost" 
+              onClick={() => {
+                setSelectedRows(new Set());
+                setSelectedCells([]);
+              }}
+            >
+              Deselect All
+            </Button>
+          </div>
         </div>
       )}
       

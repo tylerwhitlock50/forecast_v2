@@ -9,6 +9,9 @@ const StatsCard = ({
   variant = "default",
   className,
   children,
+  onClick,
+  onHover,
+  trend,
   ...props 
 }) => {
   const variantStyles = {
@@ -28,10 +31,28 @@ const StatsCard = ({
   };
 
   return (
-    <Card className={cn(variantStyles[variant], className)} {...props}>
+    <Card 
+      className={cn(
+        variantStyles[variant], 
+        className,
+        onClick && "cursor-pointer transition-all hover:shadow-md hover:scale-105",
+        "transition-all duration-200"
+      )} 
+      onClick={onClick}
+      onMouseEnter={onHover}
+      {...props}
+    >
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center justify-between">
+          <span>{title}</span>
+          {trend && (
+            <span className={cn(
+              "text-xs font-semibold",
+              trend > 0 ? "text-green-600" : trend < 0 ? "text-red-600" : "text-gray-500"
+            )}>
+              {trend > 0 ? "↑" : trend < 0 ? "↓" : "→"} {Math.abs(trend)}%
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>

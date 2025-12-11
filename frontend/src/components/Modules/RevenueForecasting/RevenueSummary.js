@@ -3,7 +3,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import { StatsCard } from '../../ui/stats-card';
 import { TrendingUp, Package, Users, DollarSign, BarChart3 } from 'lucide-react';
 
-const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
+const RevenueSummary = ({ data, timePeriods, selectedSegment, onCardClick }) => {
   const { activeScenario } = useForecast();
   
   // Calculate summary statistics based on visible time periods only
@@ -44,6 +44,12 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
     };
   }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario, timePeriods]);
 
+  const handleCardClick = (cardType) => {
+    if (onCardClick) {
+      onCardClick(cardType);
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
       <StatsCard
@@ -51,6 +57,8 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
         value={`$${summaryStats.totalRevenue.toLocaleString()}`}
         variant="primary"
         className="border-l-4 border-l-blue-500"
+        onClick={() => handleCardClick('revenue')}
+        onHover={() => {}}
       >
         <DollarSign className="h-4 w-4 text-blue-600 mt-2" />
       </StatsCard>
@@ -60,6 +68,8 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
         value={summaryStats.totalQuantity.toLocaleString()}
         variant="success"
         className="border-l-4 border-l-green-500"
+        onClick={() => handleCardClick('quantity')}
+        onHover={() => {}}
       >
         <Package className="h-4 w-4 text-green-600 mt-2" />
       </StatsCard>
@@ -69,6 +79,8 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
         value={summaryStats.productCount}
         variant="warning"
         className="border-l-4 border-l-yellow-500"
+        onClick={() => handleCardClick('products')}
+        onHover={() => {}}
       >
         <BarChart3 className="h-4 w-4 text-yellow-600 mt-2" />
       </StatsCard>
@@ -78,6 +90,8 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
         value={summaryStats.customerCount}
         variant="default"
         className="border-l-4 border-l-gray-500"
+        onClick={() => handleCardClick('customers')}
+        onHover={() => {}}
       >
         <Users className="h-4 w-4 text-gray-600 mt-2" />
       </StatsCard>
@@ -87,6 +101,8 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment }) => {
         value={`$${summaryStats.averagePrice.toFixed(2)}`}
         variant="danger"
         className="border-l-4 border-l-red-500"
+        onClick={() => handleCardClick('price')}
+        onHover={() => {}}
       >
         <TrendingUp className="h-4 w-4 text-red-600 mt-2" />
       </StatsCard>

@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useRef } from 'react';
 import api from '../lib/apiClient';
 import { toast } from 'react-hot-toast';
+import { debounce } from 'lodash';
 
 // Initial state
 const initialState = {
@@ -39,7 +40,9 @@ const actionTypes = {
   UPDATE_SCENARIO: 'UPDATE_SCENARIO',
   ADD_VALIDATION_ERROR: 'ADD_VALIDATION_ERROR',
   CLEAR_VALIDATION: 'CLEAR_VALIDATION',
-  SET_LAST_UPDATED: 'SET_LAST_UPDATED'
+  SET_LAST_UPDATED: 'SET_LAST_UPDATED',
+  OPTIMISTIC_UPDATE_SALES: 'OPTIMISTIC_UPDATE_SALES',
+  ROLLBACK_SALES_UPDATE: 'ROLLBACK_SALES_UPDATE'
 };
 
 // Reducer
@@ -136,6 +139,68 @@ const forecastReducer = (state, action) => {
     case actionTypes.SET_LAST_UPDATED:
       return { ...state, lastUpdated: new Date() };
     
+    case actionTypes.OPTIMISTIC_UPDATE_SALES:
+      // Optimistically update sales forecast in local state
+      const currentSales = Array.isArray(state.data.sales_forecast) ? state.data.sales_forecast : [];
+      const updatedSales = action.payload.salesData;
+      
+      // Merge optimistic updates with existing sales
+      const salesMap = new Map();
+      currentSales.forEach(sale => {
+        const key = `${sale.unit_id}-${sale.customer_id}-${sale.period}-${sale.forecast_id}`;
+        salesMap.set(key, sale);
+      });
+      
+      updatedSales.forEach(sale => {
+        const key = `${sale.unit_id}-${sale.customer_id}-${sale.period}-${sale.forecast_id}`;
+        if (action.payload.operation === 'replace') {
+          salesMap.set(key, sale);
+        } else if (action.payload.operation === 'add') {
+          const existing = salesMap.get(key);
+          if (existing) {
+            salesMap.set(key, {
+              ...existing,
+              quantity: (existing.quantity || 0) + (sale.quantity || 0),
+              unit_price: sale.unit_price || existing.unit_price,
+              total_revenue: ((existing.quantity || 0) + (sale.quantity || 0)) * (sale.unit_price || existing.unit_price)
+            });
+          } else {
+            salesMap.set(key, sale);
+          }
+        } else if (action.payload.operation === 'subtract') {
+          const existing = salesMap.get(key);
+          if (existing) {
+            const newQty = Math.max(0, (existing.quantity || 0) - (sale.quantity || 0));
+            salesMap.set(key, {
+              ...existing,
+              quantity: newQty,
+              total_revenue: newQty * (existing.unit_price || 0)
+            });
+          }
+        }
+      });
+      
+      return {
+        ...state,
+        data: {
+          ...state.data,
+          sales_forecast: Array.from(salesMap.values()),
+          _pendingUpdates: action.payload.pendingId // Track pending update for rollback
+        },
+        lastUpdated: new Date()
+      };
+    
+    case actionTypes.ROLLBACK_SALES_UPDATE:
+      // Rollback to previous state on error
+      return {
+        ...state,
+        data: {
+          ...state.data,
+          sales_forecast: action.payload.previousSales,
+          _pendingUpdates: null
+        }
+      };
+    
     default:
       return state;
   }
@@ -144,9 +209,100 @@ const forecastReducer = (state, action) => {
 // Context
 const ForecastContext = createContext();
 
+// Track pending updates for rollback (module-level to persist across renders)
+let pendingUpdates = [];
+let previousSalesState = null;
+
+// Request deduplication cache
+const requestCache = new Map();
+const CACHE_TTL = 5000; // 5 seconds
+
+// Helper to check if request is in progress
+const inFlightRequests = new Set();
+
+// Helper function to fetch single data type
+const fetchDataType = async (url, key, suppressErrorToast = true) => {
+  // Check cache first
+  const cacheKey = `${url}-${Date.now()}`;
+  const cached = requestCache.get(url);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  
+  // Check if request is in flight
+  if (inFlightRequests.has(url)) {
+    // Wait for existing request
+    return new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (!inFlightRequests.has(url)) {
+          clearInterval(checkInterval);
+          const cached = requestCache.get(url);
+          if (cached) {
+            resolve(cached.data);
+          }
+        }
+      }, 100);
+    });
+  }
+  
+  // Make request
+  inFlightRequests.add(url);
+  try {
+    const response = await api.get(url, { suppressErrorToast });
+    const data = { status: 'success', data: response.data || [], metadata: response.metadata || {} };
+    requestCache.set(url, { data, timestamp: Date.now() });
+    return data;
+  } catch (error) {
+    console.warn(`Failed to load ${key}:`, error.message);
+    return { 
+      status: 'success', 
+      data: [], 
+      metadata: { has_data: false, row_count: 0 } 
+    };
+  } finally {
+    inFlightRequests.delete(url);
+  }
+};
+
 // Provider component
 export const ForecastProvider = ({ children }) => {
   const [state, dispatch] = useReducer(forecastReducer, initialState);
+  
+  // Debounced save function for batching updates
+  const debouncedSaveRef = useRef(
+    debounce(async (salesData, operation, activeScenario, dispatchRef, previousSales) => {
+      try {
+        // Transform sales data to the format expected by the backend
+        const forecasts = salesData.map(sale => ({
+          unit_id: sale.unit_id,
+          customer_id: sale.customer_id,
+          period: sale.period ? `${sale.period}-01` : sale.period,
+          quantity: sale.quantity,
+          unit_price: sale.unit_price,
+          total_revenue: sale.total_revenue,
+          forecast_id: sale.forecast_id || activeScenario
+        }));
+        
+        await api.post('/forecast/bulk_update', { 
+          forecasts,
+          operation 
+        }, { suppressSuccessToast: true });
+        
+        // Clear pending updates on success
+        pendingUpdates = [];
+      } catch (error) {
+        console.error('Error saving forecast updates:', error);
+        // Rollback on error
+        if (previousSales) {
+          dispatchRef({ 
+            type: actionTypes.ROLLBACK_SALES_UPDATE, 
+            payload: { previousSales } 
+          });
+        }
+        throw error;
+      }
+    }, 2000)
+  );
 
   // Actions
   const actions = {
@@ -175,7 +331,22 @@ export const ForecastProvider = ({ children }) => {
     
     clearValidation: () => dispatch({ type: actionTypes.CLEAR_VALIDATION }),
 
-    // API calls
+    // Split fetchAllData into smaller focused functions
+    fetchSalesData: async (forecastId = null) => {
+      const activeForecastId = forecastId || state.activeScenario;
+      const url = `/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`;
+      return await fetchDataType(url, 'sales');
+    },
+    
+    fetchUnitsData: async () => {
+      return await fetchDataType('/data/units', 'units');
+    },
+    
+    fetchCustomersData: async () => {
+      return await fetchDataType('/data/customers', 'customers');
+    },
+    
+    // API calls - refactored with caching and deduplication
     fetchAllData: async (forecastId = null) => {
       try {
         actions.setLoading(true);
@@ -183,7 +354,7 @@ export const ForecastProvider = ({ children }) => {
         // Use the current active scenario if no forecastId provided
         const activeForecastId = forecastId || state.activeScenario;
         
-        // Make API calls individually with better error handling for empty database
+        // Make API calls in parallel with caching and deduplication
         const apiCalls = [
           { url: `/data/sales${activeForecastId ? `?forecast_id=${activeForecastId}` : ''}`, key: 'sales' },
           { url: `/data/units`, key: 'units' },
@@ -198,22 +369,13 @@ export const ForecastProvider = ({ children }) => {
           { url: `/data/forecast`, key: 'forecast' }
         ];
 
-        // Execute API calls with individual error handling
+        // Execute API calls in parallel with caching
         const results = {};
-        for (const call of apiCalls) {
-          try {
-            const response = await api.get(call.url, { suppressErrorToast: true });
-            results[call.key] = response;
-          } catch (error) {
-            console.warn(`Failed to load ${call.key}:`, error.message);
-            // Set empty response for failed calls
-            results[call.key] = { 
-              status: 'success', 
-              data: [], 
-              metadata: { has_data: false, row_count: 0 } 
-            };
-          }
-        }
+        await Promise.all(
+          apiCalls.map(async (call) => {
+            results[call.key] = await fetchDataType(call.url, call.key);
+          })
+        );
 
         // Extract responses (keeping original variable names for compatibility)
         const salesRes = results.sales;
@@ -381,11 +543,8 @@ export const ForecastProvider = ({ children }) => {
                            (data.products?.length || 0) + 
                            (data.customers?.length || 0);
         
-        if (totalRecords === 0) {
-          toast.success('Database is empty - ready for new data');
-        } else {
-          toast.success(`Data loaded successfully (${totalRecords} records)`);
-        }
+        // Suppress routine data load toasts to reduce notification barrage
+        // Only show if there's an error or if explicitly needed
       } catch (error) {
         console.error('Error fetching data:', error);
         actions.setError('Failed to load data');
@@ -498,32 +657,89 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    bulkUpdateForecast: async (salesData, operation = 'add') => {
+    bulkUpdateForecast: async (salesData, operation = 'add', skipOptimistic = false) => {
       try {
-        actions.setLoading(true);
-        // Transform sales data to the format expected by the backend
-        const forecasts = salesData.map(sale => ({
-          unit_id: sale.unit_id, // Keep as unit_id for backend
-          customer_id: sale.customer_id,
-          period: sale.period ? `${sale.period}-01` : sale.period, // Convert 2025-09 back to 2025-09-01 for backend
-          quantity: sale.quantity,
-          unit_price: sale.unit_price, // Keep as unit_price for backend
-          total_revenue: sale.total_revenue,
-          forecast_id: sale.forecast_id
-        }));
-        
-        const response = await api.post('/forecast/bulk_update', { 
-          forecasts,
-          operation 
-        });
-        await actions.fetchAllData();
+        if (!skipOptimistic) {
+          // Store previous state for rollback
+          previousSalesState = [...(state.data.sales_forecast || [])];
+          
+          // Optimistically update local state immediately
+          dispatch({
+            type: actionTypes.OPTIMISTIC_UPDATE_SALES,
+            payload: {
+              salesData,
+              operation,
+              pendingId: Date.now()
+            }
+          });
+          
+          // Add to pending updates and debounce save
+          pendingUpdates.push(...salesData);
+          debouncedSaveRef.current(salesData, operation, state.activeScenario, dispatch, previousSalesState);
+        } else {
+          // Direct save without optimistic update (for initial loads, etc.)
+          actions.setLoading(true);
+          const forecasts = salesData.map(sale => ({
+            unit_id: sale.unit_id,
+            customer_id: sale.customer_id,
+            period: sale.period ? `${sale.period}-01` : sale.period,
+            quantity: sale.quantity,
+            unit_price: sale.unit_price,
+            total_revenue: sale.total_revenue,
+            forecast_id: sale.forecast_id || state.activeScenario
+          }));
+          
+          await api.post('/forecast/bulk_update', { 
+            forecasts,
+            operation 
+          }, { suppressSuccessToast: true });
+          
+          // Only fetch sales data, not all data
+          const salesRes = await api.get(`/data/sales${state.activeScenario ? `?forecast_id=${state.activeScenario}` : ''}`, { suppressErrorToast: true });
+          const sales = salesRes?.data || [];
+          const normalizedSales = sales.map(sale => ({
+            ...sale,
+            period: sale.period ? sale.period.substring(0, 7) : sale.period
+          }));
+          
+          dispatch({
+            type: actionTypes.UPDATE_DATA,
+            payload: { type: 'sales_forecast', data: normalizedSales }
+          });
+        }
       } catch (error) {
         console.error('Error bulk updating forecast:', error);
-        // Error is already handled by API client
-        throw error; // Re-throw so the component can handle it
+        if (!skipOptimistic && previousSalesState) {
+          // Rollback on error
+          dispatch({ 
+            type: actionTypes.ROLLBACK_SALES_UPDATE, 
+            payload: { previousSales: previousSalesState } 
+          });
+        }
+        throw error;
       } finally {
-        actions.setLoading(false);
+        if (skipOptimistic) {
+          actions.setLoading(false);
+        }
       }
+    },
+    
+    // New function for immediate optimistic update (for single cell edits)
+    updateSalesForecastOptimistic: (salesData, operation = 'replace') => {
+      previousSalesState = [...(state.data.sales_forecast || [])];
+      
+      dispatch({
+        type: actionTypes.OPTIMISTIC_UPDATE_SALES,
+        payload: {
+          salesData,
+          operation,
+          pendingId: Date.now()
+        }
+      });
+      
+      // Save immediately for single edits (flush any pending debounced saves first)
+      debouncedSaveRef.current.flush();
+      debouncedSaveRef.current(salesData, operation, state.activeScenario, dispatch, previousSalesState);
     },
 
     // Removed updateSalesRecord function - use bulkUpdateForecast instead
@@ -576,9 +792,8 @@ export const ForecastProvider = ({ children }) => {
         });
 
         const response = await api.post('/forecast/update', backendUpdateData);
-        // API client already handles response format
-        toast.success('Forecast updated successfully');
-        actions.fetchAllData(); // Refresh data
+        // Suppress success toast for routine updates to reduce notification barrage
+        // actions.fetchAllData(); // Refresh data - removed to avoid full reload
       } catch (error) {
         console.error('Error updating forecast:', error);
         actions.setError('Failed to update forecast');
@@ -597,8 +812,7 @@ export const ForecastProvider = ({ children }) => {
           ? { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) }
           : undefined;
         const response = await api.delete(`/forecast/delete/${backendTableName}/${recordId}`, { params });
-        // API client already handles response format
-        toast.success('Forecast deleted successfully');
+        // Suppress success toast for routine deletes
         actions.fetchAllData(); // Refresh data
       } catch (error) {
         console.error('Error deleting forecast:', error);
