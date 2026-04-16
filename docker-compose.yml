@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/data
       - ./app:/app
+      - ./scripts:/scripts
     environment:
       # Set to 'true' to force reload CSV data over existing database
       - FORCE_DB_RELOAD=false

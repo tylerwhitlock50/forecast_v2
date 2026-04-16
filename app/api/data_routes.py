@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
 
 from db import get_table_data
+from utils.data_quality import get_incomplete_items
+from db.models import ForecastResponse
 
 
 router = APIRouter(prefix="/data", tags=["data"])
@@ -103,5 +105,28 @@ async def get_table_data_endpoint(
         raise HTTPException(
             status_code=500, 
             detail=f"Error fetching data from table '{table_name}': {str(e)}"
+        )
+
+@router.get("/validation/issues", response_model=ForecastResponse)
+async def get_validation_issues():
+    """
+    Get data validation issues including incomplete items
+    """
+    try:
+        result = get_incomplete_items()
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["error"])
+        
+        return ForecastResponse(
+            status="success",
+            data=result["data"],
+            message="Validation issues retrieved successfully"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving validation issues: {str(e)}"
         )
 

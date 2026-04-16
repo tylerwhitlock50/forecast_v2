@@ -13,11 +13,13 @@ import ProductTable from './ProductTable';
 import ProductModal from './ProductModal';
 import ProductSummary from './ProductSummary';
 import ProductValidation from './ProductValidation';
+import ProductImportModal from '../RevenueForecasting/ProductImportModal';
 
 const ProductManagement = () => {
   const { data, actions, loading } = useForecast();
   const [activeTab, setActiveTab] = useState('table');
   const [showProductModal, setShowProductModal] = useState(false);
+  const [showProductImportModal, setShowProductImportModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
@@ -263,6 +265,11 @@ const ProductManagement = () => {
       },
       variant: 'default',
       className: 'bg-orange-600 hover:bg-orange-700'
+    },
+    {
+      label: 'Import Products',
+      onClick: () => setShowProductImportModal(true),
+      variant: 'outline'
     }
   ];
 
@@ -408,6 +415,15 @@ const ProductManagement = () => {
         bomData={data.bom_definitions || []}
         routerData={data.router_definitions || []}
         actions={actions}
+      />
+
+      <ProductImportModal
+        isOpen={showProductImportModal}
+        onClose={() => setShowProductImportModal(false)}
+        onComplete={async () => {
+          await actions.fetchAllData();
+          setShowProductImportModal(false);
+        }}
       />
     </div>
   );

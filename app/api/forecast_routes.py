@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any, List
 from db import get_forecast_data, get_saved_forecast_results
 from db.models import ForecastResponse, SQLApplyRequest
 from db import execute_sql
+from utils.period_normalizer import normalize_period
 import uuid
 import sqlite3
 from datetime import datetime
@@ -135,15 +136,22 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Dict[str,
             (new_forecast_id, name, description)
         )
 
-        # Duplicate sales
+        # Duplicate sales (normalize periods during duplication)
         cursor.execute("SELECT customer_id, unit_id, period, quantity, unit_price, total_revenue FROM sales WHERE forecast_id = ?", (forecast_id,))
         for s in cursor.fetchall():
+            # Normalize period if needed
+            period = s[2]  # period is at index 2
+            if period:
+                normalized_period = normalize_period(period)
+                if normalized_period:
+                    period = normalized_period
+            
             cursor.execute(
                 """
                 INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (f"SAL-{uuid.uuid4().hex[:8].upper()}", s[0], s[1], s[2], s[3], s[4], s[5], new_forecast_id)
+                (f"SAL-{uuid.uuid4().hex[:8].upper()}", s[0], s[1], period, s[3], s[4], s[5], new_forecast_id)
             )
 
         # Duplicate expenses
@@ -287,3 +295,388 @@ async def get_saved_forecast_results_endpoint(
         },
         message=f"Retrieved {len(result['data'])} forecast results"
     )
+
+@router.post("/bulk_create_customers", response_model=ForecastResponse)
+async def bulk_create_customers(customers_data: Dict[str, Any]):
+    """
+    Bulk create customers from CSV import
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        customers = customers_data.get('customers', [])
+        options = customers_data.get('options', {})
+        merge_strategy = options.get('merge_strategy', 'skip')  # 'skip', 'update', 'create_new'
+        
+        if not customers:
+            raise HTTPException(status_code=400, detail="No customer data provided")
+        
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+        errors = []
+        
+        for idx, customer in enumerate(customers):
+            try:
+                customer_id = customer.get('customer_id')
+                customer_name = customer.get('customer_name', '')
+                
+                if not customer_id or not customer_name:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': 'Missing customer_id or customer_name'
+                    })
+                    continue
+                
+                # Check if customer exists
+                cursor.execute("SELECT customer_id FROM customers WHERE customer_id = ?", (customer_id,))
+                exists = cursor.fetchone()
+                
+                if exists:
+                    if merge_strategy == 'skip':
+                        skipped_count += 1
+                        continue
+                    elif merge_strategy == 'update':
+                        cursor.execute("""
+                            UPDATE customers 
+                            SET customer_name = ?, customer_type = ?, region = ?
+                            WHERE customer_id = ?
+                        """, (
+                            customer_name,
+                            customer.get('customer_type', ''),
+                            customer.get('region', ''),
+                            customer_id
+                        ))
+                        updated_count += 1
+                    elif merge_strategy == 'create_new':
+                        # Generate new ID
+                        cursor.execute("SELECT customer_id FROM customers ORDER BY customer_id DESC LIMIT 1")
+                        last = cursor.fetchone()
+                        if last and last[0].startswith('CUST-'):
+                            num = int(last[0].split('-')[1]) + 1
+                            customer_id = f"CUST-{num:03d}"
+                        else:
+                            customer_id = "CUST-001"
+                        cursor.execute("""
+                            INSERT INTO customers (customer_id, customer_name, customer_type, region)
+                            VALUES (?, ?, ?, ?)
+                        """, (
+                            customer_id,
+                            customer_name,
+                            customer.get('customer_type', ''),
+                            customer.get('region', '')
+                        ))
+                        created_count += 1
+                else:
+                    cursor.execute("""
+                        INSERT INTO customers (customer_id, customer_name, customer_type, region)
+                        VALUES (?, ?, ?, ?)
+                    """, (
+                        customer_id,
+                        customer_name,
+                        customer.get('customer_type', ''),
+                        customer.get('region', '')
+                    ))
+                    created_count += 1
+            except Exception as e:
+                errors.append({
+                    'row': idx + 1,
+                    'error': str(e)
+                })
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={
+                'created': created_count,
+                'updated': updated_count,
+                'skipped': skipped_count,
+                'errors': errors
+            },
+            message=f"Processed {len(customers)} customers: {created_count} created, {updated_count} updated, {skipped_count} skipped"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error bulk creating customers: {str(e)}")
+
+@router.post("/bulk_create_products", response_model=ForecastResponse)
+async def bulk_create_products(products_data: Dict[str, Any]):
+    """
+    Bulk create products from CSV import
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        products = products_data.get('products', [])
+        options = products_data.get('options', {})
+        merge_strategy = options.get('merge_strategy', 'skip')  # 'skip', 'update', 'create_new'
+        
+        if not products:
+            raise HTTPException(status_code=400, detail="No product data provided")
+        
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+        errors = []
+        
+        for idx, product in enumerate(products):
+            try:
+                unit_id = product.get('unit_id') or product.get('product_id')
+                unit_name = product.get('unit_name') or product.get('product_name', '')
+                
+                if not unit_id or not unit_name:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': 'Missing unit_id or unit_name'
+                    })
+                    continue
+                
+                # Check if product exists
+                cursor.execute("SELECT unit_id FROM units WHERE unit_id = ?", (unit_id,))
+                exists = cursor.fetchone()
+                
+                if exists:
+                    if merge_strategy == 'skip':
+                        skipped_count += 1
+                        continue
+                    elif merge_strategy == 'update':
+                        cursor.execute("""
+                            UPDATE units 
+                            SET unit_name = ?, unit_description = ?, base_price = ?, unit_type = ?, bom_id = ?, router_id = ?
+                            WHERE unit_id = ?
+                        """, (
+                            unit_name,
+                            product.get('unit_description', ''),
+                            product.get('base_price', 0) or 0,
+                            product.get('unit_type', ''),
+                            product.get('bom_id', ''),
+                            product.get('router_id', ''),
+                            unit_id
+                        ))
+                        updated_count += 1
+                    elif merge_strategy == 'create_new':
+                        # Generate new ID
+                        cursor.execute("SELECT unit_id FROM units ORDER BY unit_id DESC LIMIT 1")
+                        last = cursor.fetchone()
+                        if last and last[0].startswith('PROD-'):
+                            num = int(last[0].split('-')[1]) + 1
+                            unit_id = f"PROD-{num:03d}"
+                        else:
+                            unit_id = "PROD-001"
+                        cursor.execute("""
+                            INSERT INTO units (unit_id, unit_name, unit_description, base_price, unit_type, bom_id, router_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            unit_id,
+                            unit_name,
+                            product.get('unit_description', ''),
+                            product.get('base_price', 0) or 0,
+                            product.get('unit_type', ''),
+                            product.get('bom_id', ''),
+                            product.get('router_id', '')
+                        ))
+                        created_count += 1
+                else:
+                    cursor.execute("""
+                        INSERT INTO units (unit_id, unit_name, unit_description, base_price, unit_type, bom_id, router_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        unit_id,
+                        unit_name,
+                        product.get('unit_description', ''),
+                        product.get('base_price', 0) or 0,
+                        product.get('unit_type', ''),
+                        product.get('bom_id', ''),
+                        product.get('router_id', '')
+                    ))
+                    created_count += 1
+            except Exception as e:
+                errors.append({
+                    'row': idx + 1,
+                    'error': str(e)
+                })
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={
+                'created': created_count,
+                'updated': updated_count,
+                'skipped': skipped_count,
+                'errors': errors
+            },
+            message=f"Processed {len(products)} products: {created_count} created, {updated_count} updated, {skipped_count} skipped"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error bulk creating products: {str(e)}")
+
+@router.post("/smart_import_sales", response_model=ForecastResponse)
+async def smart_import_sales(sales_data: Dict[str, Any]):
+    """
+    Smart import sales forecast with auto-creation of missing customers/products
+    """
+    try:
+        from db.database import db_manager
+        
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        
+        sales = sales_data.get('sales', [])
+        options = sales_data.get('options', {})
+        auto_create = options.get('autoCreate', True)
+        forecast_id = sales_data.get('forecast_id', 'F001')
+        
+        if not sales:
+            raise HTTPException(status_code=400, detail="No sales data provided")
+        
+        # Get existing customers and products
+        cursor.execute("SELECT customer_id, customer_name FROM customers")
+        existing_customers = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        cursor.execute("SELECT unit_id, unit_name FROM units")
+        existing_products = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Detect missing items
+        missing_customers = {}
+        missing_products = {}
+        
+        for sale in sales:
+            customer_id = sale.get('customer_id')
+            product_id = sale.get('product_id') or sale.get('unit_id')
+            
+            if customer_id and customer_id not in existing_customers:
+                if customer_id not in missing_customers:
+                    missing_customers[customer_id] = customer_id
+            
+            if product_id and product_id not in existing_products:
+                if product_id not in missing_products:
+                    missing_products[product_id] = product_id
+        
+        # Auto-create missing items if enabled
+        created_customers = []
+        created_products = []
+        
+        if auto_create and missing_customers:
+            for customer_id in missing_customers.keys():
+                try:
+                    cursor.execute("""
+                        INSERT INTO customers (customer_id, customer_name, customer_type, region)
+                        VALUES (?, ?, ?, ?)
+                    """, (customer_id, customer_id, 'Unknown', 'Unknown'))
+                    created_customers.append(customer_id)
+                    existing_customers[customer_id] = customer_id
+                except sqlite3.IntegrityError:
+                    pass  # Already exists
+        
+        if auto_create and missing_products:
+            for product_id in missing_products.keys():
+                try:
+                    cursor.execute("""
+                        INSERT INTO units (unit_id, unit_name, base_price)
+                        VALUES (?, ?, ?)
+                    """, (product_id, product_id, 0))
+                    created_products.append(product_id)
+                    existing_products[product_id] = product_id
+                except sqlite3.IntegrityError:
+                    pass  # Already exists
+        
+        # Import sales data
+        imported_count = 0
+        errors = []
+        
+        for idx, sale in enumerate(sales):
+            try:
+                customer_id = sale.get('customer_id')
+                product_id = sale.get('product_id') or sale.get('unit_id')
+                period = sale.get('period', '')
+                quantity = float(sale.get('quantity', 0))
+                price = float(sale.get('price') or sale.get('unit_price', 0))
+                
+                # Validate
+                if not customer_id or not product_id or not period:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': 'Missing required fields'
+                    })
+                    continue
+                
+                if customer_id not in existing_customers:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': f'Customer {customer_id} does not exist'
+                    })
+                    continue
+                
+                if product_id not in existing_products:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': f'Product {product_id} does not exist'
+                    })
+                    continue
+                
+                # Normalize period to standard format (YYYY-MM, YYYY-QX, or YYYY-WXX)
+                from utils.period_normalizer import normalize_period
+                normalized_period = normalize_period(period)
+                if normalized_period:
+                    period = normalized_period
+                else:
+                    errors.append({
+                        'row': idx + 1,
+                        'error': f'Invalid period format: {period}'
+                    })
+                    continue
+                
+                sale_id = f"SAL-{uuid.uuid4().hex[:8].upper()}"
+                total_revenue = quantity * price
+                
+                # Check if exists
+                cursor.execute("""
+                    SELECT sale_id FROM sales 
+                    WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
+                """, (customer_id, product_id, period, forecast_id))
+                
+                if cursor.fetchone():
+                    # Update existing
+                    cursor.execute("""
+                        UPDATE sales 
+                        SET quantity = ?, unit_price = ?, total_revenue = ?
+                        WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
+                    """, (quantity, price, total_revenue, customer_id, product_id, period, forecast_id))
+                else:
+                    # Insert new
+                    cursor.execute("""
+                        INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (sale_id, customer_id, product_id, period, quantity, price, total_revenue, forecast_id))
+                
+                imported_count += 1
+            except Exception as e:
+                errors.append({
+                    'row': idx + 1,
+                    'error': str(e)
+                })
+        
+        conn.commit()
+        db_manager.close_connection(conn)
+        
+        return ForecastResponse(
+            status="success",
+            data={
+                'imported': imported_count,
+                'created_customers': created_customers,
+                'created_products': created_products,
+                'errors': errors
+            },
+            message=f"Imported {imported_count} sales records. Created {len(created_customers)} customers and {len(created_products)} products."
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error smart importing sales: {str(e)}")

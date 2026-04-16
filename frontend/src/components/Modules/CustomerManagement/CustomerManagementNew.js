@@ -13,11 +13,13 @@ import CustomerTable from './CustomerTable';
 import CustomerModal from './CustomerModal';
 import CustomerSummary from './CustomerSummary';
 import CustomerValidation from './CustomerValidation';
+import CustomerImportModal from '../RevenueForecasting/CustomerImportModal';
 
 const CustomerManagement = () => {
   const { data, actions, loading } = useForecast();
   const [activeTab, setActiveTab] = useState('table');
   const [showCustomerModal, setShowCustomerModal] = useState(false);
+  const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterSegment, setFilterSegment] = useState('all');
@@ -231,6 +233,11 @@ const CustomerManagement = () => {
       },
       variant: 'default',
       className: 'bg-orange-600 hover:bg-orange-700'
+    },
+    {
+      label: 'Import Customers',
+      onClick: () => setShowCustomerImportModal(true),
+      variant: 'outline'
     }
   ];
 
@@ -374,6 +381,15 @@ const CustomerManagement = () => {
         onSave={handleSaveCustomer}
         customer={editingCustomer}
         existingCustomers={data.customers || []}
+      />
+
+      <CustomerImportModal
+        isOpen={showCustomerImportModal}
+        onClose={() => setShowCustomerImportModal(false)}
+        onComplete={async () => {
+          await actions.fetchAllData();
+          setShowCustomerImportModal(false);
+        }}
       />
     </div>
   );

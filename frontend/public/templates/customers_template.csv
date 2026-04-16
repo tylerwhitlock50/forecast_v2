@@ -1,0 +1,6 @@
+customer_id,customer_name,customer_type,region
+CUST-001,Example Customer Inc.,D2C-WEB,US
+CUST-002,Another Customer LLC,DEALER,North America
+CUST-003,Sample Company,Enterprise,Europe
+
+

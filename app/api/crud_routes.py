@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any, List
 from db import get_forecast_data, get_saved_forecast_results
 from db.models import ForecastResponse, SQLApplyRequest
 from db import execute_sql
+from utils.period_normalizer import normalize_period
 import uuid
 import sqlite3
 from datetime import datetime
@@ -124,6 +125,16 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
         updated_count = 0
         
         for forecast in forecasts:
+            # Normalize period before processing
+            period = forecast.get('period', '')
+            if period:
+                normalized_period = normalize_period(period)
+                if normalized_period:
+                    period = normalized_period
+                else:
+                    # Skip invalid periods
+                    continue
+            
             # Check if record exists
             cursor.execute("""
                 SELECT quantity, unit_price, total_revenue
@@ -132,7 +143,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
             """, (
                 forecast.get('customer_id'),
                 forecast.get('unit_id'),
-                forecast.get('period'),
+                period,
                 forecast.get('forecast_id', 'F001')
             ))
             
@@ -165,7 +176,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                     new_revenue,
                     forecast.get('customer_id'),
                     forecast.get('unit_id'),
-                    forecast.get('period'),
+                    period,
                     forecast.get('forecast_id', 'F001')
                 ))
             else:
@@ -178,7 +189,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                     sale_id,
                     forecast.get('customer_id'),
                     forecast.get('unit_id'),
-                    forecast.get('period'),
+                    period,
                     forecast.get('quantity', 0),
                     forecast.get('unit_price', 0),
                     forecast.get('total_revenue', 0),
@@ -236,6 +247,13 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
         # Handle direct sales data from frontend
         if forecast_data.get('sales'):
             sales = forecast_data['sales']
+            # Normalize period
+            period = sales.get('period', '')
+            if period:
+                normalized_period = normalize_period(period)
+                if normalized_period:
+                    period = normalized_period
+            
             sale_id = str(uuid.uuid4())
             cursor.execute("""
                 INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
@@ -244,7 +262,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                 sale_id, 
                 sales['customer_id'], 
                 sales['unit_id'], 
-                sales['period'], 
+                period, 
                 sales['quantity'], 
                 sales['unit_price'], 
                 sales['total_revenue'],

@@ -11,7 +11,12 @@
 .grid-container {
   border: 1px solid #dee2e6;
   border-top: none;
-  overflow: auto;
+  overflow: hidden;
+  position: relative;
+  flex: 1 1 0%;
+  min-height: 400px;
+  height: 100%;
+  width: 100%;
 }
 
 .grid-content {

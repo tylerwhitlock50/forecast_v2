@@ -20,13 +20,14 @@ const PageHeader = ({
           )}
         </div>
         {actions && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {actions.map((action, index) => (
               <Button
                 key={index}
                 variant={action.variant || "default"}
                 size={action.size || "default"}
                 onClick={action.onClick}
+                className={action.className}
               >
                 {action.label}
               </Button>

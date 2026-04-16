@@ -2,6 +2,7 @@ import React, { createContext, useContext, useReducer, useEffect, useRef } from 
 import api from '../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { debounce } from 'lodash';
+import { normalizePeriod } from '../utils/periodNormalizer';
 
 // Initial state
 const initialState = {
@@ -420,7 +421,7 @@ export const ForecastProvider = ({ children }) => {
           id: sale.sale_id,
           product_id: sale.unit_id, // Map unit_id to product_id
           customer_id: sale.customer_id,
-          period: sale.period ? sale.period.substring(0, 7) : sale.period, // Convert 2025-09-01 to 2025-09
+          period: sale.period ? normalizePeriod(sale.period) : sale.period, // Normalize period format
           quantity: sale.quantity,
           price: sale.unit_price,
           total_revenue: sale.total_revenue,
@@ -430,7 +431,7 @@ export const ForecastProvider = ({ children }) => {
         // Also normalize the sales data period format for direct use
         const normalizedSales = sales.map(sale => ({
           ...sale,
-          period: sale.period ? sale.period.substring(0, 7) : sale.period // Convert 2025-09-01 to 2025-09
+          period: sale.period ? normalizePeriod(sale.period) : sale.period // Normalize period format
         }));
 
         // Transform payroll to employees format
@@ -699,7 +700,7 @@ export const ForecastProvider = ({ children }) => {
           const sales = salesRes?.data || [];
           const normalizedSales = sales.map(sale => ({
             ...sale,
-            period: sale.period ? sale.period.substring(0, 7) : sale.period
+            period: sale.period ? normalizePeriod(sale.period) : sale.period
           }));
           
           dispatch({

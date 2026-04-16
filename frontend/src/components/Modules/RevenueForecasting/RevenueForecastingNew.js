@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
-import DatePicker from 'react-datepicker';
-import 'react-datepicker/dist/react-datepicker.css';
+import api from '../../../lib/apiClient';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -20,6 +19,9 @@ import RevenueValidation from './RevenueValidation';
 import DataDebugger from './DataDebugger';
 import ForecastLineModal from './ForecastLineModal';
 import DateRangeModal from './DateRangeModal';
+import CSVUploadModal from './CSVUploadModal';
+import CustomerImportModal from './CustomerImportModal';
+import ProductImportModal from './ProductImportModal';
 
 // Format a week label with the date span
 const formatWeekLabel = (weekStart, weekEnd, weekNumber) => {
@@ -82,32 +84,114 @@ const generateTimePeriods = (timeRange, count = 12) => {
   return periods;
 };
 
+// Extract formatted YYYY-MM strings from the stored custom range
+const getFormattedDateRange = (customDateRange) => {
+  if (!customDateRange) return null;
+  
+  const startMonth = String(customDateRange.start.month).padStart(2, '0');
+  const endMonth = String(customDateRange.end.month).padStart(2, '0');
+  
+  return {
+    start: `${customDateRange.start.year}-${startMonth}`,
+    end: `${customDateRange.end.year}-${endMonth}`
+  };
+};
+
+// Build the time period array based on range and optional custom dates
+const buildTimePeriods = (timeRange, customDateRange) => {
+  const formattedRange = getFormattedDateRange(customDateRange);
+  
+  if (formattedRange) {
+    const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
+    const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
+
+    const startDate = new Date(startYear, startMonth - 1, 1);
+    const endDate = new Date(endYear, endMonth, 0); // last day of end month
+
+    if (startDate > endDate) {
+      console.warn('Custom date range start is after end; no periods generated.');
+      return [];
+    }
+
+    const periods = [];
+
+    if (timeRange === 'weekly') {
+      let current = getStartOfWeek(startDate);
+      const endBoundary = endDate;
+
+      while (current <= endBoundary) {
+        const weekStart = getStartOfWeek(current);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+
+        const { year, week } = getISOWeekInfo(weekStart);
+        const key = `${year}-W${String(week).padStart(2, '0')}`;
+        const label = formatWeekLabel(weekStart, weekEnd, week);
+
+        periods.push({ key, label });
+        current.setDate(current.getDate() + 7);
+      }
+
+      return periods;
+    }
+
+    if (timeRange === 'quarterly') {
+      // Align start to the beginning of its quarter
+      const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
+      let current = new Date(startDate.getFullYear(), startQuarterMonth, 1);
+
+      while (current <= endDate) {
+        const quarter = Math.floor(current.getMonth() / 3) + 1;
+        const key = `${current.getFullYear()}-Q${quarter}`;
+        const label = `Q${quarter} ${current.getFullYear()}`;
+
+        periods.push({ key, label });
+        current.setMonth(current.getMonth() + 3, 1);
+      }
+
+      return periods;
+    }
+
+    // Monthly
+    let current = new Date(startDate);
+    while (current <= endDate) {
+      const key = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
+      const label = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
+
+      periods.push({ key, label });
+      current.setMonth(current.getMonth() + 1, 1);
+    }
+
+    return periods;
+  }
+
+  // Use default logic (current date + next N months)
+  const monthCount = timeRange === 'monthly' ? 12 : timeRange === 'quarterly' ? 4 : 52;
+  return generateTimePeriods(timeRange, monthCount);
+};
+
 const RevenueForecasting = () => {
   const { data, actions, loading, scenarios, activeScenario } = useForecast();
   const [activeTab, setActiveTab] = useState('matrix');
   const [selectedSegment, setSelectedSegment] = useState('all');
   const [timeRange, setTimeRange] = useState('monthly');
   const [segments, setSegments] = useState([]);
-  const [bulkImportMode, setBulkImportMode] = useState(false);
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
   const [showDataDebugger, setShowDataDebugger] = useState(false);
+  const [showSalesImportModal, setShowSalesImportModal] = useState(false);
+  const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
+  const [showProductImportModal, setShowProductImportModal] = useState(false);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [customDateRange, setCustomDateRange] = useState(null);
-  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
-  const [dateRangeStart, setDateRangeStart] = useState(null);
-  const [dateRangeEnd, setDateRangeEnd] = useState(null);
   const [showDateRangeModal, setShowDateRangeModal] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState(null);
-  const [groupByYear, setGroupByYear] = useState(false);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
 
   // Load persisted preferences
   useEffect(() => {
     try {
       const savedTimeRange = localStorage.getItem('revenue_timeRange');
       const savedCustomRange = localStorage.getItem('revenue_customDateRange');
-      const savedVisibleColumns = localStorage.getItem('revenue_visibleColumns');
-      const savedGroupByYear = localStorage.getItem('revenue_groupByYear');
       
       if (savedTimeRange) {
         setTimeRange(savedTimeRange);
@@ -118,16 +202,27 @@ const RevenueForecasting = () => {
           setCustomDateRange(parsed);
         }
       }
-      if (savedVisibleColumns) {
-        setVisibleColumns(JSON.parse(savedVisibleColumns));
-      }
-      if (savedGroupByYear) {
-        setGroupByYear(savedGroupByYear === 'true');
-      }
     } catch (err) {
       console.warn('Unable to load saved preferences', err);
     }
   }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Press ? to show shortcuts
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setShowKeyboardShortcuts(true);
+      }
+      // Press Escape to close shortcuts
+      if (e.key === 'Escape' && showKeyboardShortcuts) {
+        setShowKeyboardShortcuts(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showKeyboardShortcuts]);
 
   // Persist preferences
   useEffect(() => {
@@ -138,14 +233,10 @@ const RevenueForecasting = () => {
       } else {
         localStorage.removeItem('revenue_customDateRange');
       }
-      if (visibleColumns) {
-        localStorage.setItem('revenue_visibleColumns', JSON.stringify(visibleColumns));
-      }
-      localStorage.setItem('revenue_groupByYear', groupByYear.toString());
     } catch (err) {
       console.warn('Unable to persist preferences', err);
     }
-  }, [timeRange, customDateRange, visibleColumns, groupByYear]);
+  }, [timeRange, customDateRange]);
   // Generate months and years for dropdowns
   const months = [
     { value: 1, label: 'January' },
@@ -165,27 +256,22 @@ const RevenueForecasting = () => {
   const currentYear = new Date().getFullYear();
   const years = Array.from({ length: 10 }, (_, i) => currentYear + i);
 
-  // Helper function to format date range for period generation
-  const getFormattedDateRange = () => {
-    if (!customDateRange) return null;
-    
-    const startMonth = String(customDateRange.start.month).padStart(2, '0');
-    const endMonth = String(customDateRange.end.month).padStart(2, '0');
-    
-    return {
-      start: `${customDateRange.start.year}-${startMonth}`,
-      end: `${customDateRange.end.year}-${endMonth}`
-    };
-  };
+  // Generate time periods with improved logic
+  const timePeriods = useMemo(() => {
+    return buildTimePeriods(timeRange, customDateRange);
+  }, [timeRange, customDateRange]);
 
   const rangeSummary = useMemo(() => {
+    const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
+
     if (customDateRange) {
       const monthsInRange = (customDateRange.end.year - customDateRange.start.year) * 12 +
         (customDateRange.end.month - customDateRange.start.month) + 1;
-      const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
-      return `${customDateRange.start.month}/${customDateRange.start.year} – ${customDateRange.end.month}/${customDateRange.end.year} • ${monthsInRange} ${unit}`;
+      const periodCount = timePeriods.length || monthsInRange;
+
+      return `${customDateRange.start.month}/${customDateRange.start.year} – ${customDateRange.end.month}/${customDateRange.end.year} • ${periodCount} ${unit}`;
     }
-    const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
+
     return `Default: next ${timePeriods.length} ${unit}`;
   }, [customDateRange, timePeriods, timeRange]);
 
@@ -241,7 +327,7 @@ const RevenueForecasting = () => {
 
   // Warn on invalid custom date range
   useEffect(() => {
-    const formattedRange = getFormattedDateRange();
+    const formattedRange = getFormattedDateRange(customDateRange);
     if (!formattedRange) return;
 
     const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
@@ -253,79 +339,6 @@ const RevenueForecasting = () => {
       toast.error('Start date must be before end date for the custom range');
     }
   }, [customDateRange]);
-
-  // Generate time periods with improved logic
-  const timePeriods = useMemo(() => {
-    const formattedRange = getFormattedDateRange();
-    
-    if (formattedRange) {
-      const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
-      const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
-
-      const startDate = new Date(startYear, startMonth - 1, 1);
-      const endDate = new Date(endYear, endMonth, 0); // last day of end month
-
-      if (startDate > endDate) {
-        console.warn('Custom date range start is after end; no periods generated.');
-        return [];
-      }
-
-      const periods = [];
-
-      if (timeRange === 'weekly') {
-        let current = getStartOfWeek(startDate);
-        const endBoundary = endDate;
-
-        while (current <= endBoundary) {
-          const weekStart = getStartOfWeek(current);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekStart.getDate() + 6);
-
-          const { year, week } = getISOWeekInfo(weekStart);
-          const key = `${year}-W${String(week).padStart(2, '0')}`;
-          const label = formatWeekLabel(weekStart, weekEnd, week);
-
-          periods.push({ key, label });
-          current.setDate(current.getDate() + 7);
-        }
-
-        return periods;
-      }
-
-      if (timeRange === 'quarterly') {
-        // Align start to the beginning of its quarter
-        const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
-        let current = new Date(startDate.getFullYear(), startQuarterMonth, 1);
-
-        while (current <= endDate) {
-          const quarter = Math.floor(current.getMonth() / 3) + 1;
-          const key = `${current.getFullYear()}-Q${quarter}`;
-          const label = `Q${quarter} ${current.getFullYear()}`;
-
-          periods.push({ key, label });
-          current.setMonth(current.getMonth() + 3, 1);
-        }
-
-        return periods;
-      }
-
-      // Monthly
-      let current = new Date(startDate);
-      while (current <= endDate) {
-        const key = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
-        const label = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
-
-        periods.push({ key, label });
-        current.setMonth(current.getMonth() + 1, 1);
-      }
-
-      return periods;
-    } else {
-      // Use default logic (current date + next N months)
-      const monthCount = timeRange === 'monthly' ? 12 : timeRange === 'quarterly' ? 4 : 52;
-      return generateTimePeriods(timeRange, monthCount);
-    }
-  }, [timeRange, customDateRange]);
 
   // Handle matrix data changes
   const handleMatrixDataChange = (newData) => {
@@ -368,42 +381,49 @@ const RevenueForecasting = () => {
     setSegments(uniqueSegments);
   }, [data.customers]);
 
-  // Handle bulk import
-  const handleBulkImport = (file) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const csv = e.target.result;
-        const lines = csv.split('\n');
-        const headers = lines[0].split(',');
+  // Handle smart sales import
+  const handleSmartSalesImport = async (importData) => {
+    try {
+      const { data: salesData, options, missingItems } = importData;
+      
+      // Transform data for API
+      const sales = salesData.map(item => ({
+        customer_id: item.customer_id,
+        product_id: item.product_id || item.unit_id,
+        period: item.period,
+        quantity: parseFloat(item.quantity) || 0,
+        price: parseFloat(item.price) || item.unit_price || 0
+      }));
+
+      const response = await api.post('/forecast/smart_import_sales', {
+        sales,
+        options: {
+          autoCreate: options?.autoCreate ?? true
+        },
+        forecast_id: activeScenario
+      });
+
+      if (response.status === 'success') {
+        toast.success(response.message);
         
-        const importedData = lines.slice(1).map(line => {
-          const values = line.split(',');
-          const item = {};
-          headers.forEach((header, index) => {
-            item[header.trim()] = values[index]?.trim();
-          });
-          return item;
-        });
-
-        const newSales = importedData.map(item => ({
-          unit_id: item.product_id,
-          customer_id: item.customer_id,
-          period: item.period ? item.period.substring(0, 7) : item.period,
-          quantity: parseFloat(item.quantity) || 0,
-          unit_price: parseFloat(item.price) || 0,
-          total_revenue: (parseFloat(item.quantity) || 0) * (parseFloat(item.price) || 0),
-          forecast_id: activeScenario
-        }));
-
-        const currentSales = data.sales_forecast || [];
-        actions.updateData('sales_forecast', [...currentSales, ...newSales]);
-        toast.success(`Imported ${newSales.length} sales items`);
-      } catch (error) {
-        toast.error('Failed to import file');
+        // Refresh data
+        await actions.fetchAllData();
+        
+        // If items were auto-created, switch to validation tab
+        if (response.data.created_customers?.length > 0 || response.data.created_products?.length > 0) {
+          setActiveTab('validation');
+          toast.info('Some items were auto-created. Please complete their details on the validation page.');
+        }
+        
+        return true;
+      } else {
+        throw new Error(response.message || 'Import failed');
       }
-    };
-    reader.readAsText(file);
+    } catch (error) {
+      console.error('Error importing sales:', error);
+      toast.error(`Import failed: ${error.message}`);
+      throw error;
+    }
   };
 
   // Handle bulk export
@@ -573,8 +593,6 @@ const RevenueForecasting = () => {
     );
   }
 
-  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
-
   const headerActions = [
     {
       label: 'Add Forecast Line',
@@ -583,8 +601,18 @@ const RevenueForecasting = () => {
       className: 'bg-orange-600 hover:bg-orange-700'
     },
     {
-      label: 'Bulk Import',
-      onClick: () => setBulkImportMode(!bulkImportMode),
+      label: 'Import Sales',
+      onClick: () => setShowSalesImportModal(true),
+      variant: 'outline'
+    },
+    {
+      label: 'Import Customers',
+      onClick: () => setShowCustomerImportModal(true),
+      variant: 'outline'
+    },
+    {
+      label: 'Import Products',
+      onClick: () => setShowProductImportModal(true),
       variant: 'outline'
     },
     {
@@ -598,23 +626,6 @@ const RevenueForecasting = () => {
       variant: 'outline'
     }
   ];
-  
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Press ? to show shortcuts
-      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        setShowKeyboardShortcuts(true);
-      }
-      // Press Escape to close shortcuts
-      if (e.key === 'Escape' && showKeyboardShortcuts) {
-        setShowKeyboardShortcuts(false);
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showKeyboardShortcuts]);
 
   if (showDataDebugger) {
     headerActions.push({
@@ -735,33 +746,34 @@ const RevenueForecasting = () => {
         onClose={() => setShowDateRangeModal(false)}
         onApply={(range) => {
           setCustomDateRange(range);
-          const start = new Date(range.start.year, range.start.month - 1, 1);
-          const end = new Date(range.end.year, range.end.month, 0);
-          setDateRangeStart(start);
-          setDateRangeEnd(end);
         }}
         currentRange={customDateRange}
       />
 
-      {/* Bulk Import Panel */}
-      {bulkImportMode && (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Bulk Import</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-4">
-              <Input
-                type="file"
-                accept=".csv"
-                onChange={(e) => e.target.files[0] && handleBulkImport(e.target.files[0])}
-                className="flex-1"
-              />
-              <Button variant="outline" onClick={() => setBulkImportMode(false)}>Cancel</Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Import Modals */}
+      <CSVUploadModal
+        isOpen={showSalesImportModal}
+        onClose={() => setShowSalesImportModal(false)}
+        onImport={handleSmartSalesImport}
+        importType="sales_forecast"
+        existingData={{ customers: data.customers || [], products: data.products || [] }}
+      />
+
+      <CustomerImportModal
+        isOpen={showCustomerImportModal}
+        onClose={() => setShowCustomerImportModal(false)}
+        onComplete={async () => {
+          await actions.fetchAllData();
+        }}
+      />
+
+      <ProductImportModal
+        isOpen={showProductImportModal}
+        onClose={() => setShowProductImportModal(false)}
+        onComplete={async () => {
+          await actions.fetchAllData();
+        }}
+      />
 
       {/* New Scenario Modal */}
       {showNewScenarioModal && (
@@ -926,12 +938,6 @@ const RevenueForecasting = () => {
               selectedSegment={selectedSegment}
               onDataChange={handleMatrixDataChange}
               onCellChange={handleCellChange}
-              timeRange={timeRange}
-              onTimeRangeChange={setTimeRange}
-              visibleColumns={visibleColumns}
-              onColumnVisibilityChange={setVisibleColumns}
-              groupByYear={groupByYear}
-              onGroupByYear={setGroupByYear}
             />
           </div>
         )}

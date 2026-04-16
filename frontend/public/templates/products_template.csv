@@ -1,0 +1,6 @@
+unit_id,unit_name,unit_description,base_price,unit_type,bom_id,router_id
+PROD-001,Product A,Description of Product A,99.99,Standard,BOM-001,ROUTER-001
+PROD-002,Product B,Description of Product B,149.99,Premium,BOM-002,ROUTER-002
+PROD-003,Product C,Description of Product C,79.99,Basic,BOM-003,ROUTER-003
+
+
