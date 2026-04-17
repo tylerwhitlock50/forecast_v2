@@ -326,7 +326,28 @@ export const ForecastProvider = ({ children }) => {
       dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarioId });
     },
     
-    updateScenario: (id, data) => dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id, data } }),
+    updateScenarioLocal: (id, data) => dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id, data } }),
+
+    updateScenario: async (scenarioId, updates) => {
+      try {
+        if (!scenarioId) return;
+        // Optimistically update local state so UI feels responsive
+        dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id: scenarioId, data: updates } });
+
+        await api.post('/forecast/update', {
+          table: 'forecast',
+          id: scenarioId,
+          updates,
+        });
+
+        // Refresh to reflect persisted state
+        await actions.fetchScenarios();
+      } catch (error) {
+        console.error('Error updating scenario:', error);
+        toast.error('Failed to update scenario');
+        throw error;
+      }
+    },
     
     addValidationError: (error) => dispatch({ type: actionTypes.ADD_VALIDATION_ERROR, payload: error }),
     
@@ -473,6 +494,7 @@ export const ForecastProvider = ({ children }) => {
             id: scenario.forecast_id,
             name: scenario.name || 'Unnamed Scenario',
             description: scenario.description || '',
+            notes: scenario.notes || '',
             isActive: false
           };
         });
@@ -580,6 +602,7 @@ export const ForecastProvider = ({ children }) => {
               id: scenario.forecast_id,
               name: scenario.name || 'Unnamed Scenario',
               description: scenario.description || '',
+              notes: scenario.notes || '',
               isActive: false
             };
           });

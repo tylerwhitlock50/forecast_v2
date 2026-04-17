@@ -106,7 +106,8 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS forecast (
                 forecast_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                description TEXT
+                description TEXT,
+                notes TEXT
             )
         ''')
         
@@ -478,6 +479,28 @@ class DatabaseManager:
             print("Expenses table migration completed successfully")
         except Exception as e:
             print(f"Error migrating expenses table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
+    def migrate_forecast_table(self):
+        """Add notes column to forecast table if missing (idempotent)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(forecast)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'notes' not in columns:
+                try:
+                    cursor.execute('ALTER TABLE forecast ADD COLUMN notes TEXT')
+                except sqlite3.OperationalError as alter_err:
+                    # Column may already exist under a concurrent startup; ignore
+                    if 'duplicate column name' not in str(alter_err).lower():
+                        raise
+            conn.commit()
+            print("Forecast table migration completed successfully")
+        except Exception as e:
+            print(f"Error migrating forecast table: {e}")
             conn.rollback()
         finally:
             self.close_connection(conn)
@@ -1093,6 +1116,8 @@ class DatabaseManager:
         print("Payroll table migration completed")
         self.migrate_expenses_table()
         print("Expenses table migration completed")
+        self.migrate_forecast_table()
+        print("Forecast table migration completed")
         
         # Check for force reload environment variable
         force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'
