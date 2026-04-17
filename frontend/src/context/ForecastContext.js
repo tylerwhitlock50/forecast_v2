@@ -632,12 +632,117 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    duplicateScenario: async (scenarioId, scenarioData = {}) => {
+    duplicateScenario: async (scenarioId, scenarioData = {}, overrides = {}) => {
       try {
         const response = await api.post(`/forecast/scenario/${scenarioId}/duplicate`, scenarioData);
         const newScenario = response.data;
         await actions.fetchScenarios();
         actions.switchScenario(newScenario.forecast_id);
+
+        // Apply optional overrides (price / qty multipliers, extend periods).
+        const priceMultiplier = Number.isFinite(Number(overrides.priceMultiplier))
+          ? Number(overrides.priceMultiplier)
+          : 1;
+        const quantityMultiplier = Number.isFinite(Number(overrides.quantityMultiplier))
+          ? Number(overrides.quantityMultiplier)
+          : 1;
+        const extendPeriods = Math.max(0, parseInt(overrides.extendPeriods, 10) || 0);
+
+        const hasScaleOverride = priceMultiplier !== 1 || quantityMultiplier !== 1;
+        const hasExtendOverride = extendPeriods > 0;
+
+        if (!hasScaleOverride && !hasExtendOverride) {
+          return newScenario;
+        }
+
+        try {
+          // Fetch newly duplicated scenario's sales.
+          const salesRes = await api.get(
+            `/data/sales?forecast_id=${newScenario.forecast_id}`,
+            { suppressErrorToast: true }
+          );
+          const sales = salesRes?.data || [];
+
+          // Build override records in memory.
+          const overrideRecords = [];
+
+          if (hasScaleOverride) {
+            sales.forEach(sale => {
+              const newQty = Number(sale.quantity || 0) * quantityMultiplier;
+              const newPrice = Number(sale.unit_price || 0) * priceMultiplier;
+              overrideRecords.push({
+                unit_id: sale.unit_id,
+                customer_id: sale.customer_id,
+                period: normalizePeriod(sale.period),
+                quantity: newQty,
+                unit_price: newPrice,
+                total_revenue: newQty * newPrice,
+                forecast_id: newScenario.forecast_id,
+              });
+            });
+          }
+
+          if (hasExtendOverride && sales.length > 0) {
+            // Lazy-load period helper to avoid a static cycle.
+            const { getNextNPeriods, inferPeriodType } = await import(
+              '../components/Modules/RevenueForecasting/periodUtils'
+            );
+
+            const normalizedSales = sales.map(s => ({
+              ...s,
+              _normalizedPeriod: normalizePeriod(s.period),
+            }));
+            const lastPeriod = normalizedSales
+              .map(s => s._normalizedPeriod)
+              .filter(Boolean)
+              .sort()
+              .slice(-1)[0];
+
+            if (lastPeriod) {
+              const periodType = inferPeriodType(lastPeriod) || 'monthly';
+              const nextPeriods = getNextNPeriods(lastPeriod, extendPeriods, periodType);
+
+              // One row per unit/customer combo that appears in the last period.
+              const lastSlice = normalizedSales.filter(s => s._normalizedPeriod === lastPeriod);
+              const comboMap = new Map();
+              lastSlice.forEach(s => {
+                const key = `${s.unit_id}||${s.customer_id}`;
+                comboMap.set(key, s);
+              });
+
+              comboMap.forEach(sale => {
+                const newQty = Number(sale.quantity || 0) * quantityMultiplier;
+                const newPrice = Number(sale.unit_price || 0) * priceMultiplier;
+                nextPeriods.forEach(periodKey => {
+                  overrideRecords.push({
+                    unit_id: sale.unit_id,
+                    customer_id: sale.customer_id,
+                    period: periodKey,
+                    quantity: newQty,
+                    unit_price: newPrice,
+                    total_revenue: newQty * newPrice,
+                    forecast_id: newScenario.forecast_id,
+                  });
+                });
+              });
+            }
+          }
+
+          if (overrideRecords.length > 0) {
+            // Chunk to 500 records per request.
+            const CHUNK = 500;
+            for (let i = 0; i < overrideRecords.length; i += CHUNK) {
+              const chunk = overrideRecords.slice(i, i + CHUNK);
+              // eslint-disable-next-line no-await-in-loop
+              await actions.bulkUpdateForecast(chunk, 'replace', true);
+            }
+          }
+        } catch (overrideError) {
+          console.error('Error applying scenario branch overrides:', overrideError);
+          toast.error(`Branched; overrides partially applied: ${overrideError?.message || 'unknown error'}`);
+          return newScenario;
+        }
+
         return newScenario;
       } catch (error) {
         console.error('Error duplicating scenario:', error);

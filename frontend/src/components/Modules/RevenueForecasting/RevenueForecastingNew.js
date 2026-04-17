@@ -21,6 +21,7 @@ import CustomerImportModal from './CustomerImportModal';
 import ProductImportModal from './ProductImportModal';
 import KeyboardShortcutsModal from './KeyboardShortcutsModal';
 import NewScenarioModal from './NewScenarioModal';
+import BranchScenarioModal from './BranchScenarioModal';
 import { buildTimePeriods, getFormattedDateRange } from './periodUtils';
 
 const RevenueForecasting = () => {
@@ -30,6 +31,7 @@ const RevenueForecasting = () => {
   const [timeRange, setTimeRange] = useState('monthly');
   const [segments, setSegments] = useState([]);
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
+  const [showBranchScenarioModal, setShowBranchScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
   const [showDataDebugger, setShowDataDebugger] = useState(false);
   const [showSalesImportModal, setShowSalesImportModal] = useState(false);
@@ -526,6 +528,15 @@ const RevenueForecasting = () => {
         <Button size="sm" variant="outline" onClick={() => setShowNewScenarioModal(true)}>
           New Scenario
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setShowBranchScenarioModal(true)}
+          disabled={!activeScenario}
+          title={!activeScenario ? 'Select an active scenario first' : 'Duplicate the active scenario with optional overrides'}
+        >
+          Branch Scenario
+        </Button>
       </div>
 
       {/* Compact Filter Bar */}
@@ -632,6 +643,21 @@ const RevenueForecasting = () => {
         open={showNewScenarioModal}
         onClose={() => setShowNewScenarioModal(false)}
         onCreate={(scenarioData) => actions.createScenario(scenarioData)}
+      />
+
+      <BranchScenarioModal
+        open={showBranchScenarioModal}
+        onClose={() => setShowBranchScenarioModal(false)}
+        scenarios={scenarios}
+        activeScenarioId={activeScenario}
+        onSubmit={async (sourceId, scenarioData, overrides) => {
+          const result = await actions.duplicateScenario(sourceId, scenarioData, overrides);
+          if (result) {
+            toast.success(`Branched to "${scenarioData.name}"`);
+            await actions.fetchAllData(result.forecast_id);
+          }
+          return result;
+        }}
       />
 
 
