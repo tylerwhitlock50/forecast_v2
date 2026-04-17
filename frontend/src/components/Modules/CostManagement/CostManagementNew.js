@@ -15,6 +15,7 @@ import {
   getBOMDetails,
   getRoutingDetails
 } from './CostCalculations';
+import CostWarningsBanner from '../../Common/CostWarningsBanner';
 
 // Simple mini chart component for monthly trends on individual cards
 const MiniTrendChart = ({ data, color = 'blue', height = 60 }) => {
@@ -327,6 +328,8 @@ const CostManagement = () => {
         description={`Manage your business costs and resource utilization. ${activeScenario ? `Active scenario: ${activeScenario}` : ''}`}
         actions={headerActions}
       />
+
+      <CostWarningsBanner />
 
       {/* Summary Statistics */}
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">

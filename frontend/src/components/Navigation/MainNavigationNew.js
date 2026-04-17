@@ -31,34 +31,27 @@ const navigationModules = {
   "Cost Management": {
     icon: "⚙️",
     routes: {
-      "Cost Overview": "/cost-management",
-      "Unit Management": "/units"
+      "Cost Overview": "/cost-management"
     }
   },
   "Resource Planning": {
     icon: "👥",
     routes: {
-      "Payroll Allocation": "/payroll",
-      "Department Management": "/departments",
-      "Labor Analysis": "/labor"
+      "Payroll Allocation": "/payroll"
     }
   },
   "Financial Planning": {
     icon: "💰",
     routes: {
       "Expense Management": "/expenses",
-      "Loan Schedules": "/loans",
-      "Cash Flow": "/cashflow"
+      "Loan Schedules": "/loans"
     }
   },
   "Reporting & Analysis": {
     icon: "📈",
     routes: {
       "Financial Reports": "/reporting",
-      "Scenario Comparison": "/reporting/comparison",
-      "Income Statement": "/income-statement",
-      "Scenario Analysis": "/scenarios",
-      "Data Completeness": "/data-check"
+      "Scenario Comparison": "/reporting/comparison"
     }
   }
 };
@@ -304,24 +297,16 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
       {!isCollapsed && (
         <div className="p-4 border-t border-border">
           <div className="space-y-2">
-            <Button 
-              variant="outline" 
-              size="sm"
-              className="w-full justify-start"
-              onClick={() => navigate('/data-check')}
-            >
-              🔍 Data Check
-            </Button>
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               size="sm"
               className="w-full justify-start"
               onClick={() => setShowLoadModal(true)}
             >
               📥 Load Database
             </Button>
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               size="sm"
               className="w-full justify-start"
               onClick={() => setShowSaveModal(true)}

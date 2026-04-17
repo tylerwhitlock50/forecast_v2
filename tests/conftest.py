@@ -14,7 +14,6 @@ from app.db import (
     get_execution_logs,
     replay_execution_logs,
     reset_to_initial_state,
-    ChatRequest,
     SQLApplyRequest,
     ForecastResponse
 )
@@ -103,51 +102,6 @@ def test_app(test_db_manager):
             raise HTTPException(status_code=500, detail=result["error"])
         return result
     
-    @test_app.post("/chat", response_model=ForecastResponse)
-    async def chat_endpoint(request: ChatRequest):
-        """Chat endpoint for testing"""
-        try:
-            mock_sql = f"-- Generated SQL for: {request.message}\nSELECT * FROM sales WHERE period = '2024-01';"
-            return ForecastResponse(
-                status="success",
-                data={
-                    "sql_statement": mock_sql,
-                    "explanation": f"Generated SQL query based on your request: {request.message}",
-                    "requires_approval": True
-                }
-            )
-        except Exception as e:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @test_app.post("/agent", response_model=ForecastResponse)
-    async def agent_endpoint(request: ChatRequest):
-        """Agent endpoint for testing"""
-        return ForecastResponse(
-            status="success",
-            data={"response": f"Agent processed: {request.message}"},
-            message="Agent response generated"
-        )
-    @test_app.post("/plan_execute", response_model=ForecastResponse)
-    async def plan_execute_endpoint(request: ChatRequest):
-        """Plan and execute endpoint for testing"""
-        return ForecastResponse(
-            status="success",
-            data={"plan": ["step 1"], "results": [{"step": "step 1", "result": "done"}]},
-            message="Plan executed",
-        )
-
- 
-    @test_app.post("/voice", response_model=ForecastResponse)
-    async def voice_endpoint(audio: UploadFile = File(...), session_id: Optional[str] = None):
-        """Voice endpoint for testing"""
-        await audio.read()
-        return ForecastResponse(
-            status="success",
-            data={"transcript": "test transcript", "response": "Agent processed: test transcript"},
-            message="Voice command processed",
-        )
-
     @test_app.post("/load_table", response_model=ForecastResponse)
     async def load_table_endpoint(table_name: str = Query(...), mode: str = Query("append"), csv_file: UploadFile = File(...)):
         await csv_file.read()

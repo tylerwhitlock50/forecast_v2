@@ -9,6 +9,7 @@ import ReportingControls from './components/ReportingControls';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/tabs';
+import CostWarningsBanner from '../../Common/CostWarningsBanner';
 
 const ReportingDashboard = () => {
   const { state, actions } = useForecast();
@@ -110,6 +111,8 @@ const ReportingDashboard = () => {
           </Button>
         </div>
       </div>
+
+      <CostWarningsBanner />
 
       {/* Controls */}
       <Card className="p-6">

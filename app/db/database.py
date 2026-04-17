@@ -487,26 +487,34 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        # Define CSV file mappings
+        # CSV load order matters: parent tables must land before tables
+        # that reference them via FOREIGN KEY. The previous ordering was
+        # alphabetical-ish and caused sales/router_operations/payroll
+        # loads to fail with FOREIGN KEY constraint errors.
         csv_mappings = {
+            # 1. Root tables (no FK dependencies)
             'customers.csv': 'customers',
             'units.csv': 'units',
-            'sales.csv': 'sales',
-            'bom.csv': 'bom',
-            'bom_definitions.csv': 'bom_definitions',
-            'routers.csv': 'router_definitions',
-            'router_operations.csv': 'router_operations',
-            'routers_legacy.csv': 'routers',
+            'forecast.csv': 'forecast',
             'machines.csv': 'machines',
             'labor_rates.csv': 'labor_rates',
-            'payroll.csv': 'payroll',
-            'payroll_config.csv': 'payroll_config',
-            'forecast.csv': 'forecast',
+            'bom_definitions.csv': 'bom_definitions',
+            'routers.csv': 'router_definitions',
             'expense_categories.csv': 'expense_categories',
-            'expenses.csv': 'expenses',
-            'expense_allocations.csv': 'expense_allocations',
             'loans.csv': 'loans',
-            'loan_payments.csv': 'loan_payments'
+            'payroll_config.csv': 'payroll_config',
+
+            # 2. Tables that depend on the roots
+            'bom.csv': 'bom',
+            'router_operations.csv': 'router_operations',   # -> router_definitions, machines, labor_rates
+            'routers_legacy.csv': 'routers',                # -> units, machines, labor_rates
+            'sales.csv': 'sales',                           # -> customers, units, forecast
+            'payroll.csv': 'payroll',                       # -> forecast
+            'expenses.csv': 'expenses',                     # -> expense_categories
+            'loan_payments.csv': 'loan_payments',           # -> loans
+
+            # 3. Tables that depend on the layer above
+            'expense_allocations.csv': 'expense_allocations',  # -> expenses
         }
         
         for csv_file, table_name in csv_mappings.items():

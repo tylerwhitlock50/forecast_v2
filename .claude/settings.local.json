@@ -10,7 +10,9 @@
       "Bash(sqlite3:*)",
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(awk '$1 > 500 {print $2}')",
+      "Bash(node --check frontend/src/App.js)"
     ],
     "deny": []
   }

@@ -5,6 +5,7 @@ import json
 
 from db.database import db_manager
 from db.models import ForecastResponse
+from utils.cost_rollup import calculate_unit_costs
 
 router = APIRouter(prefix="/source-data", tags=["source-data"])
 
@@ -21,13 +22,13 @@ async def get_sales_forecast_from_source(
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
-        # Build query with optional period and forecast filtering
+
         query = """
             SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity,
                    s.unit_price, s.total_revenue, s.forecast_id,
                    c.customer_name, c.customer_type, c.region,
-                   u.unit_name, u.unit_description, u.base_price, u.bom_id, u.router_id
+                   u.unit_name, u.unit_description, u.base_price,
+                   u.bom_id, u.bom_version, u.router_id
             FROM sales s
             LEFT JOIN customers c ON s.customer_id = c.customer_id
             LEFT JOIN units u ON s.unit_id = u.unit_id
@@ -50,110 +51,53 @@ async def get_sales_forecast_from_source(
             query += " WHERE " + " AND ".join(conditions)
 
         query += " ORDER BY s.period, s.customer_id, s.unit_id"
-        
+
         cursor.execute(query, params)
         sales_rows = cursor.fetchall()
-        
+
         columns = [description[0] for description in cursor.description]
         sales_data = [dict(zip(columns, row)) for row in sales_rows]
-        
-        # Get BOM costs for all units in this forecast
-        unit_ids = list(set(sale['unit_id'] for sale in sales_data if sale['unit_id']))
-        bom_costs = {}
-        
-        if unit_ids:
-            # Get BOM costs
-            placeholders = ','.join(['?' for _ in unit_ids])
-            cursor.execute(f"""
-                SELECT u.unit_id, u.bom_id, SUM(b.material_cost) as total_material_cost
-                FROM units u
-                LEFT JOIN bom b ON u.bom_id = b.bom_id
-                WHERE u.unit_id IN ({placeholders})
-                GROUP BY u.unit_id, u.bom_id
-            """, unit_ids)
-            
-            for row in cursor.fetchall():
-                bom_costs[row[0]] = row[2] or 0.0
-        
-        # Get labor rates for calculations
-        cursor.execute("SELECT rate_id, rate_amount FROM labor_rates")
-        labor_rates = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        # Get average labor rate from payroll or use default
-        cursor.execute("SELECT AVG(hourly_rate) FROM payroll WHERE hourly_rate > 0")
-        avg_labor_rate_result = cursor.fetchone()
-        avg_labor_rate = avg_labor_rate_result[0] if avg_labor_rate_result[0] else 35.0
-        
-        # Get router operations with machine costs
-        if unit_ids:
-            cursor.execute(f"""
-                SELECT u.unit_id, ro.machine_minutes, ro.labor_minutes, 
-                       m.machine_rate, ro.labor_type_id
-                FROM units u
-                LEFT JOIN router_operations ro ON u.router_id = ro.router_id
-                LEFT JOIN machines m ON ro.machine_id = m.machine_id
-                WHERE u.unit_id IN ({placeholders})
-                ORDER BY u.unit_id, ro.sequence
-            """, unit_ids)
-            
-            router_data = cursor.fetchall()
-            
-            # Calculate costs per unit
-            unit_costs = {}
-            for row in router_data:
-                unit_id = row[0]
-                machine_minutes = row[1] or 0.0
-                labor_minutes = row[2] or 0.0
-                machine_rate = row[3] or 0.0
-                labor_type_id = row[4]
-                
-                if unit_id not in unit_costs:
-                    unit_costs[unit_id] = {'machine_cost': 0.0, 'labor_cost': 0.0}
-                
-                # Machine cost (rate per hour * minutes / 60)
-                unit_costs[unit_id]['machine_cost'] += (machine_rate * machine_minutes / 60.0)
-                
-                # Labor cost (use specific rate or average)
-                labor_rate = labor_rates.get(labor_type_id, avg_labor_rate)
-                unit_costs[unit_id]['labor_cost'] += (labor_rate * labor_minutes / 60.0)
-        
-        # Calculate full forecast with costs
+
+        # Per-unit cost math lives in utils.cost_rollup so this endpoint
+        # agrees with /products/cost-summary by construction. Cache by
+        # (bom_id, bom_version, router_id) — the same product shows up
+        # many times across periods/customers, no need to re-query per
+        # sale row.
+        unit_cost_cache: Dict[tuple, Dict[str, Any]] = {}
+
+        def _costs_for(bom_id, bom_version, router_id):
+            key = (bom_id, bom_version, router_id)
+            if key not in unit_cost_cache:
+                unit_cost_cache[key] = calculate_unit_costs(cursor, bom_id, bom_version, router_id)
+            return unit_cost_cache[key]
+
         forecast_data = []
         for sale in sales_data:
-            unit_id = sale['unit_id']
-            quantity = sale['quantity'] or 0
-            
-            # Material cost
-            material_cost_per_unit = bom_costs.get(unit_id, 0.0)
-            total_material_cost = material_cost_per_unit * quantity
-            
-            # Labor and machine costs
-            unit_cost_data = unit_costs.get(unit_id, {'machine_cost': 0.0, 'labor_cost': 0.0})
-            total_labor_cost = unit_cost_data['labor_cost'] * quantity
-            total_machine_cost = unit_cost_data['machine_cost'] * quantity
-            
-            # Total costs
+            quantity = sale.get('quantity') or 0
+            uc = _costs_for(sale.get('bom_id'), sale.get('bom_version'), sale.get('router_id'))
+
+            total_material_cost = uc['material_per_unit'] * quantity
+            total_labor_cost = uc['labor_per_unit'] * quantity
+            total_machine_cost = uc['machine_per_unit'] * quantity
             total_cogs = total_material_cost + total_labor_cost + total_machine_cost
-            
-            # Margins
-            total_revenue = sale['total_revenue'] or 0.0
+
+            total_revenue = sale.get('total_revenue') or 0.0
             gross_profit = total_revenue - total_cogs
             margin_percentage = (gross_profit / total_revenue * 100) if total_revenue > 0 else 0
-            
-            forecast_record = {
-                **sale,  # Include all original sale data
+
+            forecast_data.append({
+                **sale,
                 'material_cost': total_material_cost,
                 'labor_cost': total_labor_cost,
                 'machine_cost': total_machine_cost,
                 'total_cogs': total_cogs,
                 'gross_profit': gross_profit,
                 'margin_percentage': margin_percentage,
-                'material_cost_per_unit': material_cost_per_unit,
-                'labor_cost_per_unit': unit_cost_data['labor_cost'],
-                'machine_cost_per_unit': unit_cost_data['machine_cost']
-            }
-            
-            forecast_data.append(forecast_record)
+                'material_cost_per_unit': uc['material_per_unit'],
+                'labor_cost_per_unit': uc['labor_per_unit'],
+                'machine_cost_per_unit': uc['machine_per_unit'],
+                'cost_warnings': uc['warnings'],
+            })
         
         db_manager.close_connection(conn)
         

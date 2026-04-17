@@ -11,40 +11,8 @@ services:
     environment:
       # Set to 'true' to force reload CSV data over existing database
       - FORCE_DB_RELOAD=false
-    # depends_on:
-      # - ollama
-      # - whisper
     networks:
       - forecast-network
-
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   networks:
-  #     - forecast-network
-  #   restart: unless-stopped
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - capabilities: [gpu]
-  #   runtime: nvidia
-
-  whisper:
-    image: onerahmet/openai-whisper-asr-webservice:latest
-  # ← Replaced broken OpenAI GHCR image
-    container_name: whisper
-    ports:
-      - "9000:9000"
-    volumes:
-      - ./data:/data
-    networks:
-      - forecast-network
-    restart: unless-stopped
 
   frontend:
     build: ./frontend
@@ -55,9 +23,6 @@ services:
       - fastapi
     networks:
       - forecast-network
-
-# volumes:
-#   # ollama_data:
 
 networks:
   forecast-network:

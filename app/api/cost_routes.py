@@ -1,81 +1,56 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from db.models import ForecastResponse
+from utils.cost_rollup import calculate_unit_costs
 
 router = APIRouter(prefix="/products", tags=["cost"])
+
 
 @router.get("/cost-summary", response_model=ForecastResponse)
 async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
     """
-    Get cost summary for all products including COGS calculation
+    Get cost summary for all products including COGS calculation.
+    Each product row includes a `warnings` list naming the data-quality
+    issues that may be silently understating its cost; the response
+    `summary` rolls up how many products are affected.
     """
     try:
         from db.database import db_manager
-        
+
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
-        # Get products with their BOM and routing versions
-        cursor.execute("""
-            SELECT u.unit_id, u.unit_name, u.bom_id, u.bom_version, u.router_id, u.router_version, u.base_price
-            FROM units u
-        """)
+
+        cursor.execute(
+            "SELECT u.unit_id, u.unit_name, u.bom_id, u.bom_version, u.router_id, u.router_version, u.base_price "
+            "FROM units u"
+        )
         products = cursor.fetchall()
-        
+
         cost_summaries = []
-        for product in products:
-            unit_id, unit_name, bom_id, bom_version, router_id, router_version, base_price = product
-            
-            # Calculate forecasted revenue
-            revenue_query = """
-                SELECT SUM(total_revenue) as total_revenue, SUM(quantity) as total_quantity
-                FROM sales 
-                WHERE unit_id = ?
-            """
+        for unit_id, unit_name, bom_id, bom_version, router_id, _rv, _bp in products:
+            revenue_query = (
+                "SELECT COALESCE(SUM(total_revenue), 0), COALESCE(SUM(quantity), 0) "
+                "FROM sales WHERE unit_id = ?"
+            )
             params = [unit_id]
             if forecast_id:
                 revenue_query += " AND forecast_id = ?"
                 params.append(forecast_id)
-            
+
             cursor.execute(revenue_query, params)
-            revenue_data = cursor.fetchone()
-            forecasted_revenue = revenue_data[0] if revenue_data[0] else 0
-            forecasted_quantity = revenue_data[1] if revenue_data[1] else 0
-            
-            # Calculate material costs from BOM
-            material_cost = 0
-            if bom_id:
-                cursor.execute("""
-                    SELECT SUM(material_cost) as total_material_cost
-                    FROM bom 
-                    WHERE bom_id = ? AND version = ?
-                """, (bom_id, bom_version))
-                bom_data = cursor.fetchone()
-                material_cost = (bom_data[0] if bom_data[0] else 0) * forecasted_quantity
-            
-            # Calculate labor and machine costs from routing
-            labor_cost = 0
-            machine_cost = 0
-            if router_id:
-                cursor.execute("""
-                    SELECT ro.labor_minutes, ro.machine_minutes, m.machine_rate, lr.rate_amount
-                    FROM router_operations ro
-                    JOIN machines m ON ro.machine_id = m.machine_id
-                    LEFT JOIN labor_rates lr ON ro.labor_type_id = lr.rate_id
-                    WHERE ro.router_id = ?
-                    ORDER BY ro.sequence
-                """, (router_id,))
-                routing_data = cursor.fetchall()
-                
-                for route in routing_data:
-                    labor_minutes, machine_minutes, machine_rate, hourly_rate = route
-                    labor_cost += (labor_minutes / 60) * (hourly_rate if hourly_rate else 0) * forecasted_quantity
-                    machine_cost += (machine_minutes / 60) * (machine_rate if machine_rate else 0) * forecasted_quantity
-            
+            forecasted_revenue, forecasted_quantity = cursor.fetchone()
+
+            unit_costs = calculate_unit_costs(cursor, bom_id, bom_version, router_id)
+
+            material_cost = unit_costs["material_per_unit"] * forecasted_quantity
+            labor_cost = unit_costs["labor_per_unit"] * forecasted_quantity
+            machine_cost = unit_costs["machine_per_unit"] * forecasted_quantity
             total_cogs = material_cost + labor_cost + machine_cost
             gross_margin = forecasted_revenue - total_cogs
-            gross_margin_percent = (gross_margin / forecasted_revenue * 100) if forecasted_revenue > 0 else 0
-            
+            gross_margin_percent = (
+                (gross_margin / forecasted_revenue * 100) if forecasted_revenue > 0 else 0
+            )
+
             cost_summaries.append({
                 "product_id": unit_id,
                 "product_name": unit_name,
@@ -85,17 +60,26 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
                 "machine_cost": machine_cost,
                 "total_cogs": total_cogs,
                 "gross_margin": gross_margin,
-                "gross_margin_percent": gross_margin_percent
+                "gross_margin_percent": gross_margin_percent,
+                "warnings": unit_costs["warnings"],
             })
-        
+
         db_manager.close_connection(conn)
-        
+
+        products_with_warnings = sum(1 for p in cost_summaries if p["warnings"])
+
         return ForecastResponse(
             status="success",
-            data={"products": cost_summaries},
-            message=f"Retrieved cost summary for {len(cost_summaries)} products"
+            data={
+                "products": cost_summaries,
+                "summary": {
+                    "product_count": len(cost_summaries),
+                    "products_with_warnings": products_with_warnings,
+                },
+            },
+            message=f"Retrieved cost summary for {len(cost_summaries)} products",
         )
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving cost summary: {str(e)}")
 

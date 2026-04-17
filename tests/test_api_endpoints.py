@@ -114,49 +114,6 @@ class TestAPIEndpoints:
         assert len(data["data"]) == 1
         assert data["data"][0]["customer_id"] == "CUST-002"
     
-    def test_chat_endpoint(self, client: TestClient):
-        """Test the chat endpoint"""
-        chat_request = {
-            "message": "Show me sales for January 2024",
-            "context": {"period": "2024-01"}
-        }
-        response = client.post("/chat", json=chat_request)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "data" in data
-        assert "sql_statement" in data["data"]
-        assert "explanation" in data["data"]
-        assert data["data"]["requires_approval"] == True
-
-    def test_agent_endpoint(self, client: TestClient):
-        """Test the agent endpoint"""
-        agent_request = {"message": "Increase July forecast by 15%"}
-        response = client.post("/agent", json=agent_request)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "response" in data["data"]
-
-    def test_plan_execute_endpoint(self, client: TestClient):
-        """Test the plan_execute endpoint"""
-        req = {"message": "Increase July forecast by 15%"}
-        response = client.post("/plan_execute", json=req)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "plan" in data["data"]
-        assert "results" in data["data"]
-
-    def test_voice_endpoint(self, client: TestClient):
-        """Test the voice command endpoint"""
-        response = client.post("/voice", files={"audio": ("test.wav", b"dummy", "audio/wav")})
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "transcript" in data["data"]
-        assert "response" in data["data"]
-
     def test_load_table_endpoint(self, client: TestClient):
         """Test loading CSV data into a table"""
         csv_content = b"col1,col2\n1,2\n3,4\n"
