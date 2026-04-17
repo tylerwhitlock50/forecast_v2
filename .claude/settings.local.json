@@ -14,7 +14,17 @@
       "Bash(awk '$1 > 500 {print $2}')",
       "Bash(node --check frontend/src/App.js)",
       "Bash(docker-compose up *)",
-      "Bash(docker-compose build *)"
+      "Bash(docker-compose build *)",
+      "Bash(npm run *)",
+      "Bash(node -e ' *)",
+      "Bash(ln -s /c/users/tylerw/forecast_v2/frontend/node_modules ./node_modules)",
+      "PowerShell(cmd /c \"rmdir /s /q C:\\\\users\\\\tylerw\\\\forecast_v2\\\\.claude\\\\worktrees\\\\agent-a5d6a5e5\\\\frontend\\\\node_modules\" 2>&1; Test-Path \"C:\\\\users\\\\tylerw\\\\forecast_v2\\\\.claude\\\\worktrees\\\\agent-a5d6a5e5\\\\frontend\\\\node_modules\")",
+      "PowerShell(cmd /c \"rmdir /s /q C:\\\\users\\\\tylerw\\\\forecast_v2\\\\.claude\\\\worktrees\\\\agent-a5d6a5e5\\\\frontend\\\\node_modules\" 2>&1; cmd /c \"rmdir /s /q C:\\\\users\\\\tylerw\\\\forecast_v2\\\\.claude\\\\worktrees\\\\agent-a5d6a5e5\\\\frontend\\\\node_modules\" 2>&1; Test-Path \"C:\\\\users\\\\tylerw\\\\forecast_v2\\\\.claude\\\\worktrees\\\\agent-a5d6a5e5\\\\frontend\\\\node_modules\")",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git merge *)",
+      "Bash(docker-compose restart *)"
     ],
     "deny": []
   }

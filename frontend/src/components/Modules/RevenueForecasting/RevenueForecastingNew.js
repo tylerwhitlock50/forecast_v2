@@ -40,6 +40,7 @@ const RevenueForecasting = () => {
   const [showProductImportModal, setShowProductImportModal] = useState(false);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [customDateRange, setCustomDateRange] = useState(null);
+  const [activePreset, setActivePreset] = useState('default'); // 'default' | 'current_fy' | 'next_12' | 'next_qtr' | 'custom'
   const [showDateRangeModal, setShowDateRangeModal] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
 
@@ -69,20 +70,44 @@ const RevenueForecasting = () => {
   useEffect(() => {
     try {
       const savedTimeRange = localStorage.getItem('revenue_timeRange');
+      const savedPreset = localStorage.getItem('revenue_activePreset');
       const savedCustomRange = localStorage.getItem('revenue_customDateRange');
-      
+
       if (savedTimeRange) {
         setTimeRange(savedTimeRange);
       }
+
+      // Re-derive preset ranges from today so "Current FY" stays current across reloads.
+      if (savedPreset && savedPreset !== 'default' && savedPreset !== 'custom') {
+        const range = computePresetRange(savedPreset);
+        if (range) {
+          setCustomDateRange(range);
+          setActivePreset(savedPreset);
+          return;
+        }
+      }
+
+      if (savedPreset === 'custom' && savedCustomRange) {
+        const parsed = JSON.parse(savedCustomRange);
+        if (parsed?.start && parsed?.end) {
+          setCustomDateRange(parsed);
+          setActivePreset('custom');
+          return;
+        }
+      }
+
+      // Legacy fallback: older sessions stored a custom range without a preset id.
       if (savedCustomRange) {
         const parsed = JSON.parse(savedCustomRange);
         if (parsed?.start && parsed?.end) {
           setCustomDateRange(parsed);
+          setActivePreset('custom');
         }
       }
     } catch (err) {
       console.warn('Unable to load saved preferences', err);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keyboard shortcuts
@@ -106,7 +131,9 @@ const RevenueForecasting = () => {
   useEffect(() => {
     try {
       localStorage.setItem('revenue_timeRange', timeRange);
-      if (customDateRange) {
+      localStorage.setItem('revenue_activePreset', activePreset);
+      // Only persist explicit custom ranges — preset ranges are recomputed on load.
+      if (activePreset === 'custom' && customDateRange) {
         localStorage.setItem('revenue_customDateRange', JSON.stringify(customDateRange));
       } else {
         localStorage.removeItem('revenue_customDateRange');
@@ -114,7 +141,7 @@ const RevenueForecasting = () => {
     } catch (err) {
       console.warn('Unable to persist preferences', err);
     }
-  }, [timeRange, customDateRange]);
+  }, [timeRange, customDateRange, activePreset]);
   // Generate months and years for dropdowns
   const months = [
     { value: 1, label: 'January' },
@@ -153,37 +180,47 @@ const RevenueForecasting = () => {
     return `Default: next ${timePeriods.length} ${unit}`;
   }, [customDateRange, timePeriods, timeRange]);
 
-  const applyPresetRange = (preset) => {
+  const computePresetRange = (preset) => {
     const now = new Date();
     if (preset === 'current_fy') {
-      setCustomDateRange({
+      return {
         start: { month: 1, year: now.getFullYear() },
         end: { month: 12, year: now.getFullYear() }
-      });
-      return;
+      };
     }
     if (preset === 'next_12') {
       const startMonth = now.getMonth() + 1;
       const startYear = now.getFullYear();
       const endMonth = ((startMonth + 11) % 12) + 1;
       const endYear = startYear + Math.floor((startMonth - 1 + 11) / 12);
-      setCustomDateRange({
+      return {
         start: { month: startMonth, year: startYear },
         end: { month: endMonth, year: endYear }
-      });
-      return;
+      };
     }
     if (preset === 'next_qtr') {
       const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
       const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
       const start = { month: startQuarterMonth + 1, year: startDate.getFullYear() };
       const endDate = new Date(startDate.getFullYear(), startQuarterMonth + 3, 0);
-      setCustomDateRange({
+      return {
         start,
         end: { month: endDate.getMonth() + 1, year: endDate.getFullYear() }
-      });
-      return;
+      };
     }
+    return null;
+  };
+
+  const applyPresetRange = (preset) => {
+    const range = computePresetRange(preset);
+    if (!range) return;
+    setCustomDateRange(range);
+    setActivePreset(preset);
+  };
+
+  const applyDefaultRange = () => {
+    setCustomDateRange(null);
+    setActivePreset('default');
   };
 
   const defaultDateRange = useMemo(() => {
@@ -635,31 +672,26 @@ const RevenueForecasting = () => {
             <div className="flex items-center gap-2 border-r pr-3">
               <Label className="text-sm font-medium text-gray-700">Range:</Label>
               <div className="flex gap-1.5">
-                <Button 
-                  size="sm" 
-                  variant={!customDateRange ? "default" : "outline"}
-                  onClick={() => setCustomDateRange(null)}
-                  className={!customDateRange ? "bg-orange-600 hover:bg-orange-700 text-white" : ""}
-                >
-                  Default
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => applyPresetRange('current_fy')}>
-                  Current FY
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_12')}>
-                  Next 12M
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => applyPresetRange('next_qtr')}>
-                  Next Qtr
-                </Button>
-                <Button 
-                  size="sm" 
-                  variant={customDateRange ? "default" : "outline"}
-                  onClick={() => setShowDateRangeModal(true)}
-                  className={customDateRange ? "bg-orange-600 hover:bg-orange-700 text-white" : ""}
-                >
-                  Custom
-                </Button>
+                {[
+                  { id: 'default', label: 'Default', onClick: applyDefaultRange },
+                  { id: 'current_fy', label: 'Current FY', onClick: () => applyPresetRange('current_fy') },
+                  { id: 'next_12', label: 'Next 12M', onClick: () => applyPresetRange('next_12') },
+                  { id: 'next_qtr', label: 'Next Qtr', onClick: () => applyPresetRange('next_qtr') },
+                  { id: 'custom', label: 'Custom', onClick: () => setShowDateRangeModal(true) }
+                ].map(({ id, label, onClick }) => {
+                  const isActive = activePreset === id;
+                  return (
+                    <Button
+                      key={id}
+                      size="sm"
+                      variant={isActive ? 'default' : 'outline'}
+                      onClick={onClick}
+                      className={isActive ? 'bg-orange-600 hover:bg-orange-700 text-white' : ''}
+                    >
+                      {label}
+                    </Button>
+                  );
+                })}
               </div>
             </div>
 
@@ -698,6 +730,7 @@ const RevenueForecasting = () => {
         onClose={() => setShowDateRangeModal(false)}
         onApply={(range) => {
           setCustomDateRange(range);
+          setActivePreset('custom');
         }}
         currentRange={customDateRange}
       />

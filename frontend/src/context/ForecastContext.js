@@ -4,6 +4,23 @@ import { toast } from 'react-hot-toast';
 import { debounce } from 'lodash';
 import { normalizePeriod } from '../utils/periodNormalizer';
 
+// The UI uses `bom`/`router` for historical reasons; the `units` table uses
+// `bom_id`/`router_id` plus `*_version`. Translate on write.
+const mapProductForBackend = (productData) => {
+  const payload = { ...productData };
+  if ('bom' in payload) {
+    payload.bom_id = payload.bom || null;
+    delete payload.bom;
+  }
+  if ('router' in payload) {
+    payload.router_id = payload.router || null;
+    delete payload.router;
+  }
+  if (payload.bom_id && !payload.bom_version) payload.bom_version = '1.0';
+  if (payload.router_id && !payload.router_version) payload.router_version = '1.0';
+  return payload;
+};
+
 // Initial state
 const initialState = {
   scenarios: {}, // Will be populated from database
@@ -433,8 +450,10 @@ export const ForecastProvider = ({ children }) => {
           unit_description: unit.unit_description,
           base_price: unit.base_price,
           unit_type: unit.unit_type,
-          bom: unit.bom,
-          router: unit.router
+          bom: unit.bom_id,
+          bom_version: unit.bom_version || '1.0',
+          router: unit.router_id,
+          router_version: unit.router_version || '1.0'
         }));
 
         // Transform sales to forecasts format and normalize period format
@@ -1237,7 +1256,7 @@ export const ForecastProvider = ({ children }) => {
     createProduct: async (productData) => {
       try {
         actions.setLoading(true);
-        
+
         // Generate a unique product ID if not provided
         if (!productData.unit_id || productData.unit_id.trim() === '') {
           const products = Array.isArray(state.data.products) ? state.data.products : [];
@@ -1249,12 +1268,11 @@ export const ForecastProvider = ({ children }) => {
           console.log('Auto-generated product ID:', productData.unit_id);
         }
 
-        const response = await api.post('/forecast/create', { 
+        const response = await api.post('/forecast/create', {
           table: 'units',
-          data: productData 
+          data: mapProductForBackend(productData)
         });
-        
-        // API client already handles response format
+
         toast.success('Product created successfully');
         await actions.fetchAllData();
       } catch (error) {
@@ -1269,14 +1287,13 @@ export const ForecastProvider = ({ children }) => {
     updateProduct: async (productId, productData) => {
       try {
         actions.setLoading(true);
-        
+
         const response = await api.post('/forecast/update', {
           table: 'units',
           id: productId,
-          updates: productData
+          updates: mapProductForBackend(productData)
         });
-        
-        // API client already handles response format
+
         toast.success('Product updated successfully');
         await actions.fetchAllData();
       } catch (error) {
