@@ -21,6 +21,7 @@ import CustomerImportModal from './CustomerImportModal';
 import ProductImportModal from './ProductImportModal';
 import KeyboardShortcutsModal from './KeyboardShortcutsModal';
 import NewScenarioModal from './NewScenarioModal';
+import GettingStartedCard from './GettingStartedCard';
 import { buildTimePeriods, getFormattedDateRange } from './periodUtils';
 
 const RevenueForecasting = () => {
@@ -39,6 +40,28 @@ const RevenueForecasting = () => {
   const [customDateRange, setCustomDateRange] = useState(null);
   const [showDateRangeModal, setShowDateRangeModal] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+
+  // Scenario notes: inline-editable free-text field in the header.
+  const activeScenarioObj = activeScenario && scenarios ? scenarios[activeScenario] : null;
+  const [notesEditing, setNotesEditing] = useState(false);
+  const [notesDraft, setNotesDraft] = useState('');
+
+  useEffect(() => {
+    setNotesDraft(activeScenarioObj?.notes || '');
+  }, [activeScenario, activeScenarioObj?.notes]);
+
+  const handleNotesBlur = async () => {
+    setNotesEditing(false);
+    const current = activeScenarioObj?.notes || '';
+    if (!activeScenario) return;
+    if ((notesDraft || '') === current) return;
+    try {
+      await actions.updateScenario(activeScenario, { notes: notesDraft });
+    } catch (err) {
+      // Revert draft on failure
+      setNotesDraft(current);
+    }
+  };
 
   // Load persisted preferences
   useEffect(() => {
@@ -431,17 +454,53 @@ const RevenueForecasting = () => {
     );
   }
 
-  // Show error state if no data is loaded
+  // Empty-state: no customers and no products yet — show guided onboarding card.
   if (!data.products?.length && !data.customers?.length) {
     return (
       <div className="container mx-auto px-6 py-8">
-        <div className="flex flex-col items-center justify-center h-64 space-y-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="text-muted-foreground">No data available. Please check the backend connection.</p>
-          <Button onClick={() => actions.fetchAllData()}>
+        <PageHeader
+          title="Revenue Forecasting"
+          description="Let's set up your first forecast."
+          actions={[]}
+        />
+        <GettingStartedCard
+          onCreateScenario={() => setShowNewScenarioModal(true)}
+          onAddCustomers={() => setShowCustomerImportModal(true)}
+          onAddProducts={() => setShowProductImportModal(true)}
+          onAddForecastLine={() => setShowForecastLineModal(true)}
+        />
+        <div className="mt-4 flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => actions.fetchAllData()}>
             Retry Loading Data
           </Button>
         </div>
+
+        {/* Modals are needed here for step actions to work */}
+        <NewScenarioModal
+          open={showNewScenarioModal}
+          onClose={() => setShowNewScenarioModal(false)}
+          onCreate={(scenarioData) => actions.createScenario(scenarioData)}
+        />
+        <CustomerImportModal
+          isOpen={showCustomerImportModal}
+          onClose={() => setShowCustomerImportModal(false)}
+          onComplete={async () => {
+            await actions.fetchAllData();
+          }}
+        />
+        <ProductImportModal
+          isOpen={showProductImportModal}
+          onClose={() => setShowProductImportModal(false)}
+          onComplete={async () => {
+            await actions.fetchAllData();
+          }}
+        />
+        <ForecastLineModal
+          isOpen={showForecastLineModal}
+          onClose={() => setShowForecastLineModal(false)}
+          onSave={handleForecastLineSave}
+          defaultDateRange={defaultDateRange}
+        />
       </div>
     );
   }
@@ -526,6 +585,35 @@ const RevenueForecasting = () => {
         <Button size="sm" variant="outline" onClick={() => setShowNewScenarioModal(true)}>
           New Scenario
         </Button>
+        {activeScenario && (
+          <div
+            className="flex-1 min-w-[200px] max-w-xl"
+            title="Click to edit scenario notes"
+          >
+            {notesEditing ? (
+              <textarea
+                autoFocus
+                value={notesDraft}
+                onChange={(e) => setNotesDraft(e.target.value)}
+                onBlur={handleNotesBlur}
+                placeholder="Add notes..."
+                rows={2}
+                className="w-full resize-y rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setNotesEditing(true)}
+                className={
+                  'w-full truncate rounded-md border border-dashed border-gray-300 bg-gray-50 px-3 py-1.5 text-left text-sm hover:border-orange-300 hover:bg-orange-50 ' +
+                  (activeScenarioObj?.notes ? 'text-gray-700' : 'text-muted-foreground italic')
+                }
+              >
+                {activeScenarioObj?.notes || 'Add notes...'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Compact Filter Bar */}
@@ -721,6 +809,12 @@ const RevenueForecasting = () => {
         {/* Tab Content */}
         {activeTab === 'matrix' && (
           <div className="space-y-6">
+            <GettingStartedCard
+              onCreateScenario={() => setShowNewScenarioModal(true)}
+              onAddCustomers={() => setShowCustomerImportModal(true)}
+              onAddProducts={() => setShowProductImportModal(true)}
+              onAddForecastLine={() => setShowForecastLineModal(true)}
+            />
             <RevenueMatrix
               key={`matrix-${timeRange}-${customDateRange ? `${customDateRange.start.year}-${customDateRange.start.month}-to-${customDateRange.end.year}-${customDateRange.end.month}` : 'default'}-${timePeriods.length}`}
               data={data}
