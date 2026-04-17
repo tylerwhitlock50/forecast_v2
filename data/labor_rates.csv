@@ -1,8 +1,0 @@
-rate_id,rate_name,rate_description,rate_amount,rate_type
-RATE-001,GENERAL,General Shop Rate,25,Hourly
-RATE-002,QUALITY,Quality Rate,30,Hourly
-RATE-003,MACHINE SHOP,Machine Shop Rate,35,Hourly
-RATE-004,SUPERVISION,Supervisor Rate,60,Hourly
-RATE-005,ENGINEERING,Engineering Rate,60,Hourly
-RATE-006,SHIPPING,Shipping Rate,30,Hourly
-RATE-007,ADMIN,Administrative Rate,60,Hourly

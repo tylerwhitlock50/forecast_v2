@@ -29,9 +29,9 @@ const DataDebugger = ({ data, timePeriods }) => {
     },
     // Add scenario-specific sales count
     scenario_sales: {
-      count: data.sales_forecast?.filter(s => s.forecast_id === (activeScenario || 'F001')).length || 0,
-      sample: data.sales_forecast?.filter(s => s.forecast_id === (activeScenario || 'F001')).slice(0, 2) || [],
-      hasData: Array.isArray(data.sales_forecast) && data.sales_forecast.filter(s => s.forecast_id === (activeScenario || 'F001')).length > 0
+      count: data.sales_forecast?.filter(s => s.forecast_id === activeScenario).length || 0,
+      sample: data.sales_forecast?.filter(s => s.forecast_id === activeScenario).slice(0, 2) || [],
+      hasData: Array.isArray(data.sales_forecast) && data.sales_forecast.filter(s => s.forecast_id === activeScenario).length > 0
     },
     // Add time periods debugging
     timePeriods: {
@@ -48,7 +48,7 @@ const DataDebugger = ({ data, timePeriods }) => {
           🔍 Data Debug Info
         </CardTitle>
         <div className="text-sm text-orange-700 font-medium">
-          Active Scenario: {activeScenario || 'F001'}
+          Active Scenario: {activeScenario || 'none selected'}
         </div>
       </CardHeader>
       <CardContent>

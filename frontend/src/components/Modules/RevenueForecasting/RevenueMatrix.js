@@ -32,8 +32,8 @@ const RevenueMatrix = ({
     
     // Debug: Log all sales for the active scenario
     const activeSales = Array.isArray(data.sales_forecast) ? 
-      data.sales_forecast.filter(s => s.forecast_id === (activeScenario || 'F001')) : [];
-    console.log('Active sales for scenario', activeScenario || 'F001', ':', activeSales);
+      data.sales_forecast.filter(s => s.forecast_id === (activeScenario)) : [];
+    console.log('Active sales for scenario', activeScenario, ':', activeSales);
     
     const matrix = [];
     
@@ -44,7 +44,7 @@ const RevenueMatrix = ({
     // Create a map of product-customer combinations that have actual forecast data
     const forecastCombinations = new Set();
     sales.forEach(sale => {
-      if (sale.forecast_id === (activeScenario || 'F001')) {
+      if (sale.forecast_id === (activeScenario)) {
         const combinationKey = `${sale.unit_id}-${sale.customer_id}`;
         forecastCombinations.add(combinationKey);
         console.log('Added combination:', combinationKey, 'from sale:', sale);
@@ -93,7 +93,7 @@ const RevenueMatrix = ({
               (s.unit_id === productId || s.unit_id === product.unit_name) && 
               s.customer_id === customer.customer_id && 
               s.period === period.key &&
-              s.forecast_id === (activeScenario || 'F001')
+              s.forecast_id === (activeScenario)
             );
             
             const quantity = existingSale?.quantity || 0;
@@ -143,6 +143,10 @@ const RevenueMatrix = ({
   // Handle save from edit modal
   const handleSaveEdit = async (newQuantity, newPrice) => {
     if (!editModal) return;
+    if (!activeScenario) {
+      toast.error('Select a scenario before editing revenue');
+      return;
+    }
 
     const { rowIndex, colIndex, periodKey, rowData } = editModal;
     const newRevenue = newQuantity * newPrice;
@@ -180,7 +184,7 @@ const RevenueMatrix = ({
         quantity: newQuantity,
         unit_price: newPrice,
         total_revenue: newRevenue,
-        forecast_id: activeScenario || 'F001' // Use active scenario or default
+        forecast_id: activeScenario
       };
 
       // Use the bulkUpdateForecast function instead of updateSalesRecord
@@ -264,7 +268,7 @@ const RevenueMatrix = ({
             <div className="text-6xl mb-4">📊</div>
             <h3 className="text-xl font-semibold text-gray-900 mb-2">No forecast data found</h3>
             <p className="text-gray-600 mb-4">
-              No revenue forecast data exists for the current scenario ({activeScenario || 'F001'}).
+              No revenue forecast data exists for the current scenario ({activeScenario || 'none selected'}).
             </p>
             <p className="text-gray-500">
               Click "Add Forecast Line" to create your first forecast entry.

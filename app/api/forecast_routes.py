@@ -533,10 +533,12 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         sales = sales_data.get('sales', [])
         options = sales_data.get('options', {})
         auto_create = options.get('autoCreate', True)
-        forecast_id = sales_data.get('forecast_id', 'F001')
-        
+        forecast_id = sales_data.get('forecast_id')
+
         if not sales:
             raise HTTPException(status_code=400, detail="No sales data provided")
+        if not forecast_id:
+            raise HTTPException(status_code=400, detail="forecast_id is required")
         
         # Get existing customers and products
         cursor.execute("SELECT customer_id, customer_name FROM customers")

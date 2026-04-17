@@ -40,11 +40,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",  # Development
-        "http://localhost:3001",  # Alternative dev port
-        "http://forecast-frontend:3000",  # Docker container
-        "http://frontend:3000",  # Alternative Docker name
-        "*"  # Allow all for now - configure appropriately for production
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://forecast-frontend:3000",
+        "http://frontend:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],

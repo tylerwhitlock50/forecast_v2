@@ -266,8 +266,8 @@ const ForecastSelector = ({ scenarios, selectedForecasts, onSelectionChange }) =
       <Card className="p-4 bg-gray-50 border-gray-200">
         <h4 className="font-medium text-gray-700 mb-2">📋 Example Use Cases</h4>
         <div className="text-sm text-gray-600 space-y-1">
-          <p>• <strong>Single Product Line:</strong> Select F001 (Pickleball Paddles) for focused analysis</p>
-          <p>• <strong>Product Comparison:</strong> Combine F001 + F002 to compare different product lines</p>
+          <p>• <strong>Single Forecast:</strong> Select one scenario for focused analysis</p>
+          <p>• <strong>Forecast Comparison:</strong> Combine two scenarios to compare assumptions</p>
           <p>• <strong>Scenario Analysis:</strong> Mix optimistic and conservative forecasts to assess risk</p>
           <p>• <strong>Comprehensive View:</strong> Select all forecasts for complete business outlook</p>
         </div>

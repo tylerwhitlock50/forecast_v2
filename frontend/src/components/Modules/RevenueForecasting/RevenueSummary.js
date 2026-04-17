@@ -13,7 +13,7 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment, onCardClick }) => 
     const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
     
     // Filter sales by active scenario first
-    let filteredSales = sales.filter(sale => sale.forecast_id === (activeScenario || 'F001'));
+    let filteredSales = sales.filter(sale => sale.forecast_id === activeScenario);
     
     // Then filter by segment if needed
     if (selectedSegment !== 'all') {

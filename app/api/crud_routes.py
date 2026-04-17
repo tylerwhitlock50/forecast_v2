@@ -125,6 +125,10 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
         updated_count = 0
         
         for forecast in forecasts:
+            forecast_id = forecast.get('forecast_id')
+            if not forecast_id:
+                raise HTTPException(status_code=400, detail="forecast_id is required for each record")
+
             # Normalize period before processing
             period = forecast.get('period', '')
             if period:
@@ -134,17 +138,17 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                 else:
                     # Skip invalid periods
                     continue
-            
+
             # Check if record exists
             cursor.execute("""
                 SELECT quantity, unit_price, total_revenue
-                FROM sales 
+                FROM sales
                 WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
             """, (
                 forecast.get('customer_id'),
                 forecast.get('unit_id'),
                 period,
-                forecast.get('forecast_id', 'F001')
+                forecast_id
             ))
             
             existing_record = cursor.fetchone()
@@ -177,7 +181,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                     forecast.get('customer_id'),
                     forecast.get('unit_id'),
                     period,
-                    forecast.get('forecast_id', 'F001')
+                    forecast_id
                 ))
             else:
                 # Record doesn't exist - insert new one
@@ -193,7 +197,7 @@ async def bulk_update_forecast(bulk_data: Dict[str, Any]):
                     forecast.get('quantity', 0),
                     forecast.get('unit_price', 0),
                     forecast.get('total_revenue', 0),
-                    forecast.get('forecast_id', 'F001')
+                    forecast_id
                 ))
             
             updated_count += 1

@@ -522,7 +522,7 @@ const RevenueForecasting = () => {
       )}
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Badge variant="secondary">Active scenario: {activeScenario || 'F001'}</Badge>
+        <Badge variant="secondary">Active scenario: {activeScenario || 'none selected'}</Badge>
         <Button size="sm" variant="outline" onClick={() => setShowNewScenarioModal(true)}>
           New Scenario
         </Button>

@@ -48,7 +48,7 @@ const RevenueVisualizations = ({ data, timePeriods }) => {
             (s.unit_id === productId || s.unit_id === product.unit_name) && 
             s.customer_id === customer.customer_id && 
             s.period === period.key &&
-            s.forecast_id === (activeScenario || 'F001')
+            s.forecast_id === activeScenario
           );
           
           baseRow[`quantity_${period.key}`] = existingSale?.quantity || 0;
