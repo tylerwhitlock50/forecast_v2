@@ -21,9 +21,13 @@ class TestDatabaseManager:
         )
         
         yield db_manager
-        
-        # Cleanup - no need to close connection since we create new ones each time
-        shutil.rmtree(temp_dir)
+
+        # Cleanup. Force-close any lingering sqlite connections (the WAL
+        # files keep windows-side locks until GC runs) and tolerate the
+        # brief residual lock that Windows holds on .db-wal/.db-shm.
+        import gc
+        gc.collect()
+        shutil.rmtree(temp_dir, ignore_errors=True)
     
     def create_test_csv_files(self, data_dir):
         """Create minimal test CSV files"""
@@ -408,10 +412,12 @@ class TestDatabaseManager:
         # Get the current state
         result = temp_db_manager.get_table_data('customers')
         initial_count = len(result["data"])
-        
-        # Clear the customers table
+
+        # Clear the customers table. FK enforcement is on, so any
+        # referencing rows must go first.
+        temp_db_manager.execute_sql("DELETE FROM sales")
         temp_db_manager.execute_sql("DELETE FROM customers")
-        
+
         # Verify table is empty
         result = temp_db_manager.get_table_data('customers')
         assert len(result["data"]) == 0

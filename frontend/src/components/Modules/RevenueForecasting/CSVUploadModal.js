@@ -7,6 +7,7 @@ import FileUpload from '../../Common/FileUpload';
 import CSVTemplateDownload from './CSVTemplateDownload';
 import { toast } from 'react-hot-toast';
 import Papa from 'papaparse';
+import { mapColumns, validateData, applyColumnMapping } from './csvImportHelpers';
 
 const CSVUploadModal = ({ 
   isOpen, 
@@ -69,9 +70,9 @@ const CSVUploadModal = ({
       // Map columns based on import type
       const mapping = mapColumns(csvHeaders, importType);
       setColumnMapping(mapping);
-      
+
       // Validate and detect missing items
-      const validation = validateData(data, mapping, importType);
+      const validation = validateData(data, mapping, importType, existingData);
       setErrors(validation.errors);
       setWarnings(validation.warnings);
       setMissingItems(validation.missingItems);
@@ -87,154 +88,6 @@ const CSVUploadModal = ({
       setIsProcessing(false);
     }
   }, [importType, parseCSV]);
-
-  const mapColumns = (csvHeaders, type) => {
-    const mapping = {};
-    const expectedColumns = getExpectedColumns(type);
-    
-    csvHeaders.forEach(header => {
-      const normalized = header.toLowerCase().trim();
-      // Try to find matching expected column
-      for (const [expectedKey, expectedAliases] of Object.entries(expectedColumns)) {
-        if (expectedAliases.some(alias => normalized.includes(alias.toLowerCase()))) {
-          mapping[header] = expectedKey;
-          break;
-        }
-      }
-    });
-    
-    return mapping;
-  };
-
-  const getExpectedColumns = (type) => {
-    switch (type) {
-      case 'customers':
-        return {
-          customer_id: ['customer_id', 'customer id', 'id'],
-          customer_name: ['customer_name', 'customer name', 'name'],
-          customer_type: ['customer_type', 'customer type', 'type'],
-          region: ['region']
-        };
-      case 'products':
-        return {
-          unit_id: ['unit_id', 'product_id', 'product id', 'id'],
-          unit_name: ['unit_name', 'product_name', 'product name', 'name'],
-          unit_description: ['unit_description', 'description', 'desc'],
-          base_price: ['base_price', 'price', 'unit_price'],
-          unit_type: ['unit_type', 'type'],
-          bom_id: ['bom_id', 'bom'],
-          router_id: ['router_id', 'router']
-        };
-      case 'sales_forecast':
-        return {
-          customer_id: ['customer_id', 'customer id', 'customer'],
-          product_id: ['product_id', 'unit_id', 'product id', 'product'],
-          period: ['period', 'date', 'month'],
-          quantity: ['quantity', 'qty', 'q'],
-          price: ['price', 'unit_price', 'unit price']
-        };
-      default:
-        return {};
-    }
-  };
-
-  const validateData = (data, mapping, type) => {
-    const errors = [];
-    const warnings = [];
-    const missingItems = { customers: [], products: [] };
-    
-    const requiredFields = getRequiredFields(type);
-    
-    data.forEach((row, index) => {
-      const rowNum = index + 2; // +2 because index is 0-based and we skip header
-      
-      // Check required fields
-      requiredFields.forEach(field => {
-        const mappedKey = Object.keys(mapping).find(k => mapping[k] === field);
-        const value = mappedKey ? row[mappedKey] : row[field];
-        
-        if (!value || (typeof value === 'string' && value.trim() === '')) {
-          errors.push({
-            row: rowNum,
-            field,
-            message: `Missing required field: ${field}`
-          });
-        }
-      });
-      
-      // Type-specific validation
-      if (type === 'sales_forecast') {
-        const customerId = row[mapping.customer_id] || row.customer_id;
-        const productId = row[mapping.product_id] || row.product_id;
-        
-        // Check if customer exists
-        if (customerId && !existingData.customers.find(c => c.customer_id === customerId)) {
-          if (!missingItems.customers.find(c => c.id === customerId)) {
-            missingItems.customers.push({ id: customerId, name: customerId });
-          }
-          warnings.push({
-            row: rowNum,
-            message: `Customer ${customerId} does not exist`
-          });
-        }
-        
-        // Check if product exists
-        if (productId && !existingData.products.find(p => (p.unit_id || p.id) === productId)) {
-          if (!missingItems.products.find(p => p.id === productId)) {
-            missingItems.products.push({ id: productId, name: productId });
-          }
-          warnings.push({
-            row: rowNum,
-            message: `Product ${productId} does not exist`
-          });
-        }
-        
-        // Validate period format
-        const period = row[mapping.period] || row.period;
-        if (period && !/^\d{4}-\d{2}/.test(period)) {
-          warnings.push({
-            row: rowNum,
-            message: `Invalid period format: ${period}. Expected YYYY-MM`
-          });
-        }
-        
-        // Validate numeric fields
-        const quantity = parseFloat(row[mapping.quantity] || row.quantity);
-        const price = parseFloat(row[mapping.price] || row.price);
-        
-        if (isNaN(quantity) || quantity < 0) {
-          errors.push({
-            row: rowNum,
-            field: 'quantity',
-            message: `Invalid quantity: ${row[mapping.quantity] || row.quantity}`
-          });
-        }
-        
-        if (isNaN(price) || price < 0) {
-          errors.push({
-            row: rowNum,
-            field: 'price',
-            message: `Invalid price: ${row[mapping.price] || row.price}`
-          });
-        }
-      }
-    });
-    
-    return { errors, warnings, missingItems };
-  };
-
-  const getRequiredFields = (type) => {
-    switch (type) {
-      case 'customers':
-        return ['customer_id', 'customer_name'];
-      case 'products':
-        return ['unit_id', 'unit_name'];
-      case 'sales_forecast':
-        return ['customer_id', 'product_id', 'period', 'quantity', 'price'];
-      default:
-        return [];
-    }
-  };
 
   const handleFileSelect = useCallback((selectedFile) => {
     setFile(selectedFile);
@@ -260,21 +113,8 @@ const CSVUploadModal = ({
       setIsProcessing(true);
       const text = await file.text();
       const data = await parseCSV(text);
-      
-      // Transform data using column mapping
-      const transformedData = data.map(row => {
-        const transformed = {};
-        Object.entries(columnMapping).forEach(([csvHeader, expectedKey]) => {
-          transformed[expectedKey] = row[csvHeader];
-        });
-        // Also include any unmapped columns
-        Object.keys(row).forEach(key => {
-          if (!columnMapping[key]) {
-            transformed[key] = row[key];
-          }
-        });
-        return transformed;
-      });
+
+      const transformedData = applyColumnMapping(data, columnMapping);
 
       await onImport({
         data: transformedData,

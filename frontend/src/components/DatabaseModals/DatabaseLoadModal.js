@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../lib/apiClient';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../Common/ConfirmDialog';
 import './DatabaseModals.css';
 
 const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
+  const confirm = useConfirm();
   const [databases, setDatabases] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedDatabase, setSelectedDatabase] = useState(null);
@@ -34,9 +36,11 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Are you sure you want to load "${selectedDatabase.name}"? This will replace the current database. A backup of the current database will be created automatically.`
-    );
+    const confirmed = await confirm({
+      title: `Load "${selectedDatabase.name}"?`,
+      body: 'This will replace the current database. A backup of the current database will be created automatically.',
+      confirmLabel: 'Load',
+    });
 
     if (!confirmed) return;
 
@@ -53,9 +57,12 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
   };
 
   const handleDelete = async (database) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to delete "${database.name}"? This action cannot be undone.`
-    );
+    const confirmed = await confirm({
+      title: `Delete "${database.name}"?`,
+      body: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    });
 
     if (!confirmed) return;
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import './PayrollManagement.css';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -20,6 +21,7 @@ import { EmployeeModal, AllocationModal, ConfigurationModal } from './PayrollMod
 
 const PayrollManagement = () => {
   const { data, actions } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('employees');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
@@ -206,7 +208,12 @@ const PayrollManagement = () => {
   };
 
   const handleDeleteEmployee = async (employeeId) => {
-    if (window.confirm('Are you sure you want to delete this employee?')) {
+    if (await confirm({
+      title: 'Delete employee?',
+      body: 'This will also remove their payroll history.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteData('payroll', employeeId);
         toast.success('Employee deleted successfully');

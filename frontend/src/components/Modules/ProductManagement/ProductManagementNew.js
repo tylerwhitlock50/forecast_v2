@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -19,6 +20,7 @@ import ProductImportModal from '../RevenueForecasting/ProductImportModal';
 const ProductManagement = () => {
   const navigate = useNavigate();
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showProductModal, setShowProductModal] = useState(false);
   const [showProductImportModal, setShowProductImportModal] = useState(false);
@@ -97,7 +99,12 @@ const ProductManagement = () => {
 
   // Handle product deletion
   const handleDeleteProduct = async (productId) => {
-    if (window.confirm('Are you sure you want to delete this product? This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete product?',
+      body: 'Sales forecast rows for this product will become orphaned and any budget-by-product rollup will stop including it.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteProduct('units', productId);
         toast.success('Product deleted successfully');
@@ -117,7 +124,12 @@ const ProductManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedProducts.length} products? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedProducts.length} products?`,
+        body: 'Sales forecast rows for these products will become orphaned.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const productId of selectedProducts) {
             await actions.deleteProduct('units', productId);

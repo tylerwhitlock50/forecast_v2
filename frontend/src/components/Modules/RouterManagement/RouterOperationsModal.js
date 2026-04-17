@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { useForecast } from '../../../context/ForecastContext';
+import { useConfirm } from '../../Common/ConfirmDialog';
 
 
 const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, laborRates, onSave }) => {
   const { actions } = useForecast();
+  const confirm = useConfirm();
   const [routerOperations, setRouterOperations] = useState([]);
   const [showAddOperation, setShowAddOperation] = useState(false);
   const [editingOperation, setEditingOperation] = useState(null);
@@ -139,7 +141,12 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
 
   // Handle delete operation
   const handleDeleteOperation = async (operationId) => {
-    if (window.confirm('Are you sure you want to delete this operation?')) {
+    if (await confirm({
+      title: 'Delete operation?',
+      body: 'The router will be recalculated without this operation.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteRouterOperation(operationId);
         toast.success('Operation deleted successfully');

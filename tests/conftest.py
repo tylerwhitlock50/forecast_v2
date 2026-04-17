@@ -24,7 +24,9 @@ def test_data_dir():
     """Create a temporary directory for test data"""
     temp_dir = tempfile.mkdtemp()
     yield temp_dir
-    shutil.rmtree(temp_dir)
+    # Tolerate Windows holding briefly-locked sqlite WAL/SHM files at
+    # session teardown — the temp dir gets reaped by the OS regardless.
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 @pytest.fixture(scope="session")
 def test_db_manager(test_data_dir):

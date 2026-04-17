@@ -206,14 +206,18 @@ class TestAPIEndpoints:
         # Get current customer count
         response = client.get("/data/customers")
         initial_count = len(response.json()["data"])
-        
-        # Clear customers table
-        clear_request = {
+
+        # Clear customers table. FK enforcement is on, so referencing
+        # sales rows must be cleared first.
+        client.post("/apply_sql", json={
+            "sql_statement": "DELETE FROM sales",
+            "description": "Clear sales for replay test",
+        })
+        client.post("/apply_sql", json={
             "sql_statement": "DELETE FROM customers",
-            "description": "Clear for replay test"
-        }
-        client.post("/apply_sql", json=clear_request)
-        
+            "description": "Clear customers for replay test",
+        })
+
         # Verify table is empty
         response = client.get("/data/customers")
         assert len(response.json()["data"]) == 0

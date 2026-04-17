@@ -1267,40 +1267,46 @@ class DatabaseManager:
         return result
     
     def reset_to_initial_state(self) -> Dict[str, Any]:
-        """Reset database to initial state by reloading CSV data"""
+        """
+        Reset database to initial state by reloading CSV data.
+
+        FK enforcement is suspended on the wipe connection so the bulk
+        DELETEs can run in any order. The reload that follows uses the
+        normal load_csv_data path (which is FK-aware via csv_mappings
+        ordering) and connections it opens have FK back on.
+        """
         try:
-            # Clear all data tables (but keep execution_log and forecast_results)
             conn = self.get_connection()
             cursor = conn.cursor()
-            
+            cursor.execute("PRAGMA foreign_keys=OFF")
+
             tables_to_clear = [
                 'customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates',
                 'payroll', 'forecast',
                 'router_definitions', 'router_operations',
                 'expense_categories', 'expenses', 'expense_allocations',
                 'loans', 'loan_payments',
-                'forecast_results'  # optional: clear computed results
+                'forecast_results',
             ]
-            
+
             for table in tables_to_clear:
                 cursor.execute(f"DELETE FROM {table}")
-            
+
             conn.commit()
             conn.close()
-            
-            # Reload CSV data
+
             self.load_csv_data()
-            
+
             result = {
                 "status": "success",
-                "message": "Database reset to initial state with CSV data reloaded"
+                "message": "Database reset to initial state with CSV data reloaded",
             }
         except Exception as e:
             result = {
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
             }
-        
+
         return result
 
 # Global database manager instance

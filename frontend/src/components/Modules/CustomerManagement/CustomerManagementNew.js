@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -17,6 +18,7 @@ import CustomerImportModal from '../RevenueForecasting/CustomerImportModal';
 
 const CustomerManagement = () => {
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
@@ -92,7 +94,12 @@ const CustomerManagement = () => {
 
   // Handle customer deletion
   const handleDeleteCustomer = async (customerId) => {
-    if (window.confirm('Are you sure you want to delete this customer? This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete customer?',
+      body: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteCustomer('customers', customerId);
         toast.success('Customer deleted successfully');
@@ -112,7 +119,12 @@ const CustomerManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedCustomers.length} customers? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedCustomers.length} customers?`,
+        body: 'This action cannot be undone.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const customerId of selectedCustomers) {
             await actions.deleteCustomer('customers', customerId);

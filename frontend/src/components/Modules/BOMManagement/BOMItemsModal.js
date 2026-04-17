@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 
 
 const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], onSave }) => {
   const { actions } = useForecast();
+  const confirm = useConfirm();
   const [localBomItems, setLocalBomItems] = useState([]);
   const [editingItem, setEditingItem] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -104,7 +106,12 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
   };
 
   const handleDelete = async (item) => {
-    if (window.confirm('Are you sure you want to delete this BOM item?')) {
+    if (await confirm({
+      title: 'Delete BOM line?',
+      body: `Line ${item.bom_line || ''}: ${item.material_description || ''}`.trim(),
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteBOM(`${item.bom_id}-${item.version}-${item.bom_line}`);
         toast.success('BOM item deleted successfully');

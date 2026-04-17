@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { ForecastProvider } from './context/ForecastContext';
+import { ConfirmProvider } from './components/Common/ConfirmDialog';
+import GlobalLoadingBar from './components/Common/GlobalLoadingBar';
 import MainNavigation from './components/Navigation/MainNavigationNew';
 import './App.css';
 
@@ -41,8 +43,10 @@ const AppLayout = ({ children }) => {
 function App() {
   return (
     <ForecastProvider>
+      <ConfirmProvider>
       <Router>
         <div className="App">
+          <GlobalLoadingBar />
           <AppLayout>
             <Routes>
               <Route path="/" element={<Navigate to="/sales-forecast" replace />} />
@@ -107,6 +111,7 @@ function App() {
           />
         </div>
       </Router>
+      </ConfirmProvider>
     </ForecastProvider>
   );
 }

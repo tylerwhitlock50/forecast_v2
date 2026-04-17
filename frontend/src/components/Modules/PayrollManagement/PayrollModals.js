@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { toast } from 'react-hot-toast';
 
 // Employee Modal for adding/editing employees
 export const EmployeeModal = ({ employee, departments, businessUnits, onSave, onCancel }) => {
@@ -360,7 +361,7 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
   const handleSubmit = () => {
     const allocationTotal = Object.values(allocations).reduce((sum, val) => sum + val, 0);
     if (Math.abs(allocationTotal - 100) > 0.01) {
-      alert('Allocations must sum to 100%');
+      toast.error('Allocations must sum to 100%');
       return;
     }
 

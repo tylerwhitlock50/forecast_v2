@@ -7,10 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Select, SelectOption } from '../../ui/select';
-import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
-import { Textarea } from '../../ui/textarea';
-import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
 import RevenueMatrix from './RevenueMatrix';
 import RevenueSummary from './RevenueSummary';
 import RevenueAnalysis from './RevenueAnalysis';
@@ -22,153 +19,9 @@ import DateRangeModal from './DateRangeModal';
 import CSVUploadModal from './CSVUploadModal';
 import CustomerImportModal from './CustomerImportModal';
 import ProductImportModal from './ProductImportModal';
-
-// Format a week label with the date span
-const formatWeekLabel = (weekStart, weekEnd, weekNumber) => {
-  const span = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
-  return `W${String(weekNumber).padStart(2, '0')} (${span})`;
-};
-
-// Normalize to Monday as start of week
-const getStartOfWeek = (date) => {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday = 1
-  return new Date(d.setDate(diff));
-};
-
-// ISO week number and corresponding year
-const getISOWeekInfo = (date) => {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // nearest Thursday
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-  return { year: d.getUTCFullYear(), week: weekNo };
-};
-
-// Utility function to generate time periods
-const generateTimePeriods = (timeRange, count = 12) => {
-  const periods = [];
-  const now = new Date();
-  
-  for (let i = 0; i < count; i++) {
-    let date, key, label;
-    
-    if (timeRange === 'weekly') {
-      // Start from the beginning of the current week
-      const startOfWeek = getStartOfWeek(now);
-      date = new Date(startOfWeek);
-      date.setDate(startOfWeek.getDate() + (i * 7));
-      
-      const weekStart = getStartOfWeek(date);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekStart.getDate() + 6);
-      
-      const { year, week } = getISOWeekInfo(weekStart);
-      key = `${year}-W${String(week).padStart(2, '0')}`;
-      label = formatWeekLabel(weekStart, weekEnd, week);
-    } else if (timeRange === 'monthly') {
-      date = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      label = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getFullYear()}`;
-    } else if (timeRange === 'quarterly') {
-      date = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      const quarter = Math.floor(date.getMonth() / 3) + 1;
-      key = `${date.getFullYear()}-Q${quarter}`;
-      label = `Q${quarter} ${date.getFullYear()}`;
-    }
-    
-    periods.push({ key, label });
-  }
-  
-  return periods;
-};
-
-// Extract formatted YYYY-MM strings from the stored custom range
-const getFormattedDateRange = (customDateRange) => {
-  if (!customDateRange) return null;
-  
-  const startMonth = String(customDateRange.start.month).padStart(2, '0');
-  const endMonth = String(customDateRange.end.month).padStart(2, '0');
-  
-  return {
-    start: `${customDateRange.start.year}-${startMonth}`,
-    end: `${customDateRange.end.year}-${endMonth}`
-  };
-};
-
-// Build the time period array based on range and optional custom dates
-const buildTimePeriods = (timeRange, customDateRange) => {
-  const formattedRange = getFormattedDateRange(customDateRange);
-  
-  if (formattedRange) {
-    const [startYear, startMonth] = formattedRange.start.split('-').map(Number);
-    const [endYear, endMonth] = formattedRange.end.split('-').map(Number);
-
-    const startDate = new Date(startYear, startMonth - 1, 1);
-    const endDate = new Date(endYear, endMonth, 0); // last day of end month
-
-    if (startDate > endDate) {
-      console.warn('Custom date range start is after end; no periods generated.');
-      return [];
-    }
-
-    const periods = [];
-
-    if (timeRange === 'weekly') {
-      let current = getStartOfWeek(startDate);
-      const endBoundary = endDate;
-
-      while (current <= endBoundary) {
-        const weekStart = getStartOfWeek(current);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-
-        const { year, week } = getISOWeekInfo(weekStart);
-        const key = `${year}-W${String(week).padStart(2, '0')}`;
-        const label = formatWeekLabel(weekStart, weekEnd, week);
-
-        periods.push({ key, label });
-        current.setDate(current.getDate() + 7);
-      }
-
-      return periods;
-    }
-
-    if (timeRange === 'quarterly') {
-      // Align start to the beginning of its quarter
-      const startQuarterMonth = Math.floor(startDate.getMonth() / 3) * 3;
-      let current = new Date(startDate.getFullYear(), startQuarterMonth, 1);
-
-      while (current <= endDate) {
-        const quarter = Math.floor(current.getMonth() / 3) + 1;
-        const key = `${current.getFullYear()}-Q${quarter}`;
-        const label = `Q${quarter} ${current.getFullYear()}`;
-
-        periods.push({ key, label });
-        current.setMonth(current.getMonth() + 3, 1);
-      }
-
-      return periods;
-    }
-
-    // Monthly
-    let current = new Date(startDate);
-    while (current <= endDate) {
-      const key = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
-      const label = `${current.toLocaleDateString('en-US', { month: 'short' })} ${current.getFullYear()}`;
-
-      periods.push({ key, label });
-      current.setMonth(current.getMonth() + 1, 1);
-    }
-
-    return periods;
-  }
-
-  // Use default logic (current date + next N months)
-  const monthCount = timeRange === 'monthly' ? 12 : timeRange === 'quarterly' ? 4 : 52;
-  return generateTimePeriods(timeRange, monthCount);
-};
+import KeyboardShortcutsModal from './KeyboardShortcutsModal';
+import NewScenarioModal from './NewScenarioModal';
+import { buildTimePeriods, getFormattedDateRange } from './periodUtils';
 
 const RevenueForecasting = () => {
   const { data, actions, loading, scenarios, activeScenario } = useForecast();
@@ -775,44 +628,12 @@ const RevenueForecasting = () => {
         }}
       />
 
-      {/* New Scenario Modal */}
-      {showNewScenarioModal && (
-        <Modal onClick={() => setShowNewScenarioModal(false)}>
-          <div onClick={e => e.stopPropagation()}>
-            <ModalHeader>
-              <ModalTitle>Create New Scenario</ModalTitle>
-              <ModalClose onClick={() => setShowNewScenarioModal(false)} />
-            </ModalHeader>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.target);
-              const scenarioData = {
-                name: formData.get('name'),
-                description: formData.get('description')
-              };
-              actions.createScenario(scenarioData);
-              setShowNewScenarioModal(false);
-            }}>
-              <ModalContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Name:</Label>
-                  <Input id="name" name="name" required />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="description">Description:</Label>
-                  <Textarea id="description" name="description" rows={3} />
-                </div>
-              </ModalContent>
-              <ModalFooter>
-                <Button type="button" variant="outline" onClick={() => setShowNewScenarioModal(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit">Create</Button>
-              </ModalFooter>
-            </form>
-          </div>
-        </Modal>
-      )}
+      <NewScenarioModal
+        open={showNewScenarioModal}
+        onClose={() => setShowNewScenarioModal(false)}
+        onCreate={(scenarioData) => actions.createScenario(scenarioData)}
+      />
+
 
       <ForecastLineModal
         isOpen={showForecastLineModal}
@@ -821,42 +642,11 @@ const RevenueForecasting = () => {
         defaultDateRange={defaultDateRange}
       />
 
-      {/* Keyboard Shortcuts Modal */}
-      {showKeyboardShortcuts && (
-        <Modal onClick={() => setShowKeyboardShortcuts(false)}>
-          <div onClick={e => e.stopPropagation()}>
-            <ModalHeader>
-              <ModalTitle>Keyboard Shortcuts</ModalTitle>
-              <ModalClose onClick={() => setShowKeyboardShortcuts(false)} />
-            </ModalHeader>
-            <ModalContent>
-              <div className="space-y-4">
-                <div>
-                  <h3 className="font-semibold mb-2">Navigation</h3>
-                  <ul className="space-y-1 text-sm">
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Arrow Keys</kbd> - Navigate cells</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Enter</kbd> or <kbd className="px-2 py-1 bg-gray-100 rounded">F2</kbd> - Edit cell</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Tab</kbd> - Next cell</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Esc</kbd> - Cancel editing</li>
-                  </ul>
-                </div>
-                <div>
-                  <h3 className="font-semibold mb-2">Actions</h3>
-                  <ul className="space-y-1 text-sm">
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+C</kbd> - Copy cells</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+V</kbd> - Paste cells</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">Delete</kbd> - Clear cell</li>
-                    <li><kbd className="px-2 py-1 bg-gray-100 rounded">?</kbd> - Show this help</li>
-                  </ul>
-                </div>
-              </div>
-            </ModalContent>
-            <ModalFooter>
-              <Button onClick={() => setShowKeyboardShortcuts(false)}>Close</Button>
-            </ModalFooter>
-          </div>
-        </Modal>
-      )}
+      <KeyboardShortcutsModal
+        open={showKeyboardShortcuts}
+        onClose={() => setShowKeyboardShortcuts(false)}
+      />
+
 
       {/* Floating Action Button */}
       <button

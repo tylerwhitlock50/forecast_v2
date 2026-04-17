@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -17,6 +18,7 @@ import RouterValidation from './RouterValidation';
 
 const RouterManagement = () => {
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showRouterModal, setShowRouterModal] = useState(false);
   const [showOperationsModal, setShowOperationsModal] = useState(false);
@@ -106,7 +108,12 @@ const RouterManagement = () => {
 
   // Handle router deletion
   const handleDeleteRouter = async (routerId) => {
-    if (window.confirm('Are you sure you want to delete this router? This will also delete all associated operations. This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete router?',
+      body: 'This will also delete all associated operations. Cannot be undone.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteRouter(routerId);
       } catch (error) {
@@ -129,7 +136,12 @@ const RouterManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedRouters.length} routers? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedRouters.length} routers?`,
+        body: 'This action cannot be undone.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const routerId of selectedRouters) {
             await actions.deleteRouter(routerId);

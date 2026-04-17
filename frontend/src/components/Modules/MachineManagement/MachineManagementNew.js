@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -16,6 +17,7 @@ import MachineValidation from './MachineValidation';
 
 const MachineManagement = () => {
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showMachineModal, setShowMachineModal] = useState(false);
   const [editingMachine, setEditingMachine] = useState(null);
@@ -104,7 +106,12 @@ const MachineManagement = () => {
 
   // Handle machine deletion
   const handleDeleteMachine = async (machineId) => {
-    if (window.confirm('Are you sure you want to delete this machine? This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete machine?',
+      body: 'Router operations that reference this machine will drop its $/unit contribution until a replacement is assigned.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteMachine(machineId);
       } catch (error) {
@@ -121,7 +128,12 @@ const MachineManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedMachines.length} machines? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedMachines.length} machines?`,
+        body: 'Router operations referencing deleted machines will contribute $0 for machine cost.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const machineId of selectedMachines) {
             await actions.deleteMachine(machineId);

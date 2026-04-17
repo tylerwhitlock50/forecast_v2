@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
@@ -17,6 +18,7 @@ import LaborRateValidation from './LaborRateValidation';
 
 const LaborRateManagement = () => {
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showLaborRateModal, setShowLaborRateModal] = useState(false);
   const [editingLaborRate, setEditingLaborRate] = useState(null);
@@ -97,7 +99,12 @@ const LaborRateManagement = () => {
 
   // Handle labor rate deletion
   const handleDeleteLaborRate = async (rateId) => {
-    if (window.confirm('Are you sure you want to delete this labor rate? This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete labor rate?',
+      body: 'Router operations that reference this rate will contribute $0 for labor until a replacement is assigned.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         await actions.deleteLaborRate('labor_rates', rateId);
         toast.success('Labor rate deleted successfully');
@@ -117,7 +124,12 @@ const LaborRateManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedLaborRates.length} labor rates? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedLaborRates.length} labor rates?`,
+        body: 'Any router operation referencing a deleted rate will contribute $0 for labor.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const rateId of selectedLaborRates) {
             await actions.deleteLaborRate('labor_rates', rateId);

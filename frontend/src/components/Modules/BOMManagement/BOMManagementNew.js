@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -16,6 +17,7 @@ import BOMValidation from './BOMValidation';
 
 const BOMManagement = () => {
   const { data, actions, loading } = useForecast();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showBOMModal, setShowBOMModal] = useState(false);
   const [showItemsModal, setShowItemsModal] = useState(false);
@@ -145,7 +147,12 @@ const BOMManagement = () => {
 
   // Handle BOM deletion
   const handleDeleteBOM = async (bomId) => {
-    if (window.confirm('Are you sure you want to delete this BOM? This will also delete all associated items. This action cannot be undone.')) {
+    if (await confirm({
+      title: 'Delete BOM?',
+      body: 'This will also delete all associated items. Cannot be undone.',
+      confirmLabel: 'Delete',
+      variant: 'destructive',
+    })) {
       try {
         // Delete BOM definition first
         await actions.deleteBOMDefinition(bomId);
@@ -222,7 +229,12 @@ const BOMManagement = () => {
     }
 
     if (bulkAction === 'delete') {
-      if (window.confirm(`Are you sure you want to delete ${selectedBOMs.length} BOMs? This action cannot be undone.`)) {
+      if (await confirm({
+        title: `Delete ${selectedBOMs.length} BOMs?`,
+        body: 'This action cannot be undone.',
+        confirmLabel: 'Delete',
+        variant: 'destructive',
+      })) {
         try {
           for (const bomId of selectedBOMs) {
             await handleDeleteBOM(bomId);

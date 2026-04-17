@@ -16,43 +16,10 @@ import {
   getRoutingDetails
 } from './CostCalculations';
 import CostWarningsBanner from '../../Common/CostWarningsBanner';
-
-// Simple mini chart component for monthly trends on individual cards
-const MiniTrendChart = ({ data, color = 'blue', height = 60 }) => {
-  console.log('MiniTrendChart received data:', data);
-  
-  if (!data || data.length === 0) {
-    console.log('MiniTrendChart: No data provided');
-    return (
-      <div className="flex items-center justify-center h-8 text-muted-foreground text-xs">
-        No data
-      </div>
-    );
-  }
-
-  const maxValue = Math.max(...data.map(d => d.value));
-  const minHeight = 2; // Minimum bar height in pixels
-
-  console.log('MiniTrendChart: maxValue =', maxValue, 'data points =', data.length);
-
-  return (
-    <div className="flex items-end space-x-1 h-12">
-      {data.map((item, index) => {
-        const height = maxValue > 0 ? Math.max(minHeight, (item.value / maxValue) * 100) : minHeight;
-        console.log(`Bar ${index}: value=${item.value}, height=${height}%`);
-        return (
-          <div key={index} className="flex-1 flex flex-col items-center">
-            <div 
-              className={`w-full ${color === 'blue' ? 'bg-blue-500' : color === 'green' ? 'bg-green-500' : 'bg-orange-500'} rounded-t`}
-              style={{ height: `${height}%` }}
-              title={`${item.label}: ${item.value.toFixed(1)}`}
-            />
-          </div>
-        );
-      })}
-    </div>
-  );
-};
+import MiniTrendChart from './MiniTrendChart';
+import MaterialsUsageTab from './MaterialsUsageTab';
+import MachineUtilizationTab from './MachineUtilizationTab';
+import LaborUtilizationTab from './LaborUtilizationTab';
 
 const CostManagement = () => {
   const { data, loading, activeScenario } = useForecast();
@@ -588,197 +555,37 @@ const CostManagement = () => {
         )}
 
         {activeTab === 'materials' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Materials Usage Forecast - {selectedPeriod === 'all' ? 'All Periods' : selectedPeriod}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {getDataForPeriod(materialsUsage, selectedPeriod).map((material, index) => {
-                    // For trend charts, always use the original period data, not combined data
-                    const monthlyTrends = getMonthlyTrends(material.material_description, materialsUsage);
-                    return (
-                      <Card key={index}>
-                        <CardHeader>
-                          <CardTitle className="text-lg">{material.material_description}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-4">
-                            <div className="grid grid-cols-1 gap-2">
-                              <div className="flex justify-between text-sm">
-                                <span>Quantity Needed:</span>
-                                <span className="font-semibold">{formatNumber(material.total_quantity_needed, 2)} {material.unit}</span>
-                              </div>
-                              <div className="flex justify-between text-sm">
-                                <span>Unit Price:</span>
-                                <span className="font-semibold">{formatCurrency(material.unit_price)}</span>
-                              </div>
-                              <div className="flex justify-between text-sm">
-                                <span>Total Cost:</span>
-                                <span className="font-semibold">{formatCurrency(material.total_cost)}</span>
-                              </div>
-                            </div>
-                            
-                            <div>
-                              <div className="text-sm font-medium mb-2">Monthly Usage Trend:</div>
-                              <MiniTrendChart data={monthlyTrends} color="blue" />
-                            </div>
-                            
-                            <div>
-                              <div className="text-sm font-medium mb-2">Used by:</div>
-                              <div className="flex flex-wrap gap-1">
-                                {material.products_using.map((product, i) => (
-                                  <Badge key={i} variant="secondary" className="text-xs">{product}</Badge>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <MaterialsUsageTab
+            materialsUsage={materialsUsage}
+            selectedPeriod={selectedPeriod}
+            getDataForPeriod={getDataForPeriod}
+            getMonthlyTrends={getMonthlyTrends}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+          />
         )}
 
         {activeTab === 'machines' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Machine Utilization Details - {selectedPeriod === 'all' ? 'All Periods' : selectedPeriod}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {getDataForPeriod(machineUtilization, selectedPeriod).map((machine, index) => {
-                    // For trend charts, always use the original period data, not combined data
-                    const monthlyTrends = getMonthlyTrends(machine.machine_id, machineUtilization);
-                    return (
-                      <Card key={index} className={machine.capacity_exceeded ? 'border-red-500 bg-red-50' : ''}>
-                        <CardHeader>
-                          <div className="flex justify-between items-center">
-                            <CardTitle className="text-lg">{machine.machine_name}</CardTitle>
-                            {machine.capacity_exceeded && (
-                              <Badge variant="destructive">Over Capacity</Badge>
-                            )}
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-4">
-                            <div className="grid grid-cols-1 gap-2 text-sm">
-                              <div className="flex justify-between">
-                                <span>Required Minutes:</span>
-                                <span className="font-semibold">{formatNumber(machine.total_minutes_required)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Available Minutes:</span>
-                                <span className="font-semibold">{formatNumber(machine.available_minutes_per_month)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Utilization:</span>
-                                <span className={`font-semibold ${machine.utilization_percent > 100 ? 'text-red-600' : 'text-green-600'}`}>
-                                  {formatPercent(machine.utilization_percent)}
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Total Cost:</span>
-                                <span className="font-semibold">{formatCurrency(machine.total_cost)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Machine Rate:</span>
-                                <span className="font-semibold">{formatCurrency(machine.machine_rate)}/hr</span>
-                              </div>
-                            </div>
-                            
-                            <div>
-                              <div className="text-sm font-medium mb-2">Monthly Utilization Trend:</div>
-                              <MiniTrendChart data={monthlyTrends} color="orange" />
-                            </div>
-                            
-                            {machine.capacity_exceeded && (
-                              <div className="p-3 bg-red-100 border border-red-200 rounded text-sm text-red-800">
-                                ⚠️ Capacity Exceeded by {formatPercent(machine.utilization_percent - 100)}
-                              </div>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <MachineUtilizationTab
+            machineUtilization={machineUtilization}
+            selectedPeriod={selectedPeriod}
+            getDataForPeriod={getDataForPeriod}
+            getMonthlyTrends={getMonthlyTrends}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+            formatPercent={formatPercent}
+          />
         )}
 
         {activeTab === 'labor' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Labor Utilization & FTE - {selectedPeriod === 'all' ? 'All Periods' : selectedPeriod}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {getDataForPeriod(laborUtilization, selectedPeriod).map((labor, index) => {
-                    // For trend charts, always use the original period data, not combined data
-                    const monthlyTrends = getMonthlyTrends(labor.labor_type_id, laborUtilization);
-                    return (
-                      <Card key={index}>
-                        <CardHeader>
-                          <div className="flex justify-between items-center">
-                            <CardTitle className="text-lg">{labor.labor_type_name}</CardTitle>
-                            <Badge variant="outline">{labor.labor_type}</Badge>
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-4">
-                            <div className="grid grid-cols-1 gap-2 text-sm">
-                              <div className="flex justify-between">
-                                <span>Required Minutes:</span>
-                                <span className="font-semibold">{formatNumber(labor.total_minutes_required)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Required Hours:</span>
-                                <span className="font-semibold">{formatNumber(labor.total_hours_required)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>FTE Required:</span>
-                                <span className="font-semibold">{formatNumber(labor.fte_required, 2)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Hourly Rate:</span>
-                                <span className="font-semibold">{formatCurrency(labor.hourly_rate)}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Total Cost:</span>
-                                <span className="font-semibold">{formatCurrency(labor.total_cost)}</span>
-                              </div>
-                            </div>
-                            
-                            <div>
-                              <div className="text-sm font-medium mb-2">Monthly FTE Trend:</div>
-                              <MiniTrendChart data={monthlyTrends} color="green" />
-                            </div>
-                            
-                            <div>
-                              <div className="text-sm font-medium mb-2">Products:</div>
-                              <div className="flex flex-wrap gap-1">
-                                {labor.products_involved.map((product, i) => (
-                                  <Badge key={i} variant="secondary" className="text-xs">{product}</Badge>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <LaborUtilizationTab
+            laborUtilization={laborUtilization}
+            selectedPeriod={selectedPeriod}
+            getDataForPeriod={getDataForPeriod}
+            getMonthlyTrends={getMonthlyTrends}
+            formatCurrency={formatCurrency}
+            formatNumber={formatNumber}
+          />
         )}
       </div>
     </div>

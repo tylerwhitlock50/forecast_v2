@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
+import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import LoanTableNew from './LoanTableNew';
@@ -11,6 +12,7 @@ import AmortizationScheduleModalNew from './AmortizationScheduleModalNew';
 
 const LoanManagement = () => {
     const { actions, loading } = useForecast();
+    const confirm = useConfirm();
 
     const [loans, setLoans] = useState([]);
     const [loanSummary, setLoanSummary] = useState(null);
@@ -78,7 +80,12 @@ const LoanManagement = () => {
     };
 
     const handleDeleteLoan = async (loanId) => {
-        if (!window.confirm('Are you sure you want to delete this loan? This will also delete all payment schedule data.')) {
+        if (!(await confirm({
+          title: 'Delete loan?',
+          body: 'This will also delete all payment schedule data.',
+          confirmLabel: 'Delete',
+          variant: 'destructive',
+        }))) {
             return;
         }
 
