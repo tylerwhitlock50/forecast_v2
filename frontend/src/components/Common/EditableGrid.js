@@ -25,10 +25,14 @@ const EditableGrid = ({
   const [copiedCells, setCopiedCells] = useState([]);
   const [validationErrors, setValidationErrors] = useState(new Map());
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
-  
+
   const gridRef = useRef(null);
   const editInputRef = useRef(null);
   const containerRef = useRef(null);
+  // Tracks whether focus is inside the grid container. Used to gate the
+  // window-level keydown listener so shortcuts only fire when the user is
+  // actually interacting with the grid.
+  const isFocusedRef = useRef(false);
 
   // Grid dimensions
   const rowHeight = 40;
@@ -135,13 +139,13 @@ const EditableGrid = ({
   const handleKeyDown = useCallback((e) => {
     if (!enableKeyboardNavigation) return;
 
-    const { key, ctrlKey, shiftKey } = e;
-    
+    const { key, ctrlKey, metaKey } = e;
+
     if (editingCell) {
       if (key === 'Enter' || key === 'Tab') {
         e.preventDefault();
         stopEditing();
-        
+
         // Move to next cell
         if (key === 'Tab') {
           const nextCol = editingCell.col + 1;
@@ -157,82 +161,176 @@ const EditableGrid = ({
         e.preventDefault();
         stopEditing();
       }
-    } else {
-      // Navigation when not editing
-      if (selectedCells.length > 0) {
-        const [currentRow, currentCol] = selectedCells[0];
-        let newRow = currentRow;
-        let newCol = currentCol;
+      return;
+    }
 
-        switch (key) {
-          case 'ArrowUp':
-            newRow = Math.max(0, currentRow - 1);
-            break;
-          case 'ArrowDown':
-            newRow = Math.min(sortedData.length - 1, currentRow + 1);
-            break;
-          case 'ArrowLeft':
-            newCol = Math.max(0, currentCol - 1);
-            break;
-          case 'ArrowRight':
-            newCol = Math.min(columns.length - 1, currentCol + 1);
-            break;
-          case 'Enter':
-          case 'F2':
-            startEditing(currentRow, currentCol);
-            break;
-          case 'Delete':
-            handleCellChange(currentRow, currentCol, '');
-            break;
-          default:
-            break;
-        }
+    // Not editing: require a selection for anything except clipboard paste
+    if (selectedCells.length === 0) return;
 
-        if (newRow !== currentRow || newCol !== currentCol) {
-          setSelectedCells([[newRow, newCol]]);
+    const [currentRow, currentCol] = selectedCells[0];
+    let newRow = currentRow;
+    let newCol = currentCol;
+    let handled = false;
+
+    switch (key) {
+      case 'ArrowUp':
+        newRow = Math.max(0, currentRow - 1);
+        handled = true;
+        break;
+      case 'ArrowDown':
+        newRow = Math.min(sortedData.length - 1, currentRow + 1);
+        handled = true;
+        break;
+      case 'ArrowLeft':
+        newCol = Math.max(0, currentCol - 1);
+        handled = true;
+        break;
+      case 'ArrowRight':
+        newCol = Math.min(columns.length - 1, currentCol + 1);
+        handled = true;
+        break;
+      case 'Tab': {
+        // Tab: next column, wrapping to first column of next row at the edge
+        const nextCol = currentCol + 1;
+        if (nextCol < columns.length) {
+          newCol = nextCol;
+        } else if (currentRow + 1 < sortedData.length) {
+          newRow = currentRow + 1;
+          newCol = 0;
         }
+        handled = true;
+        break;
       }
-
-      // Copy/Paste
-      if (ctrlKey) {
-        if (key === 'c' || key === 'C') {
-          handleCopy();
-        } else if (key === 'v' || key === 'V') {
-          handlePaste();
+      case 'Enter':
+      case 'F2': {
+        const col = columns[currentCol];
+        if (col && typeof col.onClick === 'function') {
+          // Delegate activation to the column's custom onClick (e.g. opens
+          // the parent-controlled edit modal for revenue cells).
+          col.onClick(currentRow, currentCol, sortedData[currentRow]);
+        } else {
+          startEditing(currentRow, currentCol);
         }
+        handled = true;
+        break;
+      }
+      case 'Escape':
+        // Modal-driven cells manage their own Esc; nothing to do here.
+        break;
+      case 'Delete': {
+        const col = columns[currentCol];
+        // Delete is unsafe for modal-driven cells (revenue cells in v1) —
+        // skip those and leave the parent in charge.
+        if (col && typeof col.onClick !== 'function') {
+          handleCellChange(currentRow, currentCol, '');
+        }
+        handled = true;
+        break;
+      }
+      default:
+        break;
+    }
+
+    if (handled) {
+      e.preventDefault();
+      if (newRow !== currentRow || newCol !== currentCol) {
+        setSelectedCells([[newRow, newCol]]);
+      }
+      return;
+    }
+
+    // Copy/Paste (single-cell only in this phase)
+    if (ctrlKey || metaKey) {
+      if (key === 'c' || key === 'C') {
+        e.preventDefault();
+        handleCopy();
+      } else if (key === 'v' || key === 'V') {
+        e.preventDefault();
+        handlePaste();
       }
     }
   }, [editingCell, selectedCells, columns, sortedData, enableKeyboardNavigation, startEditing, stopEditing, handleCellChange]);
+  // Note: handleCopy/handlePaste are referenced via closure below; adding
+  // them to the dependency list here would create a circular definition.
+  // They are stable enough for this single-cell phase.
 
-  // Handle copy/paste
+  // Handle copy/paste (single-cell only in this phase — Phase 1 will
+  // handle ranges and multi-cell selections).
   const handleCopy = useCallback(() => {
     if (selectedCells.length === 0) return;
-    
+
     const copiedData = selectedCells.map(([row, col]) => ({
       row,
       col,
       value: sortedData[row][columns[col].key]
     }));
-    
+
     setCopiedCells(copiedData);
+
+    // Best-effort write to the system clipboard so the user can paste
+    // into other apps. Keep the in-memory copy either way.
+    try {
+      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        const text = copiedData
+          .map(c => (c.value === undefined || c.value === null ? '' : String(c.value)))
+          .join('\n');
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    } catch (err) {
+      // Ignore — in-memory fallback still works.
+    }
+
     actions.showToast('Copied to clipboard', 'success');
   }, [selectedCells, sortedData, columns, actions]);
 
   const handlePaste = useCallback(() => {
-    if (copiedCells.length === 0 || selectedCells.length === 0) return;
-    
+    if (selectedCells.length === 0) return;
+
     const [startRow, startCol] = selectedCells[0];
-    
-    copiedCells.forEach(({ value }, index) => {
-      const targetRow = startRow + Math.floor(index / copiedCells.length);
-      const targetCol = startCol + (index % copiedCells.length);
-      
-      if (targetRow < sortedData.length && targetCol < columns.length) {
-        handleCellChange(targetRow, targetCol, value);
+
+    const applyFromMemory = () => {
+      if (copiedCells.length === 0) return false;
+      copiedCells.forEach(({ value }, index) => {
+        const targetRow = startRow + Math.floor(index / copiedCells.length);
+        const targetCol = startCol + (index % copiedCells.length);
+
+        if (targetRow < sortedData.length && targetCol < columns.length) {
+          const targetCol2 = columns[targetCol];
+          // Never try to clear/write through modal-driven columns.
+          if (targetCol2 && typeof targetCol2.onClick !== 'function') {
+            handleCellChange(targetRow, targetCol, value);
+          }
+        }
+      });
+      actions.showToast('Pasted from clipboard', 'success');
+      return true;
+    };
+
+    // Prefer the system clipboard if available (single-cell).
+    try {
+      if (navigator && navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(text => {
+          if (text === undefined || text === null || text === '') {
+            applyFromMemory();
+            return;
+          }
+          const col = columns[startCol];
+          if (col && typeof col.onClick === 'function') {
+            // Don't write through modal-driven cells.
+            return;
+          }
+          handleCellChange(startRow, startCol, text);
+          actions.showToast('Pasted from clipboard', 'success');
+        }).catch(() => {
+          applyFromMemory();
+        });
+        return;
       }
-    });
-    
-    actions.showToast('Pasted from clipboard', 'success');
+    } catch (err) {
+      // Fall through to in-memory fallback.
+    }
+
+    applyFromMemory();
   }, [copiedCells, selectedCells, sortedData, columns, handleCellChange, actions]);
 
   // Handle drag and fill
@@ -281,14 +379,21 @@ const EditableGrid = ({
 
     const handleClick = (e) => {
       e.stopPropagation();
-      
+
+      // Always register the click as a selection so subsequent keyboard
+      // shortcuts (arrow keys, Enter, Ctrl+C) know which cell is active —
+      // including cells that delegate activation to a custom onClick
+      // (e.g. the revenue edit modal).
+      if (enableKeyboardNavigation) {
+        setSelectedCells([[rowIndex, columnIndex]]);
+      }
+
       if (column.onClick) {
         column.onClick(rowIndex, columnIndex, rowData);
         return;
       }
 
       if (enableKeyboardNavigation) {
-        setSelectedCells([[rowIndex, columnIndex]]);
         startEditing(rowIndex, columnIndex);
       }
     };
@@ -359,22 +464,62 @@ const EditableGrid = ({
     );
   };
 
-  // Add keyboard event listener
+  // Add keyboard event listener. The listener is attached to window (the
+  // previous containerRef-based listener never fired because the container
+  // rarely received focus), and we gate it with an isFocused check so the
+  // grid only reacts to keys when the user is actually interacting with it.
   useEffect(() => {
-    const container = containerRef.current;
-    if (container) {
-      container.addEventListener('keydown', handleKeyDown);
-      return () => container.removeEventListener('keydown', handleKeyDown);
-    }
+    const listener = (e) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const active = document.activeElement;
+      const focusInside = !!(active && container.contains(active));
+
+      if (!focusInside && !isFocusedRef.current) return;
+
+      // Ignore keystrokes when a different input/textarea outside the grid
+      // is focused (e.g. the global "?" shortcut shouldn't collide with
+      // shortcuts while typing in other fields).
+      if (active && !container.contains(active)) {
+        const tag = (active.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || active.isContentEditable) {
+          return;
+        }
+      }
+
+      handleKeyDown(e);
+    };
+
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
   }, [handleKeyDown]);
 
+  // Track focus state so keyboard shortcuts fire after a click-to-select
+  // even when focus briefly leaves the container (e.g. a cell's custom
+  // onClick opens a modal and moves focus to the modal's input, then the
+  // modal closes and focus returns to the body).
+  //
+  // The window-level keydown listener uses this flag together with
+  // document.activeElement checks, so it is safe to leave this "sticky" —
+  // keys won't fire while another real input/textarea owns focus.
+  const handleContainerMouseDown = useCallback(() => {
+    isFocusedRef.current = true;
+  }, []);
+
+  const handleContainerFocus = useCallback(() => {
+    isFocusedRef.current = true;
+  }, []);
+
   return (
-    <div 
+    <div
       ref={containerRef}
       className={`editable-grid ${className}`}
       tabIndex={0}
-      style={{ 
-        width: '100%', 
+      onMouseDown={handleContainerMouseDown}
+      onFocus={handleContainerFocus}
+      style={{
+        width: '100%',
         height: '100%',
         outline: 'none'
       }}

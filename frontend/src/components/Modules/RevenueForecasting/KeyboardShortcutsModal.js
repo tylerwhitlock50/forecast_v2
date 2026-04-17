@@ -17,6 +17,7 @@ const KeyboardShortcutsModal = ({ open, onClose }) => {
         </ModalHeader>
         <ModalContent>
           <div className="space-y-4">
+            <p className="text-sm text-gray-600">Click any cell to focus the matrix first.</p>
             <div>
               <h3 className="font-semibold mb-2">Navigation</h3>
               <ul className="space-y-1 text-sm">
