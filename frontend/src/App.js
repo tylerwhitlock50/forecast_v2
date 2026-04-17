@@ -10,6 +10,7 @@ import RevenueForecasting from './components/Modules/RevenueForecasting/RevenueF
 import CostManagement from './components/Modules/CostManagement/CostManagementNew';
 import CustomerManagement from './components/Modules/CustomerManagement/CustomerManagementNew';
 import ProductManagement from './components/Modules/ProductManagement/ProductManagementNew';
+import ProductDetail from './components/Modules/ProductManagement/ProductDetail';
 import MachineManagement from './components/Modules/MachineManagement/MachineManagementNew';
 import RouterManagement from './components/Modules/RouterManagement/RouterManagementNew';
 import BOMManagement from './components/Modules/BOMManagement/BOMManagementNew';
@@ -49,6 +50,7 @@ function App() {
               {/* Revenue Planning */}
               <Route path="/customers" element={<CustomerManagement />} />
               <Route path="/products" element={<ProductManagement />} />
+              <Route path="/products/:id" element={<ProductDetail />} />
               <Route path="/sales-forecast" element={<RevenueForecasting />} />
 
               {/* Manufacturing Setup */}

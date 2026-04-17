@@ -6,6 +6,45 @@ from utils.cost_rollup import calculate_unit_costs
 router = APIRouter(prefix="/products", tags=["cost"])
 
 
+@router.get("/unit-cost", response_model=ForecastResponse)
+async def get_unit_cost_preview(
+    bom_id: Optional[str] = Query(None),
+    bom_version: Optional[str] = Query("1.0"),
+    router_id: Optional[str] = Query(None),
+):
+    """
+    Return per-unit material/labor/machine cost for a hypothetical BOM +
+    router pairing. Used by Product edit / BOM / Router modals to show a
+    live "≈ $X/unit" preview before the pairing is committed.
+    """
+    try:
+        from db.database import db_manager
+
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        unit_costs = calculate_unit_costs(cursor, bom_id, bom_version, router_id)
+        db_manager.close_connection(conn)
+
+        total = (
+            unit_costs["material_per_unit"]
+            + unit_costs["labor_per_unit"]
+            + unit_costs["machine_per_unit"]
+        )
+        return ForecastResponse(
+            status="success",
+            data={
+                "material_per_unit": unit_costs["material_per_unit"],
+                "labor_per_unit": unit_costs["labor_per_unit"],
+                "machine_per_unit": unit_costs["machine_per_unit"],
+                "total_per_unit": total,
+                "warnings": unit_costs["warnings"],
+            },
+            message="Unit cost preview computed",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error computing unit cost: {str(e)}")
+
+
 @router.get("/cost-summary", response_model=ForecastResponse)
 async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
     """
@@ -54,6 +93,9 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
             cost_summaries.append({
                 "product_id": unit_id,
                 "product_name": unit_name,
+                "bom_id": bom_id,
+                "router_id": router_id,
+                "forecast_quantity": forecasted_quantity,
                 "forecasted_revenue": forecasted_revenue,
                 "material_cost": material_cost,
                 "labor_cost": labor_cost,
@@ -61,6 +103,14 @@ async def get_products_cost_summary(forecast_id: Optional[str] = Query(None)):
                 "total_cogs": total_cogs,
                 "gross_margin": gross_margin,
                 "gross_margin_percent": gross_margin_percent,
+                "unit_material_cost": unit_costs["material_per_unit"],
+                "unit_labor_cost": unit_costs["labor_per_unit"],
+                "unit_machine_cost": unit_costs["machine_per_unit"],
+                "unit_total_cost": (
+                    unit_costs["material_per_unit"]
+                    + unit_costs["labor_per_unit"]
+                    + unit_costs["machine_per_unit"]
+                ),
                 "warnings": unit_costs["warnings"],
             })
 

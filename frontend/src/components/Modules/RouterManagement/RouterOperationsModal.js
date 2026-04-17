@@ -178,6 +178,36 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
     return rate ? rate.rate_name : rateId;
   };
 
+  // Per-op per-unit dollar cost. Mirrors the server-side rollup in
+  // utils/cost_rollup.py so what shows here matches the forecast numbers.
+  const formatDollar = (n) =>
+    `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const operationCosts = (op) => {
+    const machine = machines.find(m => m.machine_id === op.machine_id);
+    const rate = laborRates.find(r => r.rate_id === op.labor_type_id);
+    const machineCost = machine ? (op.machine_minutes || 0) / 60 * (machine.machine_rate || 0) : 0;
+    const laborCost = rate ? (op.labor_minutes || 0) / 60 * (rate.rate_amount || 0) : 0;
+    return {
+      machineCost,
+      laborCost,
+      totalCost: machineCost + laborCost,
+      missingMachine: !!op.machine_id && !machine,
+      missingRate: !!op.labor_type_id && !rate,
+    };
+  };
+
+  const routerTotals = routerOperations.reduce(
+    (acc, op) => {
+      const c = operationCosts(op);
+      acc.machine += c.machineCost;
+      acc.labor += c.laborCost;
+      return acc;
+    },
+    { machine: 0, labor: 0 }
+  );
+  const totalCostPerUnit = routerTotals.machine + routerTotals.labor;
+
   if (!isOpen || !router) return null;
 
   return (
@@ -210,13 +240,15 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
               </div>
             ) : (
               <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                {routerOperations.map((operation) => (
-                  <div 
-                    key={operation.operation_id} 
-                    style={{ 
-                      border: '1px solid #e9ecef', 
-                      borderRadius: '6px', 
-                      padding: '1rem', 
+                {routerOperations.map((operation) => {
+                  const costs = operationCosts(operation);
+                  return (
+                  <div
+                    key={operation.operation_id}
+                    style={{
+                      border: '1px solid #e9ecef',
+                      borderRadius: '6px',
+                      padding: '1rem',
                       marginBottom: '1rem',
                       backgroundColor: '#f8f9fa'
                     }}
@@ -233,12 +265,26 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
                               - {operation.operation_description}
                             </span>
                           )}
+                          <span style={{ marginLeft: 'auto', fontWeight: 600 }}>
+                            {formatDollar(costs.totalCost)} / unit
+                          </span>
                         </div>
-                        <div style={{ display: 'flex', gap: '2rem', fontSize: '0.9rem' }}>
-                          <span>Machine: {operation.machine_minutes || 0} min</span>
-                          <span>Labor: {operation.labor_minutes || 0} min</span>
+                        <div style={{ display: 'flex', gap: '2rem', fontSize: '0.9rem', flexWrap: 'wrap' }}>
+                          <span>
+                            Machine: {operation.machine_minutes || 0} min
+                            <span style={{ color: '#6c757d' }}> → {formatDollar(costs.machineCost)}</span>
+                          </span>
+                          <span>
+                            Labor: {operation.labor_minutes || 0} min
+                            <span style={{ color: '#6c757d' }}> → {formatDollar(costs.laborCost)}</span>
+                          </span>
                           {operation.labor_type_id && (
                             <span>Rate: {getLaborRateName(operation.labor_type_id)}</span>
+                          )}
+                          {(costs.missingMachine || costs.missingRate) && (
+                            <span style={{ color: '#b45309' }}>
+                              ⚠ {costs.missingMachine ? 'unknown machine' : ''}{costs.missingMachine && costs.missingRate ? ', ' : ''}{costs.missingRate ? 'unknown labor rate' : ''}
+                            </span>
                           )}
                         </div>
                       </div>
@@ -260,7 +306,8 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -378,22 +425,26 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
                 <span className="preview-value">{routerOperations.length}</span>
               </div>
               <div className="preview-item">
-                <span className="preview-label">Total Machine Time:</span>
+                <span className="preview-label">Machine Time / unit:</span>
                 <span className="preview-value">
-                  {routerOperations.reduce((sum, op) => sum + (op.machine_minutes || 0), 0).toFixed(1)} minutes
+                  {routerOperations.reduce((sum, op) => sum + (op.machine_minutes || 0), 0).toFixed(1)} min
+                  <span style={{ color: '#6c757d', marginLeft: '0.5rem' }}>
+                    → {formatDollar(routerTotals.machine)}
+                  </span>
                 </span>
               </div>
               <div className="preview-item">
-                <span className="preview-label">Total Labor Time:</span>
+                <span className="preview-label">Labor Time / unit:</span>
                 <span className="preview-value">
-                  {routerOperations.reduce((sum, op) => sum + (op.labor_minutes || 0), 0).toFixed(1)} minutes
+                  {routerOperations.reduce((sum, op) => sum + (op.labor_minutes || 0), 0).toFixed(1)} min
+                  <span style={{ color: '#6c757d', marginLeft: '0.5rem' }}>
+                    → {formatDollar(routerTotals.labor)}
+                  </span>
                 </span>
               </div>
-              <div className="preview-item">
-                <span className="preview-label">Total Time:</span>
-                <span className="preview-value">
-                  {routerOperations.reduce((sum, op) => sum + (op.machine_minutes || 0) + (op.labor_minutes || 0), 0).toFixed(1)} minutes
-                </span>
+              <div className="preview-item" style={{ fontWeight: 600 }}>
+                <span className="preview-label">Total Conversion Cost:</span>
+                <span className="preview-value">{formatDollar(totalCostPerUnit)} / unit</span>
               </div>
             </div>
           </div>

@@ -197,6 +197,57 @@ const RouterManagement = () => {
     return operations.filter(op => op.router_id === routerId).length;
   };
 
+  // Products referencing a router; used for the "Used By" column and for
+  // safe-delete confirmation.
+  const getProductsUsingRouter = (routerId) => {
+    const products = Array.isArray(data.products) ? data.products : [];
+    return products.filter(p => p.router === routerId);
+  };
+
+  // Clone a router definition + all of its operations under a fresh id.
+  const handleCloneRouter = async (routerId) => {
+    try {
+      const routers = Array.isArray(data.router_definitions) ? data.router_definitions : [];
+      const operations = Array.isArray(data.router_operations) ? data.router_operations : [];
+      const source = routers.find(r => r.router_id === routerId);
+      const opsToClone = operations.filter(op => op.router_id === routerId);
+
+      if (!source && opsToClone.length === 0) {
+        toast.error(`Nothing to clone for ${routerId}`);
+        return;
+      }
+
+      const maxId = Math.max(
+        ...routers.map(r => parseInt((r.router_id || '').replace(/^R/, ''), 10) || 0),
+        0
+      );
+      const newRouterId = `R${String(maxId + 1).padStart(4, '0')}`;
+
+      if (source) {
+        await actions.createRouter({
+          router_id: newRouterId,
+          router_name: `${source.router_name || routerId} (copy)`,
+          router_description: source.router_description || '',
+          version: '1.0',
+        });
+      }
+
+      for (const op of opsToClone) {
+        const cloned = { ...op };
+        delete cloned.operation_id;
+        delete cloned.created_at;
+        cloned.router_id = newRouterId;
+        await actions.createRouterOperation(cloned);
+      }
+
+      toast.success(`Router cloned as ${newRouterId} (${opsToClone.length} ops)`);
+      await actions.fetchAllData();
+    } catch (error) {
+      console.error('Error cloning router:', error);
+      toast.error('Failed to clone router');
+    }
+  };
+
   // Define columns for DataTable
   const routerColumns = [
     {
@@ -241,6 +292,38 @@ const RouterManagement = () => {
           </div>
         );
       }
+    },
+    {
+      key: 'used_by',
+      title: 'Used By',
+      render: (_v, row) => {
+        const users = getProductsUsingRouter(row.router_id);
+        if (users.length === 0) {
+          return (
+            <span className="text-sm text-muted-foreground" title="Not assigned to any product">—</span>
+          );
+        }
+        const names = users.map(p => p.unit_name).filter(Boolean).join(', ');
+        return (
+          <Badge variant="outline" title={names || `${users.length} products`}>
+            {users.length} product{users.length === 1 ? '' : 's'}
+          </Badge>
+        );
+      }
+    },
+    {
+      key: 'clone',
+      title: 'Clone',
+      render: (_v, row) => (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => handleCloneRouter(row.router_id)}
+          title="Duplicate router + all operations"
+        >
+          Clone
+        </Button>
+      )
     },
     {
       key: 'is_active',

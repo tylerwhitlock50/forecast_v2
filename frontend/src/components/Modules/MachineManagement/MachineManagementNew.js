@@ -234,6 +234,28 @@ const MachineManagement = () => {
       key: 'available_minutes_per_month',
       title: 'Available (min/month)',
       render: (value) => value ? value.toLocaleString() : 'N/A'
+    },
+    {
+      key: 'used_in',
+      title: 'Used In',
+      render: (_v, row) => {
+        const ops = Array.isArray(data.router_operations) ? data.router_operations : [];
+        const matching = ops.filter(op => op.machine_id === row.machine_id);
+        if (matching.length === 0) {
+          return (
+            <span className="text-sm text-muted-foreground" title="Not referenced by any router op">—</span>
+          );
+        }
+        const routerIds = [...new Set(matching.map(op => op.router_id))];
+        return (
+          <Badge
+            variant="outline"
+            title={`Routers: ${routerIds.join(', ')}`}
+          >
+            {matching.length} op{matching.length === 1 ? '' : 's'} · {routerIds.length} router{routerIds.length === 1 ? '' : 's'}
+          </Badge>
+        );
+      }
     }
   ];
 

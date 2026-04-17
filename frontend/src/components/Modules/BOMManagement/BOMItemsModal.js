@@ -3,7 +3,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 
 
-const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
+const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], onSave }) => {
   const { actions } = useForecast();
   const [localBomItems, setLocalBomItems] = useState([]);
   const [editingItem, setEditingItem] = useState(null);
@@ -16,6 +16,8 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
     material_cost: '',
     target_cost: ''
   });
+  const [copySourceBomId, setCopySourceBomId] = useState('');
+  const [copying, setCopying] = useState(false);
 
   // Filter items for this BOM
   const currentBomItems = useMemo(() => {
@@ -119,13 +121,82 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
     return maxLine + 1;
   };
 
+  // Candidate BOMs to copy lines from: any BOM that has lines, minus the
+  // one we're editing. Display by name if we have it, else by id.
+  const copyCandidates = useMemo(() => {
+    const bomIdsWithLines = new Set(
+      (bomItems || []).map((l) => l.bom_id).filter(Boolean)
+    );
+    const currentVersion = bom?.version || '1.0';
+    const seen = new Set();
+    const options = [];
+    for (const def of bomDefinitions) {
+      const key = `${def.bom_id}|${def.version || '1.0'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!bomIdsWithLines.has(def.bom_id)) continue;
+      if (def.bom_id === bom?.bom_id && (def.version || '1.0') === currentVersion) continue;
+      options.push({
+        key,
+        label: `${def.bom_name || def.bom_id} (v${def.version || '1.0'})`,
+        bomId: def.bom_id,
+        version: def.version || '1.0',
+      });
+    }
+    return options;
+  }, [bomDefinitions, bomItems, bom]);
+
+  const handleCopyLines = async () => {
+    if (!copySourceBomId) return;
+    const [srcBomId, srcVersion] = copySourceBomId.split('|');
+    const sourceLines = (bomItems || []).filter(
+      (l) => l.bom_id === srcBomId && (l.version || '1.0') === srcVersion
+    );
+    if (sourceLines.length === 0) {
+      toast.error('Source BOM has no lines');
+      return;
+    }
+    setCopying(true);
+    try {
+      let next = getNextLineNumber();
+      for (const line of sourceLines) {
+        await actions.createBOM({
+          bom_id: bom.bom_id,
+          version: bom.version || '1.0',
+          bom_line: next,
+          material_description: line.material_description,
+          qty: line.qty,
+          unit: line.unit,
+          unit_price: line.unit_price,
+          material_cost: line.material_cost,
+          target_cost: line.target_cost,
+        });
+        next += 1;
+      }
+      toast.success(`Copied ${sourceLines.length} line${sourceLines.length === 1 ? '' : 's'} from ${srcBomId}`);
+      setCopySourceBomId('');
+      await onSave();
+    } catch (err) {
+      console.error('Error copying lines:', err);
+      toast.error('Failed to copy lines');
+    } finally {
+      setCopying(false);
+    }
+  };
+
   const formatCurrency = (value) => {
     return `$${Number(value || 0).toFixed(2)}`;
   };
 
+  // BOM.material_cost is stored per unit of finished good, so summing
+  // across lines gives the material cost contributed by this BOM to one
+  // finished unit — the same number the /products/unit-cost preview uses.
   const totalMaterialCost = localBomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
   const totalTargetCost = localBomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
   const costVariance = totalMaterialCost - totalTargetCost;
+  const incompleteLines = localBomItems.filter(
+    (item) => !(item.qty > 0) || !(item.unit_price > 0) || !(item.material_cost > 0)
+  );
 
   if (!isOpen || !bom) return null;
 
@@ -145,11 +216,11 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
               <span className="summary-value">{localBomItems.length}</span>
             </div>
             <div className="summary-item">
-              <span className="summary-label">Material Cost:</span>
+              <span className="summary-label">Material / Unit:</span>
               <span className="summary-value">{formatCurrency(totalMaterialCost)}</span>
             </div>
             <div className="summary-item">
-              <span className="summary-label">Target Cost:</span>
+              <span className="summary-label">Target / Unit:</span>
               <span className="summary-value">{formatCurrency(totalTargetCost)}</span>
             </div>
             <div className="summary-item">
@@ -158,6 +229,14 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
                 {costVariance > 0 ? '+' : ''}{formatCurrency(costVariance)}
               </span>
             </div>
+            {incompleteLines.length > 0 && (
+              <div className="summary-item" style={{ color: '#b45309' }}>
+                <span className="summary-label">⚠ Incomplete lines:</span>
+                <span className="summary-value" title={`Lines missing qty or unit price: ${incompleteLines.map(l => l.material_description || `line ${l.bom_line}`).join(', ')}`}>
+                  {incompleteLines.length}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Add/Edit Form */}
@@ -247,10 +326,33 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, onSave }) => {
 
           {/* Items Table */}
           <div className="bom-items-table-container">
-            <div className="table-header">
-              <h3>BOM Items</h3>
+            <div className="table-header" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <h3 style={{ marginRight: 'auto' }}>BOM Items</h3>
+              {copyCandidates.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: '#6c757d' }}>Copy lines from:</label>
+                  <select
+                    value={copySourceBomId}
+                    onChange={(e) => setCopySourceBomId(e.target.value)}
+                    style={{ padding: '0.25rem 0.5rem' }}
+                  >
+                    <option value="">Select BOM…</option>
+                    {copyCandidates.map((c) => (
+                      <option key={c.key} value={c.key}>{c.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={handleCopyLines}
+                    disabled={!copySourceBomId || copying}
+                  >
+                    {copying ? 'Copying…' : 'Append'}
+                  </button>
+                </div>
+              )}
               {!showAddForm && (
-                <button 
+                <button
                   className="btn-primary"
                   onClick={() => setShowAddForm(true)}
                 >

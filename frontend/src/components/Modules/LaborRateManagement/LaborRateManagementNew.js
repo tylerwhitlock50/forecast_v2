@@ -220,6 +220,28 @@ const LaborRateManagement = () => {
       render: (value) => value ? `${value}%` : 'N/A'
     },
     {
+      key: 'used_in',
+      title: 'Used In',
+      render: (_v, row) => {
+        const ops = Array.isArray(data.router_operations) ? data.router_operations : [];
+        const matching = ops.filter(op => op.labor_type_id === row.rate_id);
+        if (matching.length === 0) {
+          return (
+            <span className="text-sm text-muted-foreground" title="Not referenced by any router op">—</span>
+          );
+        }
+        const routerIds = [...new Set(matching.map(op => op.router_id))];
+        return (
+          <Badge
+            variant="outline"
+            title={`Routers: ${routerIds.join(', ')}`}
+          >
+            {matching.length} op{matching.length === 1 ? '' : 's'} · {routerIds.length} router{routerIds.length === 1 ? '' : 's'}
+          </Badge>
+        );
+      }
+    },
+    {
       key: 'is_active',
       title: 'Status',
       render: (value) => (

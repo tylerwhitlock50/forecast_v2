@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
@@ -16,6 +17,7 @@ import ProductValidation from './ProductValidation';
 import ProductImportModal from '../RevenueForecasting/ProductImportModal';
 
 const ProductManagement = () => {
+  const navigate = useNavigate();
   const { data, actions, loading } = useForecast();
   const [activeTab, setActiveTab] = useState('table');
   const [showProductModal, setShowProductModal] = useState(false);
@@ -187,7 +189,13 @@ const ProductManagement = () => {
       title: 'Product Name',
       render: (value, row) => (
         <div className="space-y-1">
-          <div className="font-semibold">{value}</div>
+          <button
+            type="button"
+            onClick={() => navigate(`/products/${row.unit_id}`)}
+            className="font-semibold text-left text-primary hover:underline"
+          >
+            {value}
+          </button>
           <div className="text-sm text-muted-foreground">ID: {row.unit_id}</div>
         </div>
       )

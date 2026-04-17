@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import api from '../../../lib/apiClient';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
@@ -8,7 +9,6 @@ import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Select, SelectOption } from '../../ui/select';
 import {
-  calculateProductCostSummary,
   calculateMaterialsUsage,
   calculateMachineUtilization,
   calculateLaborUtilization,
@@ -68,19 +68,33 @@ const CostManagement = () => {
     return periods;
   }, [data.sales_forecast]);
 
-  // Calculate cost summary
-  const costSummary = useMemo(() => {
-    if (!data || !data.products || !data.sales_forecast) return [];
-    
-    try {
-      const summary = calculateProductCostSummary(data);
-      return summary.filter(product => product.forecast_quantity > 0); // Only show products with forecasts
-    } catch (error) {
-      console.error('Error calculating cost summary:', error);
-      toast.error('Error calculating cost summary');
-      return [];
-    }
-  }, [data]);
+  // Cost summary comes from the backend (/products/cost-summary) so it
+  // stays in lockstep with the Reporting Dashboard and avoids the
+  // duplicate-math drift we used to have.
+  const [costSummary, setCostSummary] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchCostSummary = async () => {
+      try {
+        const params = activeScenario ? { forecast_id: activeScenario } : {};
+        const res = await api.get('/products/cost-summary', {
+          params,
+          suppressErrorToast: true,
+        });
+        if (cancelled) return;
+        const products = (res?.data?.products || []).filter(
+          (p) => (p.forecast_quantity || 0) > 0
+        );
+        setCostSummary(products);
+      } catch (error) {
+        console.error('Error fetching cost summary:', error);
+        toast.error('Error fetching cost summary');
+        if (!cancelled) setCostSummary([]);
+      }
+    };
+    fetchCostSummary();
+    return () => { cancelled = true; };
+  }, [activeScenario, recalculateTrigger, data?.sales_forecast, data?.bom, data?.router_operations]);
 
   // Calculate materials usage
   const materialsUsage = useMemo(() => {
@@ -438,8 +452,21 @@ const CostManagement = () => {
                   onClick={() => handleProductClick(product)}
                 >
                   <CardHeader>
-                    <CardTitle className="text-lg">{product.product_name}</CardTitle>
-                    <Badge variant="outline">{product.product_id}</Badge>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-lg">{product.product_name}</CardTitle>
+                        <Badge variant="outline">{product.product_id}</Badge>
+                      </div>
+                      {product.warnings && product.warnings.length > 0 && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-400 bg-amber-50 text-amber-900"
+                          title={`Incomplete cost data: ${product.warnings.join(', ')}`}
+                        >
+                          ⚠️ {product.warnings.length}
+                        </Badge>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-2 gap-4 mb-4">

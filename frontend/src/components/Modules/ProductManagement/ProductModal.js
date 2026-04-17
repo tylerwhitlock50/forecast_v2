@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
+import UnitCostPreview from '../../Common/UnitCostPreview';
 
 const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData, actions }) => {
   const [formData, setFormData] = useState({
@@ -521,6 +522,13 @@ const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData, a
                 )}
               </div>
             </div>
+
+            <UnitCostPreview
+              bomId={formData.bom || null}
+              bomVersion={product?.bom_version || '1.0'}
+              routerId={formData.router || null}
+              className="mt-2"
+            />
           </div>
 
           {/* Modal Footer */}

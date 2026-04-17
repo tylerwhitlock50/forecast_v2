@@ -308,6 +308,44 @@ class TestWarnings:
         assert summary["products_with_warnings"] == 3
 
 
+class TestUnitCostPreview:
+    """
+    /products/unit-cost returns the shared per-unit math for a BOM+router
+    pairing. It's what the Product/BOM/Router modals call to show a live
+    "≈ $X/unit" preview.
+    """
+
+    def test_happy_pairing(self, cost_client):
+        r = cost_client.get(
+            "/products/unit-cost",
+            params={"bom_id": "BOM-001", "bom_version": "1.0", "router_id": "R0001"},
+        )
+        assert r.status_code == 200
+        d = r.json()["data"]
+        # Same per-unit values the happy-path rollup uses (25 + 10 + 60 = 95).
+        assert d["material_per_unit"] == pytest.approx(25.0)
+        assert d["labor_per_unit"] == pytest.approx(10.0)
+        assert d["machine_per_unit"] == pytest.approx(60.0)
+        assert d["total_per_unit"] == pytest.approx(95.0)
+        assert d["warnings"] == []
+
+    def test_no_selection_flags_missing_everything(self, cost_client):
+        r = cost_client.get("/products/unit-cost")
+        d = r.json()["data"]
+        assert d["total_per_unit"] == 0.0
+        assert "missing_bom" in d["warnings"]
+        assert "missing_router" in d["warnings"]
+
+    def test_bad_labor_rate_produces_warning(self, cost_client):
+        r = cost_client.get(
+            "/products/unit-cost",
+            params={"bom_id": "BOM-001", "bom_version": "1.0", "router_id": "R0004"},
+        )
+        d = r.json()["data"]
+        assert d["labor_per_unit"] == pytest.approx(0.0)
+        assert "router_missing_labor_rate" in d["warnings"]
+
+
 class TestEndpointParity:
     """
     Both endpoints now share `utils.cost_rollup.calculate_unit_costs` so

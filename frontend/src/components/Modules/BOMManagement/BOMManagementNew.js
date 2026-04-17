@@ -9,7 +9,6 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import BOMTable from './BOMTable';
 import BOMModal from './BOMModal';
 import BOMItemsModal from './BOMItemsModal';
 import BOMSummary from './BOMSummary';
@@ -39,29 +38,31 @@ const BOMManagement = () => {
   const bomDefinitions = useMemo(() => {
     const boms = Array.isArray(data.bom_definitions) ? data.bom_definitions : [];
     const bomLines = Array.isArray(data.bom) ? data.bom : [];
-    console.log('Raw BOM definitions:', boms);
-    console.log('Raw BOM lines:', bomLines);
-    
-    const enhancedBOMs = boms.map(bomDef => {
-      // Get all lines for this BOM
-      const lines = bomLines.filter(line => 
-        line.bom_id === bomDef.bom_id && 
-        line.version === bomDef.version
+    const products = Array.isArray(data.products) ? data.products : [];
+
+    return boms.map((bomDef) => {
+      const lines = bomLines.filter(
+        (line) => line.bom_id === bomDef.bom_id && line.version === bomDef.version
       );
-      
-      const totalCost = lines.reduce((sum, line) => sum + (line.material_cost || 0), 0);
-      const lineCount = lines.length;
-      
+      // Products reference the BOM by id only (bom_version is the version
+      // the product ships with). Count both exact-version matches and any
+      // products on this bom_id, separately, so "used by" shows the true
+      // blast radius of a change.
+      const productsOnThisVersion = products.filter(
+        (p) => p.bom === bomDef.bom_id && (p.bom_version || '1.0') === (bomDef.version || '1.0')
+      );
+      const productsOnAnyVersion = products.filter((p) => p.bom === bomDef.bom_id);
+
       return {
         ...bomDef,
-        total_cost: totalCost,
-        line_count: lineCount
+        total_cost: lines.reduce((sum, line) => sum + (line.material_cost || 0), 0),
+        line_count: lines.length,
+        used_by_count: productsOnThisVersion.length,
+        used_by_any_version_count: productsOnAnyVersion.length,
+        used_by_names: productsOnThisVersion.map((p) => p.unit_name).filter(Boolean),
       };
     });
-    
-    console.log('Enhanced BOM definitions:', enhancedBOMs);
-    return enhancedBOMs;
-  }, [data.bom_definitions, data.bom]);
+  }, [data.bom_definitions, data.bom, data.products]);
 
   // Filter and sort BOMs
   const filteredBOMs = useMemo(() => {
@@ -103,29 +104,39 @@ const BOMManagement = () => {
   }, [bomDefinitions, searchTerm, filterVersion, sortField, sortDirection]);
 
   // Handle BOM creation/editing
-  const handleSaveBOM = async (bomData) => {
+  const handleSaveBOM = async (bomData, { openItemsAfter = false } = {}) => {
     try {
+      let savedBOM = bomData;
       if (editingBOM) {
         await actions.updateBOMDefinition(editingBOM.bom_id, bomData);
         toast.success('BOM updated successfully');
+        savedBOM = { ...editingBOM, ...bomData };
       } else {
-        // Generate BOM ID if not provided
         if (!bomData.bom_id) {
-          const boms = bomDefinitions;
-          const maxId = Math.max(...boms.map(b => {
-            const id = b.bom_id?.replace('BOM-', '') || '0';
-            return parseInt(id) || 0;
-          }), 0);
+          const maxId = Math.max(
+            ...bomDefinitions.map((b) => parseInt((b.bom_id || '').replace('BOM-', ''), 10) || 0),
+            0
+          );
           bomData.bom_id = `BOM-${String(maxId + 1).padStart(3, '0')}`;
         }
-        
         await actions.createBOMDefinition(bomData);
         toast.success('BOM created successfully');
+        savedBOM = bomData;
       }
-      
+
       setShowBOMModal(false);
       setEditingBOM(null);
       await actions.fetchAllData();
+
+      if (openItemsAfter) {
+        // Jump straight into the items modal so the user can add lines
+        // without hunting for the Manage button.
+        setSelectedBOM({
+          ...savedBOM,
+          version: savedBOM.version || '1.0',
+        });
+        setShowItemsModal(true);
+      }
     } catch (error) {
       console.error('Error saving BOM:', error);
       toast.error('Failed to save BOM');
@@ -161,38 +172,41 @@ const BOMManagement = () => {
     setShowItemsModal(true);
   };
 
-  // Handle BOM cloning
+  // Handle BOM cloning — copies both the definition (name/description) and
+  // the line items under a fresh bom_id.
   const handleCloneBOM = async (bomId) => {
     try {
       const bomItems = Array.isArray(data.bom) ? data.bom : [];
-      const itemsToClone = bomItems.filter(item => item.bom_id === bomId);
-      
-      if (itemsToClone.length === 0) {
-        toast.error('No items found to clone');
+      const source = bomDefinitions.find((b) => b.bom_id === bomId);
+      const itemsToClone = bomItems.filter((item) => item.bom_id === bomId);
+
+      if (!source && itemsToClone.length === 0) {
+        toast.error('Nothing to clone for ' + bomId);
         return;
       }
-      
-      // Generate new BOM ID
-      const boms = bomDefinitions;
-      const maxId = Math.max(...boms.map(b => {
-        const id = b.bom_id?.replace('BOM-', '') || '0';
-        return parseInt(id) || 0;
-      }), 0);
+
+      const maxId = Math.max(
+        ...bomDefinitions.map((b) => parseInt((b.bom_id || '').replace('BOM-', ''), 10) || 0),
+        0
+      );
       const newBomId = `BOM-${String(maxId + 1).padStart(3, '0')}`;
-      
-      // Clone all items
-      for (const item of itemsToClone) {
-        const clonedItem = {
-          ...item,
+
+      if (source) {
+        await actions.createBOMDefinition({
           bom_id: newBomId,
-          version: '1.0'
-        };
+          bom_name: `${source.bom_name || bomId} (copy)`,
+          bom_description: source.bom_description || '',
+          version: '1.0',
+        });
+      }
+
+      for (const item of itemsToClone) {
+        const clonedItem = { ...item, bom_id: newBomId, version: '1.0' };
         delete clonedItem.created_at;
-        
         await actions.createBOM(clonedItem);
       }
-      
-      toast.success(`BOM cloned successfully as ${newBomId}`);
+
+      toast.success(`BOM cloned as ${newBomId} (${itemsToClone.length} lines)`);
       await actions.fetchAllData();
     } catch (error) {
       console.error('Error cloning BOM:', error);
@@ -307,6 +321,27 @@ const BOMManagement = () => {
       key: 'total_cost',
       title: 'Total Cost',
       render: (value) => <span className="font-semibold">{formatCurrency(value)}</span>
+    },
+    {
+      key: 'used_by_count',
+      title: 'Used By',
+      render: (value, row) => {
+        if (!value) {
+          return (
+            <span className="text-sm text-muted-foreground" title="Not assigned to any product">
+              —
+            </span>
+          );
+        }
+        const tooltip = row.used_by_names && row.used_by_names.length
+          ? row.used_by_names.join(', ')
+          : `${value} product${value === 1 ? '' : 's'}`;
+        return (
+          <Badge variant="outline" title={tooltip}>
+            {value} product{value === 1 ? '' : 's'}
+          </Badge>
+        );
+      }
     },
     {
       key: 'bom_id',
@@ -516,6 +551,7 @@ const BOMManagement = () => {
         }}
         bom={selectedBOM}
         bomItems={data.bom || []}
+        bomDefinitions={bomDefinitions}
         onSave={async () => {
           await actions.fetchAllData();
           toast.success('BOM items updated successfully');

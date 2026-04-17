@@ -52,23 +52,23 @@ const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
     return Object.keys(newErrors).length === 0;
   };
 
-  // Handle form submission
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
+  // Handle form submission. `openItemsAfter` short-circuits the default
+  // two-step flow (create BOM → separately open items modal) so a new BOM
+  // can be created and have its lines added in one pass.
+  const handleSubmit = async (e, { openItemsAfter = false } = {}) => {
+    if (e && e.preventDefault) e.preventDefault();
+
     if (!validateForm()) {
       toast.error('Please fix the errors in the form');
       return;
     }
 
     try {
-      // Prepare data to save
       const dataToSave = {
         ...formData,
-        bom_id: formData.bom_id.trim() || null, // Allow null for auto-generation
+        bom_id: formData.bom_id.trim() || null,
       };
-      
-      await onSave(dataToSave);
+      await onSave(dataToSave, { openItemsAfter });
     } catch (error) {
       console.error('Error saving BOM:', error);
       toast.error('Failed to save BOM');
@@ -173,6 +173,16 @@ const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
             <button type="submit" className="btn-primary">
               {bom ? 'Update BOM' : 'Create BOM'}
             </button>
+            {!bom && (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={(e) => handleSubmit(e, { openItemsAfter: true })}
+                title="Create this BOM and jump straight to adding materials"
+              >
+                Create & Add Items →
+              </button>
+            )}
           </div>
         </form>
       </div>
