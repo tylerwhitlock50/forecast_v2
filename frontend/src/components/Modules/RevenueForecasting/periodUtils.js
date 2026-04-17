@@ -76,6 +76,94 @@ export const getFormattedDateRange = (customDateRange) => {
   };
 };
 
+// Infer the period type from a period key format.
+// Returns one of 'weekly' | 'monthly' | 'quarterly' | null.
+export const inferPeriodType = (periodKey) => {
+  if (!periodKey || typeof periodKey !== 'string') return null;
+  const trimmed = periodKey.trim();
+  if (/^\d{4}-W\d{2}$/.test(trimmed)) return 'weekly';
+  if (/^\d{4}-Q[1-4]$/.test(trimmed)) return 'quarterly';
+  // Accept YYYY-MM or YYYY-MM-DD as monthly
+  if (/^\d{4}-\d{2}(-\d{2})?$/.test(trimmed)) return 'monthly';
+  return null;
+};
+
+// Given a period key (e.g. '2025-03', '2025-Q1', '2025-W10') and a count n,
+// return an array of the next N period keys after it for the given periodType.
+// If periodType is omitted, it is inferred from the key (defaulting to monthly
+// if the key format is unrecognized — TODO: richer format detection).
+export const getNextNPeriods = (lastPeriodKey, n, periodType) => {
+  const count = Math.max(0, parseInt(n, 10) || 0);
+  if (!lastPeriodKey || count === 0) return [];
+
+  const type = periodType || inferPeriodType(lastPeriodKey) || 'monthly';
+  const result = [];
+
+  if (type === 'monthly') {
+    // Accept YYYY-MM or YYYY-MM-DD
+    const match = String(lastPeriodKey).match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+    if (!match) return [];
+    let year = parseInt(match[1], 10);
+    let month = parseInt(match[2], 10); // 1-based
+    for (let i = 0; i < count; i += 1) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+      result.push(`${year}-${String(month).padStart(2, '0')}`);
+    }
+    return result;
+  }
+
+  if (type === 'quarterly') {
+    const match = String(lastPeriodKey).match(/^(\d{4})-Q([1-4])$/);
+    if (!match) return [];
+    let year = parseInt(match[1], 10);
+    let quarter = parseInt(match[2], 10);
+    for (let i = 0; i < count; i += 1) {
+      quarter += 1;
+      if (quarter > 4) {
+        quarter = 1;
+        year += 1;
+      }
+      result.push(`${year}-Q${quarter}`);
+    }
+    return result;
+  }
+
+  if (type === 'weekly') {
+    const match = String(lastPeriodKey).match(/^(\d{4})-W(\d{2})$/);
+    if (!match) return [];
+    // Use ISO week math: start from the Monday of the given ISO week, add 7 days.
+    const baseYear = parseInt(match[1], 10);
+    const baseWeek = parseInt(match[2], 10);
+
+    // Get Monday of ISO week `baseWeek` in `baseYear`.
+    // Jan 4 is always in ISO week 1; find its Monday, then offset weeks.
+    const jan4 = new Date(Date.UTC(baseYear, 0, 4));
+    const jan4Day = jan4.getUTCDay() || 7; // 1..7, Mon=1
+    const week1Monday = new Date(jan4);
+    week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
+
+    let current = new Date(week1Monday);
+    current.setUTCDate(week1Monday.getUTCDate() + (baseWeek - 1) * 7);
+
+    for (let i = 0; i < count; i += 1) {
+      current.setUTCDate(current.getUTCDate() + 7);
+      // Compute ISO week info for `current`
+      const d = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate()));
+      d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+      result.push(`${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`);
+    }
+    return result;
+  }
+
+  return [];
+};
+
 // Build the time period array based on range and optional custom dates
 export const buildTimePeriods = (timeRange, customDateRange) => {
   const formattedRange = getFormattedDateRange(customDateRange);
