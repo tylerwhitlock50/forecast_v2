@@ -11,7 +11,6 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import LaborRateTable from './LaborRateTable';
 import LaborRateModal from './LaborRateModal';
 import LaborRateSummary from './LaborRateSummary';
 import LaborRateValidation from './LaborRateValidation';

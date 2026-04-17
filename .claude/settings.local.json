@@ -12,7 +12,9 @@
       "Bash(python:*)",
       "Bash(curl:*)",
       "Bash(awk '$1 > 500 {print $2}')",
-      "Bash(node --check frontend/src/App.js)"
+      "Bash(node --check frontend/src/App.js)",
+      "Bash(docker-compose up *)",
+      "Bash(docker-compose build *)"
     ],
     "deny": []
   }

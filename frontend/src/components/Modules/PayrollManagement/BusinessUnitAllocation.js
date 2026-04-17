@@ -1,452 +1,434 @@
 import React, { useState } from 'react';
-import './PayrollManagement.css';
+import { Button } from '../../ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Badge } from '../../ui/badge';
+import { Select, SelectOption } from '../../ui/select';
 
-const BusinessUnitAllocation = ({ 
-  employees, 
-  businessUnits, 
-  businessUnitCosts, 
-  onEditAllocations 
+const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD'
+}).format(amount || 0);
+
+const formatCompact = (amount) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact'
+}).format(amount || 0);
+
+const BusinessUnitAllocation = ({
+  employees,
+  businessUnits,
+  businessUnitCosts,
+  onEditAllocations
 }) => {
-  // Ensure arrays and objects are defined
   const safeEmployees = employees || [];
   const safeBusinessUnits = businessUnits || [];
   const safeBusinessUnitCosts = businessUnitCosts || {};
-  const [viewMode, setViewMode] = useState('overview'); // 'overview', 'employee', 'matrix'
+
+  const [viewMode, setViewMode] = useState('overview');
   const [selectedBusinessUnit, setSelectedBusinessUnit] = useState('');
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  // Get employees allocated to a specific business unit
-  const getEmployeesForBusinessUnit = (businessUnit) => {
-    return safeEmployees.filter(emp => 
-      emp.status === 'active' && 
-      emp.allocations && 
+  const getEmployeesForBusinessUnit = (businessUnit) =>
+    safeEmployees.filter(emp =>
+      emp.status === 'active' &&
+      emp.allocations &&
       emp.allocations[businessUnit] > 0
     );
-  };
 
-  // Calculate allocation matrix data
-  const getAllocationMatrix = () => {
-    const matrix = [];
-    
-    safeEmployees.forEach(emp => {
-      if (emp.status === 'active') {
-        const row = {
-          employee: emp,
-          allocations: {}
+  const allocationMatrix = safeEmployees
+    .filter(emp => emp.status === 'active')
+    .map(emp => {
+      const row = { employee: emp, allocations: {} };
+      safeBusinessUnits.forEach(unit => {
+        row.allocations[unit] = emp.allocations?.[unit] || 0;
+      });
+      return row;
+    });
+
+  const allocationIssues = safeEmployees
+    .filter(emp => emp.status === 'active')
+    .map(emp => {
+      const total = Object.values(emp.allocations || {}).reduce((sum, val) => sum + val, 0);
+      if (Math.abs(total - 100) > 0.01) {
+        return {
+          employee: emp.employee_name,
+          employeeRef: emp,
+          total,
+          issue: total < 100 ? 'Under-allocated' : 'Over-allocated'
         };
-        
-        safeBusinessUnits.forEach(unit => {
-          row.allocations[unit] = emp.allocations?.[unit] || 0;
-        });
-        
-        matrix.push(row);
       }
-    });
-    
-    return matrix;
-  };
+      return null;
+    })
+    .filter(Boolean);
 
-  const allocationMatrix = getAllocationMatrix();
-
-  // Validate allocation percentages
-  const validateAllocations = () => {
-    const issues = [];
-    
-    safeEmployees.forEach(emp => {
-      if (emp.status === 'active') {
-        const total = Object.values(emp.allocations || {}).reduce((sum, val) => sum + val, 0);
-        if (Math.abs(total - 100) > 0.01) {
-          issues.push({
-            employee: emp.employee_name,
-            total: total,
-            issue: total < 100 ? 'Under-allocated' : 'Over-allocated'
-          });
-        }
-      }
-    });
-    
-    return issues;
-  };
-
-  const allocationIssues = validateAllocations();
+  const viewTabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'employee', label: 'By Employee' },
+    { id: 'matrix', label: 'Allocation Matrix' }
+  ];
 
   return (
-    <div className="business-unit-allocation">
-      <div className="payroll-forecast-header">
-        <h2>Business Unit Allocation</h2>
-        <div className="payroll-forecast-controls">
-          <div className="payroll-view-toggle">
-            <button 
-              className={viewMode === 'overview' ? 'active' : ''}
-              onClick={() => setViewMode('overview')}
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold">Business Unit Allocation</h2>
+        <div className="inline-flex rounded-md border bg-white">
+          {viewTabs.map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setViewMode(tab.id)}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                viewMode === tab.id
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
             >
-              Overview
+              {tab.label}
             </button>
-            <button 
-              className={viewMode === 'employee' ? 'active' : ''}
-              onClick={() => setViewMode('employee')}
-            >
-              By Employee
-            </button>
-            <button 
-              className={viewMode === 'matrix' ? 'active' : ''}
-              onClick={() => setViewMode('matrix')}
-            >
-              Allocation Matrix
-            </button>
-          </div>
+          ))}
         </div>
       </div>
 
-      {/* Validation Issues Alert */}
       {allocationIssues.length > 0 && (
-        <div className="allocation-issues">
-          <h3>⚠️ Allocation Issues ({allocationIssues.length})</h3>
-          <div className="issues-list">
+        <Card className="border-amber-200 bg-amber-50">
+          <CardHeader>
+            <CardTitle className="text-base text-amber-800">
+              ⚠️ Allocation Issues ({allocationIssues.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
             {allocationIssues.map((issue, index) => (
-              <div key={index} className="issue-item">
-                <span className="employee-name">{issue.employee}</span>
-                <span className={`issue-type ${issue.issue.toLowerCase().replace('-', '')}`}>
+              <div key={index} className="flex items-center gap-3 rounded border border-amber-200 bg-white px-3 py-2">
+                <span className="font-medium text-gray-800">{issue.employee}</span>
+                <Badge variant={issue.issue === 'Over-allocated' ? 'destructive' : 'secondary'}>
                   {issue.issue}
-                </span>
-                <span className="issue-total">{issue.total.toFixed(1)}%</span>
-                <button 
-                  className="btn-small"
-                  onClick={() => {
-                    const emp = employees.find(e => e.employee_name === issue.employee);
-                    if (emp) onEditAllocations(emp);
-                  }}
+                </Badge>
+                <span className="text-sm text-gray-600">{issue.total.toFixed(1)}%</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  onClick={() => onEditAllocations(issue.employeeRef)}
                 >
                   Fix
-                </button>
+                </Button>
               </div>
             ))}
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === 'overview' && (
-        <div className="allocation-overview">
-          <div className="business-unit-cards">
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {safeBusinessUnits.map(unit => {
               const unitData = safeBusinessUnitCosts[unit] || { employees: 0, totalCost: 0 };
               const unitEmployees = getEmployeesForBusinessUnit(unit);
-              
+
               return (
-                <div key={unit} className="business-unit-card">
-                  <div className="unit-header">
-                    <h3>{unit}</h3>
-                    <div className="unit-metrics">
-                      <span className="metric">
-                        {unitData.employees.toFixed(1)} FTE
-                      </span>
-                      <span className="metric">
-                        {formatCurrency(unitData.totalCost)}
-                      </span>
-                    </div>
-                  </div>
-                  
-                  <div className="unit-content">
-                    <div className="allocation-summary">
-                      <div className="summary-item">
-                        <label>Annual Cost:</label>
-                        <span>{formatCurrency(unitData.totalCost)}</span>
-                      </div>
-                      <div className="summary-item">
-                        <label>FTE Allocation:</label>
-                        <span>{unitData.employees.toFixed(2)}</span>
-                      </div>
-                      <div className="summary-item">
-                        <label>Employees Involved:</label>
-                        <span>{unitEmployees.length}</span>
-                      </div>
-                      <div className="summary-item">
-                        <label>Avg Cost per FTE:</label>
-                        <span>
-                          {unitData.employees > 0 ? 
-                            formatCurrency(unitData.totalCost / unitData.employees) : 
-                            '$0'
-                          }
-                        </span>
+                <Card key={unit}>
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-2">
+                      <CardTitle className="text-base">{unit}</CardTitle>
+                      <div className="flex gap-2 text-xs">
+                        <Badge variant="secondary">{unitData.employees.toFixed(1)} FTE</Badge>
+                        <Badge variant="outline">{formatCurrency(unitData.totalCost)}</Badge>
                       </div>
                     </div>
-                    
-                    <div className="unit-employees">
-                      <h4>Key Contributors</h4>
-                      <div className="employee-chips">
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <div className="text-gray-500">Annual Cost</div>
+                        <div className="font-medium text-gray-800">{formatCurrency(unitData.totalCost)}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-500">FTE Allocation</div>
+                        <div className="font-medium text-gray-800">{unitData.employees.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-500">Employees</div>
+                        <div className="font-medium text-gray-800">{unitEmployees.length}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-500">Avg per FTE</div>
+                        <div className="font-medium text-gray-800">
+                          {unitData.employees > 0
+                            ? formatCurrency(unitData.totalCost / unitData.employees)
+                            : '$0'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 text-sm font-medium text-gray-700">Key Contributors</div>
+                      <div className="flex flex-wrap gap-2">
                         {unitEmployees
                           .sort((a, b) => (b.allocations[unit] || 0) - (a.allocations[unit] || 0))
                           .slice(0, 5)
                           .map(emp => (
-                            <div key={emp.employee_id} className="employee-chip">
-                              <span className="emp-name">{emp.employee_name}</span>
-                              <span className="emp-allocation">{emp.allocations[unit]}%</span>
-                            </div>
-                          ))
-                        }
+                            <span
+                              key={emp.employee_id}
+                              className="inline-flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700"
+                            >
+                              <span className="font-medium">{emp.employee_name}</span>
+                              <span className="text-gray-500">{emp.allocations[unit]}%</span>
+                            </span>
+                          ))}
                         {unitEmployees.length > 5 && (
-                          <div className="employee-chip more">
+                          <span className="inline-flex items-center rounded-full bg-gray-200 px-3 py-1 text-xs text-gray-600">
                             +{unitEmployees.length - 5} more
-                          </div>
+                          </span>
                         )}
                       </div>
                     </div>
-                  </div>
-                </div>
+                  </CardContent>
+                </Card>
               );
             })}
           </div>
 
-          <div className="allocation-charts">
-            <div className="chart-container">
-              <h3>Cost Distribution by Business Unit</h3>
-              <CostDistributionChart businessUnitCosts={businessUnitCosts} />
-            </div>
-            
-            <div className="chart-container">
-              <h3>FTE Distribution by Business Unit</h3>
-              <FTEDistributionChart businessUnitCosts={businessUnitCosts} />
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Cost Distribution by Business Unit</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DistributionList data={safeBusinessUnitCosts} metric="totalCost" formatValue={formatCompact} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">FTE Distribution by Business Unit</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DistributionList
+                  data={safeBusinessUnitCosts}
+                  metric="employees"
+                  formatValue={(v) => `${(v || 0).toFixed(2)} FTE`}
+                  barClass="bg-blue-500"
+                />
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}
 
       {viewMode === 'employee' && (
-        <div className="employee-allocations">
-          <div className="employee-allocation-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>Department</th>
-                  <th>Annual Cost</th>
-                  {businessUnits.map(unit => (
-                    <th key={unit} className="allocation-column">
-                      {unit}
-                    </th>
-                  ))}
-                  <th>Total</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employees
-                  .filter(emp => emp.status === 'active')
-                  .map(emp => {
-                    const totalAllocation = Object.values(emp.allocations || {})
-                      .reduce((sum, val) => sum + val, 0);
-                    const isValid = Math.abs(totalAllocation - 100) <= 0.01;
-                    
-                    return (
-                      <tr key={emp.employee_id} className={!isValid ? 'invalid-allocation' : ''}>
-                        <td>{emp.employee_name}</td>
-                        <td>{emp.department}</td>
-                        <td>{formatCurrency(emp.hourly_rate * emp.weekly_hours * 52 * 1.4)}</td>
-                        {businessUnits.map(unit => (
-                          <td key={unit} className="allocation-cell">
-                            <span className="allocation-value">
-                              {emp.allocations?.[unit] || 0}%
-                            </span>
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-left text-gray-600">
+                    <th className="px-3 py-2 font-medium">Employee</th>
+                    <th className="px-3 py-2 font-medium">Department</th>
+                    <th className="px-3 py-2 font-medium">Annual Cost</th>
+                    {safeBusinessUnits.map(unit => (
+                      <th key={unit} className="px-3 py-2 font-medium">{unit}</th>
+                    ))}
+                    <th className="px-3 py-2 font-medium">Total</th>
+                    <th className="px-3 py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {safeEmployees
+                    .filter(emp => emp.status === 'active')
+                    .map(emp => {
+                      const totalAllocation = Object.values(emp.allocations || {})
+                        .reduce((sum, val) => sum + val, 0);
+                      const isValid = Math.abs(totalAllocation - 100) <= 0.01;
+
+                      return (
+                        <tr key={emp.employee_id} className={`border-b last:border-0 ${!isValid ? 'bg-red-50' : ''}`}>
+                          <td className="px-3 py-2 text-gray-800">{emp.employee_name}</td>
+                          <td className="px-3 py-2 text-gray-600">{emp.department}</td>
+                          <td className="px-3 py-2 text-gray-700">
+                            {formatCurrency((emp.hourly_rate || 0) * (emp.weekly_hours || 0) * 52 * 1.4)}
                           </td>
-                        ))}
-                        <td className={`total-cell ${!isValid ? 'invalid' : 'valid'}`}>
-                          {totalAllocation.toFixed(1)}%
-                        </td>
-                        <td>
-                          <button 
-                            className="btn-small"
-                            onClick={() => onEditAllocations(emp)}
-                          >
-                            Edit
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                }
-              </tbody>
-            </table>
-          </div>
-        </div>
+                          {safeBusinessUnits.map(unit => (
+                            <td key={unit} className="px-3 py-2 text-gray-700">
+                              {emp.allocations?.[unit] || 0}%
+                            </td>
+                          ))}
+                          <td className={`px-3 py-2 font-medium ${isValid ? 'text-green-700' : 'text-red-700'}`}>
+                            {totalAllocation.toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2">
+                            <Button size="sm" variant="outline" onClick={() => onEditAllocations(emp)}>
+                              Edit
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === 'matrix' && (
-        <div className="allocation-matrix">
-          <div className="matrix-controls">
-            <select 
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Select
               value={selectedBusinessUnit}
               onChange={(e) => setSelectedBusinessUnit(e.target.value)}
+              className="w-64"
             >
-              <option value="">All Business Units</option>
-              {businessUnits.map(unit => (
-                <option key={unit} value={unit}>{unit}</option>
+              <SelectOption value="">All Business Units</SelectOption>
+              {safeBusinessUnits.map(unit => (
+                <SelectOption key={unit} value={unit}>{unit}</SelectOption>
               ))}
-            </select>
+            </Select>
           </div>
 
-          <div className="matrix-view">
-            <AllocationMatrix 
-              matrix={allocationMatrix}
-              businessUnits={businessUnits}
-              selectedBusinessUnit={selectedBusinessUnit}
-              onEditAllocations={onEditAllocations}
-            />
-          </div>
+          <AllocationMatrix
+            matrix={allocationMatrix}
+            businessUnits={safeBusinessUnits}
+            selectedBusinessUnit={selectedBusinessUnit}
+            onEditAllocations={onEditAllocations}
+          />
 
-          <div className="matrix-summary">
-            <h3>Business Unit Totals</h3>
-            <div className="unit-totals">
-              {businessUnits.map(unit => {
-                const unitData = businessUnitCosts[unit];
-                return (
-                  <div key={unit} className="unit-total">
-                    <div className="unit-name">{unit}</div>
-                    <div className="unit-fte">{unitData.employees.toFixed(2)} FTE</div>
-                    <div className="unit-cost">{formatCurrency(unitData.totalCost)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Business Unit Totals</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {safeBusinessUnits.map(unit => {
+                  const unitData = safeBusinessUnitCosts[unit] || { employees: 0, totalCost: 0 };
+                  return (
+                    <div key={unit} className="rounded border p-3">
+                      <div className="text-sm font-medium text-gray-800">{unit}</div>
+                      <div className="text-xs text-gray-500">{unitData.employees.toFixed(2)} FTE</div>
+                      <div className="text-sm font-semibold text-gray-700">{formatCurrency(unitData.totalCost)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>
   );
 };
 
-// Allocation Matrix Component
+const DistributionList = ({ data, metric, formatValue, barClass = 'bg-primary' }) => {
+  const total = Object.values(data).reduce((sum, unit) => sum + (unit?.[metric] || 0), 0);
+  const entries = Object.entries(data);
+
+  if (entries.length === 0) {
+    return <div className="text-sm text-gray-500">No data available</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {entries.map(([unit, unitData]) => {
+        const value = unitData?.[metric] || 0;
+        const percentage = total > 0 ? (value / total) * 100 : 0;
+        return (
+          <div key={unit} className="space-y-1">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-700">{unit}</span>
+              <span className="text-gray-500">
+                {percentage.toFixed(1)}% · {formatValue(value)}
+              </span>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className={`h-full ${barClass}`} style={{ width: `${percentage}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const AllocationMatrix = ({ matrix, businessUnits, selectedBusinessUnit, onEditAllocations }) => {
-  const filteredMatrix = selectedBusinessUnit 
+  const filteredMatrix = selectedBusinessUnit
     ? matrix.filter(row => row.allocations[selectedBusinessUnit] > 0)
     : matrix;
 
+  if (filteredMatrix.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-muted-foreground">
+          No employees to display.
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
-    <div className="matrix-table-container">
-      <table className="matrix-table">
-        <thead>
-          <tr>
-            <th className="employee-column">Employee</th>
-            {businessUnits.map(unit => (
-              <th key={unit} className={`unit-column ${selectedBusinessUnit === unit ? 'highlighted' : ''}`}>
-                {unit}
-              </th>
-            ))}
-            <th className="actions-column">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filteredMatrix.map(row => {
-            const total = Object.values(row.allocations).reduce((sum, val) => sum + val, 0);
-            const isValid = Math.abs(total - 100) <= 0.01;
-            
-            return (
-              <tr key={row.employee.employee_id} className={!isValid ? 'invalid' : ''}>
-                <td className="employee-cell">
-                  <div className="employee-info">
-                    <div className="employee-name">{row.employee.employee_name}</div>
-                    <div className="employee-dept">{row.employee.department}</div>
-                  </div>
-                </td>
+    <Card>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-gray-50 text-left text-gray-600">
+                <th className="px-3 py-2 font-medium">Employee</th>
                 {businessUnits.map(unit => (
-                  <td 
-                    key={unit} 
-                    className={`allocation-matrix-cell ${selectedBusinessUnit === unit ? 'highlighted' : ''}`}
+                  <th
+                    key={unit}
+                    className={`px-3 py-2 font-medium ${
+                      selectedBusinessUnit === unit ? 'bg-primary/10 text-primary' : ''
+                    }`}
                   >
-                    <div className="allocation-display">
-                      <span className="percentage">{row.allocations[unit]}%</span>
-                      <div 
-                        className="allocation-bar"
-                        style={{ width: `${row.allocations[unit]}%` }}
-                      />
-                    </div>
-                  </td>
+                    {unit}
+                  </th>
                 ))}
-                <td className="actions-cell">
-                  <button 
-                    className="btn-small"
-                    onClick={() => onEditAllocations(row.employee)}
-                  >
-                    Edit
-                  </button>
-                </td>
+                <th className="px-3 py-2 font-medium">Actions</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
+            </thead>
+            <tbody>
+              {filteredMatrix.map(row => {
+                const total = Object.values(row.allocations).reduce((sum, val) => sum + val, 0);
+                const isValid = Math.abs(total - 100) <= 0.01;
 
-// Cost Distribution Chart Component
-const CostDistributionChart = ({ businessUnitCosts }) => {
-  const safeBusinessUnitCosts = businessUnitCosts || {};
-  const totalCost = Object.values(safeBusinessUnitCosts)
-    .reduce((sum, unit) => sum + unit.totalCost, 0);
-
-  return (
-    <div className="distribution-chart">
-      {Object.entries(safeBusinessUnitCosts).map(([unit, data]) => {
-        const percentage = totalCost > 0 ? (data.totalCost / totalCost * 100) : 0;
-        
-        return (
-          <div key={unit} className="chart-segment">
-            <div className="segment-bar">
-              <div 
-                className="segment-fill"
-                style={{ width: `${percentage}%` }}
-              />
-            </div>
-            <div className="segment-label">
-              <span className="unit-name">{unit}</span>
-              <span className="percentage">{percentage.toFixed(1)}%</span>
-              <span className="amount">{new Intl.NumberFormat('en-US', {
-                style: 'currency',
-                currency: 'USD',
-                notation: 'compact'
-              }).format(data.totalCost)}</span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
-// FTE Distribution Chart Component
-const FTEDistributionChart = ({ businessUnitCosts }) => {
-  const safeBusinessUnitCosts = businessUnitCosts || {};
-  const totalFTE = Object.values(safeBusinessUnitCosts)
-    .reduce((sum, unit) => sum + unit.employees, 0);
-
-  return (
-    <div className="distribution-chart">
-      {Object.entries(safeBusinessUnitCosts).map(([unit, data]) => {
-        const percentage = totalFTE > 0 ? (data.employees / totalFTE * 100) : 0;
-        
-        return (
-          <div key={unit} className="chart-segment">
-            <div className="segment-bar">
-              <div 
-                className="segment-fill fte-fill"
-                style={{ width: `${percentage}%` }}
-              />
-            </div>
-            <div className="segment-label">
-              <span className="unit-name">{unit}</span>
-              <span className="percentage">{percentage.toFixed(1)}%</span>
-              <span className="amount">{data.employees.toFixed(2)} FTE</span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
+                return (
+                  <tr
+                    key={row.employee.employee_id}
+                    className={`border-b last:border-0 ${!isValid ? 'bg-red-50' : ''}`}
+                  >
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-gray-800">{row.employee.employee_name}</div>
+                      <div className="text-xs text-gray-500">{row.employee.department}</div>
+                    </td>
+                    {businessUnits.map(unit => {
+                      const value = row.allocations[unit];
+                      return (
+                        <td
+                          key={unit}
+                          className={`px-3 py-2 ${
+                            selectedBusinessUnit === unit ? 'bg-primary/5' : ''
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="w-10 text-sm text-gray-700">{value}%</span>
+                            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-primary" style={{ width: `${value}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    })}
+                    <td className="px-3 py-2">
+                      <Button size="sm" variant="outline" onClick={() => onEditAllocations(row.employee)}>
+                        Edit
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

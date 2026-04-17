@@ -1,58 +1,44 @@
 import React, { useState } from 'react';
-import './PayrollManagement.css';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { StatsCard } from '../../ui/stats-card';
+import { Select, SelectOption } from '../../ui/select';
+import { Label } from '../../ui/label';
+
+const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD'
+}).format(amount || 0);
+
+const formatCompact = (amount) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact'
+}).format(amount || 0);
 
 const DepartmentAnalytics = ({ departmentCosts }) => {
+  const safeDepartmentCosts = departmentCosts || {};
   const [sortBy, setSortBy] = useState('totalCost');
   const [sortOrder, setSortOrder] = useState('desc');
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  // Sort departments based on selected criteria
-  const sortedDepartments = Object.entries(departmentCosts).sort((a, b) => {
-    const [, deptA] = a;
-    const [, deptB] = b;
-    
+  const sortedDepartments = Object.entries(safeDepartmentCosts).sort((a, b) => {
+    const [nameA, deptA] = a;
+    const [nameB, deptB] = b;
     let valueA, valueB;
-    
     switch (sortBy) {
-      case 'name':
-        valueA = a[0];
-        valueB = b[0];
-        break;
-      case 'employees':
-        valueA = deptA.employees;
-        valueB = deptB.employees;
-        break;
+      case 'name': valueA = nameA; valueB = nameB; break;
+      case 'employees': valueA = deptA.employees; valueB = deptB.employees; break;
+      case 'avgRate': valueA = deptA.avgRate; valueB = deptB.avgRate; break;
       case 'totalCost':
-        valueA = deptA.totalCost;
-        valueB = deptB.totalCost;
-        break;
-      case 'avgRate':
-        valueA = deptA.avgRate;
-        valueB = deptB.avgRate;
-        break;
-      default:
-        valueA = deptA.totalCost;
-        valueB = deptB.totalCost;
+      default: valueA = deptA.totalCost; valueB = deptB.totalCost;
     }
-    
-    if (sortOrder === 'asc') {
-      return valueA > valueB ? 1 : -1;
-    } else {
-      return valueA < valueB ? 1 : -1;
-    }
+    if (sortOrder === 'asc') return valueA > valueB ? 1 : -1;
+    return valueA < valueB ? 1 : -1;
   });
 
-  // Calculate totals across all departments
-  const totals = Object.values(departmentCosts).reduce(
+  const totals = Object.values(safeDepartmentCosts).reduce(
     (acc, dept) => ({
-      employees: acc.employees + dept.employees,
-      totalCost: acc.totalCost + dept.totalCost
+      employees: acc.employees + (dept.employees || 0),
+      totalCost: acc.totalCost + (dept.totalCost || 0)
     }),
     { employees: 0, totalCost: 0 }
   );
@@ -60,220 +46,198 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
   const avgCostPerEmployee = totals.employees > 0 ? totals.totalCost / totals.employees : 0;
 
   return (
-    <div className="department-analytics">
-      <div className="payroll-forecast-header">
-        <h2>Department Cost Analysis</h2>
-        <div className="payroll-forecast-controls">
-          <div className="sort-controls">
-            <label>Sort by:</label>
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-              <option value="totalCost">Total Cost</option>
-              <option value="employees">Employee Count</option>
-              <option value="avgRate">Average Rate</option>
-              <option value="name">Department Name</option>
-            </select>
-            <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
-              <option value="desc">Highest First</option>
-              <option value="asc">Lowest First</option>
-            </select>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <h2 className="text-xl font-semibold">Department Cost Analysis</h2>
+        <div className="flex items-center gap-2">
+          <Label className="text-sm">Sort by:</Label>
+          <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="w-40">
+            <SelectOption value="totalCost">Total Cost</SelectOption>
+            <SelectOption value="employees">Employee Count</SelectOption>
+            <SelectOption value="avgRate">Average Rate</SelectOption>
+            <SelectOption value="name">Department Name</SelectOption>
+          </Select>
+          <Select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="w-36">
+            <SelectOption value="desc">Highest First</SelectOption>
+            <SelectOption value="asc">Lowest First</SelectOption>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatsCard
+          title="Total Departments"
+          value={Object.keys(safeDepartmentCosts).length}
+          subtitle="Active departments"
+          variant="primary"
+        />
+        <StatsCard
+          title="Total Employees"
+          value={totals.employees}
+          subtitle="Across all departments"
+          variant="success"
+        />
+        <StatsCard
+          title="Total Annual Cost"
+          value={formatCurrency(totals.totalCost)}
+          subtitle="All departments combined"
+          variant="warning"
+        />
+        <StatsCard
+          title="Avg Cost per Employee"
+          value={formatCurrency(avgCostPerEmployee)}
+          subtitle="Company average"
+          variant="default"
+        />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Department Cost Distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {sortedDepartments.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">No departments yet.</div>
+          ) : (
+            <div className="space-y-3">
+              {sortedDepartments.map(([name, dept]) => {
+                const percentage = totals.totalCost > 0 ? (dept.totalCost / totals.totalCost) * 100 : 0;
+                return (
+                  <div key={name} className="space-y-1">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-700">{name}</span>
+                      <span className="text-gray-500">
+                        {percentage.toFixed(1)}% · {formatCompact(dept.totalCost)}
+                      </span>
+                    </div>
+                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-primary" style={{ width: `${percentage}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Department Breakdown</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-gray-50 text-left text-gray-600">
+                  <th className="px-3 py-2 font-medium">Department</th>
+                  <th className="px-3 py-2 font-medium">Employees</th>
+                  <th className="px-3 py-2 font-medium">Annual Cost</th>
+                  <th className="px-3 py-2 font-medium">% of Total</th>
+                  <th className="px-3 py-2 font-medium">Avg Cost/Employee</th>
+                  <th className="px-3 py-2 font-medium">Bi-weekly</th>
+                  <th className="px-3 py-2 font-medium">Monthly</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDepartments.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">
+                      No departments
+                    </td>
+                  </tr>
+                ) : sortedDepartments.map(([deptName, deptData]) => {
+                  const percentOfTotal = totals.totalCost > 0 ? (deptData.totalCost / totals.totalCost) * 100 : 0;
+                  const costPerEmployee = deptData.employees > 0 ? deptData.totalCost / deptData.employees : 0;
+                  return (
+                    <tr key={deptName} className="border-b last:border-0">
+                      <td className="px-3 py-2">
+                        <div className="space-y-1">
+                          <div className="font-medium text-gray-800">{deptName}</div>
+                          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-primary" style={{ width: `${percentOfTotal}%` }} />
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">{deptData.employees}</td>
+                      <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost)}</td>
+                      <td className="px-3 py-2 text-gray-700">{percentOfTotal.toFixed(1)}%</td>
+                      <td className="px-3 py-2 text-gray-700">{formatCurrency(costPerEmployee)}</td>
+                      <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost / 26)}</td>
+                      <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost / 12)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {sortedDepartments.length > 0 && (
+                <tfoot>
+                  <tr className="border-t bg-gray-50 font-semibold text-gray-800">
+                    <td className="px-3 py-2">Total</td>
+                    <td className="px-3 py-2">{totals.employees}</td>
+                    <td className="px-3 py-2">{formatCurrency(totals.totalCost)}</td>
+                    <td className="px-3 py-2">100.0%</td>
+                    <td className="px-3 py-2">{formatCurrency(avgCostPerEmployee)}</td>
+                    <td className="px-3 py-2">{formatCurrency(totals.totalCost / 26)}</td>
+                    <td className="px-3 py-2">{formatCurrency(totals.totalCost / 12)}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {sortedDepartments.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-base font-semibold">Department Details</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {sortedDepartments.map(([deptName, deptData]) => (
+              <DepartmentCard
+                key={deptName}
+                name={deptName}
+                data={deptData}
+                totalCost={totals.totalCost}
+              />
+            ))}
           </div>
         </div>
-      </div>
-
-      {/* Summary Cards */}
-      <div className="analytics-summary">
-        <div className="summary-card">
-          <h3>Total Departments</h3>
-          <div className="summary-value">{Object.keys(departmentCosts).length}</div>
-          <div className="summary-detail">Active departments</div>
-        </div>
-        
-        <div className="summary-card">
-          <h3>Total Employees</h3>
-          <div className="summary-value">{totals.employees}</div>
-          <div className="summary-detail">Across all departments</div>
-        </div>
-        
-        <div className="summary-card">
-          <h3>Total Annual Cost</h3>
-          <div className="summary-value">{formatCurrency(totals.totalCost)}</div>
-          <div className="summary-detail">All departments combined</div>
-        </div>
-        
-        <div className="summary-card">
-          <h3>Avg Cost per Employee</h3>
-          <div className="summary-value">{formatCurrency(avgCostPerEmployee)}</div>
-          <div className="summary-detail">Company average</div>
-        </div>
-      </div>
-
-      {/* Department Cost Chart */}
-      <div className="department-chart">
-        <h3>Department Cost Distribution</h3>
-        <DepartmentCostChart departments={sortedDepartments} totalCost={totals.totalCost} />
-      </div>
-
-      {/* Department Table */}
-      <div className="department-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Department</th>
-              <th>Employees</th>
-              <th>Annual Cost</th>
-              <th>% of Total</th>
-              <th>Avg Cost/Employee</th>
-              <th>Cost per Period</th>
-              <th>Monthly Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedDepartments.map(([deptName, deptData]) => {
-              const percentOfTotal = totals.totalCost > 0 ? (deptData.totalCost / totals.totalCost * 100) : 0;
-              const costPerEmployee = deptData.employees > 0 ? deptData.totalCost / deptData.employees : 0;
-              const biWeeklyCost = deptData.totalCost / 26; // 26 pay periods
-              const monthlyCost = deptData.totalCost / 12; // 12 months
-              
-              return (
-                <tr key={deptName}>
-                  <td className="department-name">
-                    <div className="dept-info">
-                      <span className="name">{deptName}</span>
-                      <div className="dept-bar">
-                        <div 
-                          className="dept-fill"
-                          style={{ width: `${percentOfTotal}%` }}
-                        />
-                      </div>
-                    </div>
-                  </td>
-                  <td>{deptData.employees}</td>
-                  <td>{formatCurrency(deptData.totalCost)}</td>
-                  <td>{percentOfTotal.toFixed(1)}%</td>
-                  <td>{formatCurrency(costPerEmployee)}</td>
-                  <td>{formatCurrency(biWeeklyCost)}</td>
-                  <td>{formatCurrency(monthlyCost)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-          <tfoot>
-            <tr className="totals-row">
-              <td><strong>Total</strong></td>
-              <td><strong>{totals.employees}</strong></td>
-              <td><strong>{formatCurrency(totals.totalCost)}</strong></td>
-              <td><strong>100.0%</strong></td>
-              <td><strong>{formatCurrency(avgCostPerEmployee)}</strong></td>
-              <td><strong>{formatCurrency(totals.totalCost / 26)}</strong></td>
-              <td><strong>{formatCurrency(totals.totalCost / 12)}</strong></td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-
-      {/* Department Details Cards */}
-      <div className="department-details">
-        <h3>Department Details</h3>
-        <div className="department-cards">
-          {sortedDepartments.map(([deptName, deptData]) => (
-            <DepartmentCard 
-              key={deptName}
-              name={deptName}
-              data={deptData}
-              totalCost={totals.totalCost}
-            />
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 };
 
-// Department Cost Chart Component
-const DepartmentCostChart = ({ departments, totalCost }) => {
-  return (
-    <div className="cost-chart">
-      <div className="chart-bars">
-        {departments.map(([deptName, deptData]) => {
-          const percentage = totalCost > 0 ? (deptData.totalCost / totalCost * 100) : 0;
-          const height = Math.max(percentage * 3, 20); // Scale height for visibility
-          
-          return (
-            <div key={deptName} className="chart-bar-container">
-              <div 
-                className="chart-bar"
-                style={{ height: `${height}px` }}
-                title={`${deptName}: ${new Intl.NumberFormat('en-US', {
-                  style: 'currency',
-                  currency: 'USD',
-                  notation: 'compact'
-                }).format(deptData.totalCost)} (${percentage.toFixed(1)}%)`}
-              />
-              <div className="bar-label">{deptName}</div>
-              <div className="bar-value">{percentage.toFixed(1)}%</div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-// Individual Department Card Component
 const DepartmentCard = ({ name, data, totalCost }) => {
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost * 100) : 0;
+  const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost) * 100 : 0;
   const costPerEmployee = data.employees > 0 ? data.totalCost / data.employees : 0;
 
-  return (
-    <div className="department-card">
-      <div className="card-header">
-        <h4>{name}</h4>
-        <div className="dept-percentage">{percentOfTotal.toFixed(1)}%</div>
-      </div>
-      
-      <div className="card-content">
-        <div className="metric-row">
-          <span className="metric-label">Employees:</span>
-          <span className="metric-value">{data.employees}</span>
-        </div>
-        
-        <div className="metric-row">
-          <span className="metric-label">Annual Cost:</span>
-          <span className="metric-value">{formatCurrency(data.totalCost)}</span>
-        </div>
-        
-        <div className="metric-row">
-          <span className="metric-label">Cost per Employee:</span>
-          <span className="metric-value">{formatCurrency(costPerEmployee)}</span>
-        </div>
-        
-        <div className="metric-row">
-          <span className="metric-label">Monthly Cost:</span>
-          <span className="metric-value">{formatCurrency(data.totalCost / 12)}</span>
-        </div>
-        
-        <div className="metric-row">
-          <span className="metric-label">Bi-weekly Cost:</span>
-          <span className="metric-value">{formatCurrency(data.totalCost / 26)}</span>
-        </div>
-      </div>
-      
-      <div className="card-footer">
-        <div className="progress-bar">
-          <div 
-            className="progress-fill"
-            style={{ width: `${percentOfTotal}%` }}
-          />
-        </div>
-      </div>
+  const Row = ({ label, value }) => (
+    <div className="flex justify-between text-sm">
+      <span className="text-gray-500">{label}</span>
+      <span className="text-gray-800 font-medium">{value}</span>
     </div>
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="text-base">{name}</CardTitle>
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+            {percentOfTotal.toFixed(1)}%
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <Row label="Employees" value={data.employees} />
+        <Row label="Annual Cost" value={formatCurrency(data.totalCost)} />
+        <Row label="Cost per Employee" value={formatCurrency(costPerEmployee)} />
+        <Row label="Monthly Cost" value={formatCurrency(data.totalCost / 12)} />
+        <Row label="Bi-weekly Cost" value={formatCurrency(data.totalCost / 26)} />
+        <div className="h-1.5 mt-2 bg-gray-100 rounded-full overflow-hidden">
+          <div className="h-full bg-primary" style={{ width: `${percentOfTotal}%` }} />
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

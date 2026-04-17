@@ -983,21 +983,20 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Router Management Functions
-    createRouter: async (routerData) => {
+    createRouter: async (routerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        const response = await api.post('/forecast/create', { 
+
+        const response = await api.post('/forecast/create', {
           table: 'router_definitions',
-          data: routerData 
+          data: routerData
         });
-        
-        // API client already handles response format
-        toast.success('Router created successfully');
+
+        if (!silent) toast.success('Router created successfully');
         await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating router:', error);
-        toast.error('Failed to create router');
+        if (!silent) toast.error('Failed to create router');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1307,21 +1306,20 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    createBOMDefinition: async (bomData) => {
+    createBOMDefinition: async (bomData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        const response = await api.post('/forecast/create', { 
+
+        const response = await api.post('/forecast/create', {
           table: 'bom_definitions',
-          data: bomData 
+          data: bomData
         });
-        
-        // API client already handles response format
-        toast.success('BOM definition created successfully');
+
+        if (!silent) toast.success('BOM definition created successfully');
         await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating BOM definition:', error);
-        toast.error('Failed to create BOM definition');
+        if (!silent) toast.error('Failed to create BOM definition');
         throw error;
       } finally {
         actions.setLoading(false);

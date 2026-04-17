@@ -1,6 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import { Select, SelectOption } from '../../ui/select';
+import { Textarea } from '../../ui/textarea';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 
+const RATE_TYPES = [
+  'Direct Labor',
+  'Indirect Labor',
+  'Machine Operator',
+  'Setup',
+  'Quality Control',
+  'Maintenance',
+  'Supervision',
+  'Engineering',
+  'Administrative',
+  'Skilled Labor',
+  'Semi-skilled Labor',
+  'Unskilled Labor',
+  'Overtime',
+  'Holiday',
+  'Contract'
+];
 
 const LaborRateModal = ({ isOpen, onClose, onSave, laborRate }) => {
   const [formData, setFormData] = useState({
@@ -12,214 +36,184 @@ const LaborRateModal = ({ isOpen, onClose, onSave, laborRate }) => {
   });
   const [errors, setErrors] = useState({});
 
-  // Initialize form when modal opens or labor rate changes
   useEffect(() => {
-    if (isOpen) {
-      if (laborRate) {
-        // Editing existing labor rate
-        setFormData({
-          rate_id: laborRate.rate_id || '',
-          rate_name: laborRate.rate_name || '',
-          rate_type: laborRate.rate_type || '',
-          rate_amount: laborRate.rate_amount || '',
-          rate_description: laborRate.rate_description || ''
-        });
-      } else {
-        // Creating new labor rate
-        setFormData({
-          rate_id: '',
-          rate_name: '',
-          rate_type: '',
-          rate_amount: '',
-          rate_description: ''
-        });
-      }
-      setErrors({});
+    if (!isOpen) return;
+    if (laborRate) {
+      setFormData({
+        rate_id: laborRate.rate_id || '',
+        rate_name: laborRate.rate_name || '',
+        rate_type: laborRate.rate_type || '',
+        rate_amount: laborRate.rate_amount || '',
+        rate_description: laborRate.rate_description || ''
+      });
+    } else {
+      setFormData({
+        rate_id: '',
+        rate_name: '',
+        rate_type: '',
+        rate_amount: '',
+        rate_description: ''
+      });
     }
+    setErrors({});
   }, [isOpen, laborRate]);
 
-  // Validate form
   const validateForm = () => {
     const newErrors = {};
-    
-    if (!formData.rate_id.trim()) {
-      newErrors.rate_id = 'Rate ID is required';
-    }
-    
-    if (!formData.rate_name.trim()) {
-      newErrors.rate_name = 'Rate name is required';
-    }
-    
-    if (!formData.rate_type.trim()) {
-      newErrors.rate_type = 'Rate type is required';
-    }
-    
+    if (!formData.rate_id.trim()) newErrors.rate_id = 'Rate ID is required';
+    if (!formData.rate_name.trim()) newErrors.rate_name = 'Rate name is required';
+    if (!formData.rate_type.trim()) newErrors.rate_type = 'Rate type is required';
     if (!formData.rate_amount || isNaN(formData.rate_amount) || parseFloat(formData.rate_amount) < 0) {
       newErrors.rate_amount = 'Valid hourly rate is required';
     }
-    
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!validateForm()) {
       toast.error('Please fix the errors in the form');
       return;
     }
-
     try {
-      // Convert rate_amount to number for submission
-      const submitData = {
+      await onSave({
         ...formData,
         rate_amount: parseFloat(formData.rate_amount)
-      };
-      await onSave(submitData);
+      });
     } catch (error) {
       console.error('Error saving labor rate:', error);
       toast.error('Failed to save labor rate');
     }
   };
 
-  // Handle input changes
-  const handleInputChange = (field, value) => {
+  const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
-    
-    // Clear error when user starts typing
     if (errors[field]) {
       setErrors(prev => ({ ...prev, [field]: null }));
     }
   };
 
-  // Generate rate ID suggestion
   const generateRateId = () => {
-    const baseName = formData.rate_name.toUpperCase().replace(/\s+/g, '-');
-    const rateType = formData.rate_type.toUpperCase().replace(/\s+/g, '-');
-    return `${rateType}-${baseName}` || 'RATE-001';
+    const baseName = (formData.rate_name || '').toUpperCase().replace(/\s+/g, '-');
+    const rateType = (formData.rate_type || '').toUpperCase().replace(/\s+/g, '-');
+    const composed = [rateType, baseName].filter(Boolean).join('-');
+    return composed || 'RATE-001';
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="labor-rate-modal-overlay" onClick={onClose}>
-      <div className="labor-rate-modal-content" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>{laborRate ? 'Edit Labor Rate' : 'Add New Labor Rate'}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal className="max-w-3xl" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}>
+        <ModalHeader>
+          <ModalTitle>{laborRate ? 'Edit Labor Rate' : 'Add New Labor Rate'}</ModalTitle>
+          <ModalClose onClick={onClose} />
+        </ModalHeader>
 
-        <form onSubmit={handleSubmit} className="labor-rate-form">
-          <div className="form-section">
-            <h3>Labor Rate Information</h3>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Rate ID *</label>
-                <div className="input-with-action">
-                  <input
-                    type="text"
-                    value={formData.rate_id}
-                    onChange={(e) => handleInputChange('rate_id', e.target.value)}
-                    className={errors.rate_id ? 'error' : ''}
-                    placeholder="e.g., DIRECT-LABOR"
-                    disabled={laborRate} // Disable editing of ID for existing rates
-                  />
-                  {!laborRate && (
-                    <button
-                      type="button"
-                      onClick={() => handleInputChange('rate_id', generateRateId())}
-                      className="btn-generate"
-                      title="Generate Rate ID"
+        <form onSubmit={handleSubmit}>
+          <ModalContent className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Labor Rate Information</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="rate_id">Rate ID *</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="rate_id"
+                        value={formData.rate_id}
+                        onChange={(e) => handleChange('rate_id', e.target.value)}
+                        placeholder="e.g., DIRECT-LABOR"
+                        disabled={Boolean(laborRate)}
+                        className={errors.rate_id ? 'border-red-500' : ''}
+                      />
+                      {!laborRate && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => handleChange('rate_id', generateRateId())}
+                          title="Generate Rate ID"
+                        >
+                          🔄
+                        </Button>
+                      )}
+                    </div>
+                    {errors.rate_id && <p className="text-sm text-red-500">{errors.rate_id}</p>}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="rate_name">Rate Name *</Label>
+                    <Input
+                      id="rate_name"
+                      value={formData.rate_name}
+                      onChange={(e) => handleChange('rate_name', e.target.value)}
+                      placeholder="Enter rate name"
+                      className={errors.rate_name ? 'border-red-500' : ''}
+                    />
+                    {errors.rate_name && <p className="text-sm text-red-500">{errors.rate_name}</p>}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="rate_type">Rate Type *</Label>
+                    <Select
+                      id="rate_type"
+                      value={formData.rate_type}
+                      onChange={(e) => handleChange('rate_type', e.target.value)}
+                      className={errors.rate_type ? 'border-red-500' : ''}
                     >
-                      🔄
-                    </button>
-                  )}
+                      <SelectOption value="">Select Rate Type</SelectOption>
+                      {RATE_TYPES.map(t => (
+                        <SelectOption key={t} value={t}>{t}</SelectOption>
+                      ))}
+                    </Select>
+                    {errors.rate_type && <p className="text-sm text-red-500">{errors.rate_type}</p>}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="rate_amount">Hourly Rate (USD) *</Label>
+                    <Input
+                      id="rate_amount"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formData.rate_amount}
+                      onChange={(e) => handleChange('rate_amount', e.target.value)}
+                      placeholder="0.00"
+                      className={errors.rate_amount ? 'border-red-500' : ''}
+                    />
+                    {errors.rate_amount && <p className="text-sm text-red-500">{errors.rate_amount}</p>}
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="rate_description">Description</Label>
+                    <Textarea
+                      id="rate_description"
+                      value={formData.rate_description}
+                      onChange={(e) => handleChange('rate_description', e.target.value)}
+                      placeholder="Enter rate description (optional)"
+                      rows={3}
+                    />
+                  </div>
                 </div>
-                {errors.rate_id && <span className="error-message">{errors.rate_id}</span>}
-              </div>
+              </CardContent>
+            </Card>
+          </ModalContent>
 
-              <div className="form-group">
-                <label>Rate Name *</label>
-                <input
-                  type="text"
-                  value={formData.rate_name}
-                  onChange={(e) => handleInputChange('rate_name', e.target.value)}
-                  className={errors.rate_name ? 'error' : ''}
-                  placeholder="Enter rate name"
-                />
-                {errors.rate_name && <span className="error-message">{errors.rate_name}</span>}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Rate Type *</label>
-                <select
-                  value={formData.rate_type}
-                  onChange={(e) => handleInputChange('rate_type', e.target.value)}
-                  className={errors.rate_type ? 'error' : ''}
-                >
-                  <option value="">Select Rate Type</option>
-                  <option value="Direct Labor">Direct Labor</option>
-                  <option value="Indirect Labor">Indirect Labor</option>
-                  <option value="Machine Operator">Machine Operator</option>
-                  <option value="Setup">Setup</option>
-                  <option value="Quality Control">Quality Control</option>
-                  <option value="Maintenance">Maintenance</option>
-                  <option value="Supervision">Supervision</option>
-                  <option value="Engineering">Engineering</option>
-                  <option value="Administrative">Administrative</option>
-                  <option value="Skilled Labor">Skilled Labor</option>
-                  <option value="Semi-skilled Labor">Semi-skilled Labor</option>
-                  <option value="Unskilled Labor">Unskilled Labor</option>
-                  <option value="Overtime">Overtime</option>
-                  <option value="Holiday">Holiday</option>
-                  <option value="Contract">Contract</option>
-                </select>
-                {errors.rate_type && <span className="error-message">{errors.rate_type}</span>}
-              </div>
-
-              <div className="form-group">
-                <label>Hourly Rate (USD) *</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.rate_amount}
-                  onChange={(e) => handleInputChange('rate_amount', e.target.value)}
-                  className={errors.rate_amount ? 'error' : ''}
-                  placeholder="0.00"
-                />
-                {errors.rate_amount && <span className="error-message">{errors.rate_amount}</span>}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group full-width">
-                <label>Description</label>
-                <textarea
-                  value={formData.rate_description}
-                  onChange={(e) => handleInputChange('rate_description', e.target.value)}
-                  placeholder="Enter rate description (optional)"
-                  rows="3"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="form-actions">
-            <button type="button" className="btn-secondary" onClick={onClose}>
+          <ModalFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
               Cancel
-            </button>
-            <button type="submit" className="btn-primary">
+            </Button>
+            <Button type="submit">
               {laborRate ? 'Update Labor Rate' : 'Create Labor Rate'}
-            </button>
-          </div>
+            </Button>
+          </ModalFooter>
         </form>
       </div>
-    </div>
+    </Modal>
   );
 };
 

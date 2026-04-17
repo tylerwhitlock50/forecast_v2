@@ -1,70 +1,84 @@
 import React, { useState } from 'react';
-import './PayrollManagement.css';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { StatsCard } from '../../ui/stats-card';
+import { Badge } from '../../ui/badge';
 
-const PayrollReports = ({ 
-  employees, 
-  forecast, 
-  departmentCosts, 
-  businessUnitCosts 
+const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD'
+}).format(amount || 0);
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+const PayrollReports = ({
+  employees,
+  forecast,
+  departmentCosts,
+  businessUnitCosts
 }) => {
-  // Ensure arrays and objects are defined
   const safeEmployees = employees || [];
   const safeForecast = forecast || [];
   const safeDepartmentCosts = departmentCosts || {};
   const safeBusinessUnitCosts = businessUnitCosts || {};
+
   const [activeReport, setActiveReport] = useState('summary');
   const [dateRange, setDateRange] = useState({
     start: new Date().toISOString().split('T')[0],
     end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
   });
 
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
+  const activeEmployees = safeEmployees.filter(emp => emp.status === 'active');
+  const totalAnnualCost = Object.values(safeDepartmentCosts).reduce((sum, dept) => sum + (dept.totalCost || 0), 0);
+  const avgSalary = activeEmployees.length > 0 ? totalAnnualCost / activeEmployees.length : 0;
+  const upcomingReviewsCount = activeEmployees.filter(emp => {
+    if (!emp.next_review_date) return false;
+    const reviewDate = new Date(emp.next_review_date);
+    if (isNaN(reviewDate.getTime())) return false;
+    const now = new Date();
+    const threeMonthsFromNow = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+    return reviewDate >= now && reviewDate <= threeMonthsFromNow;
+  }).length;
+  const summary = {
+    totalEmployees: activeEmployees.length,
+    totalAnnualCost,
+    avgSalary,
+    monthlyAverageCost: totalAnnualCost / 12,
+    biweeklyAverageCost: totalAnnualCost / 26,
+    upcomingReviews: upcomingReviewsCount
   };
 
-  const formatDate = (dateStr) => {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-  };
+  const largestDept = Object.entries(safeDepartmentCosts)
+    .sort((a, b) => (b[1].totalCost || 0) - (a[1].totalCost || 0))[0];
+  const highestBU = Object.entries(safeBusinessUnitCosts)
+    .sort((a, b) => (b[1].totalCost || 0) - (a[1].totalCost || 0))[0];
+  const nextQuarterForecast = safeForecast.slice(0, 6).reduce((sum, period) => sum + (period.totalCost || 0), 0);
 
-  // Generate comprehensive payroll summary
-  const generateSummaryReport = () => {
-    const activeEmployees = safeEmployees.filter(emp => emp.status === 'active');
-    const totalAnnualCost = Object.values(safeDepartmentCosts).reduce((sum, dept) => sum + dept.totalCost, 0);
-    const avgSalary = activeEmployees.length > 0 ? totalAnnualCost / activeEmployees.length : 0;
-    
-    const upcomingReviews = activeEmployees.filter(emp => {
-      const reviewDate = new Date(emp.next_review_date);
-      const now = new Date();
-      const threeMonthsFromNow = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
-      return reviewDate >= now && reviewDate <= threeMonthsFromNow;
-    });
+  const reportTabs = [
+    { id: 'summary', label: 'Executive Summary' },
+    { id: 'employee', label: 'Employee Report' },
+    { id: 'department', label: 'Department Report' },
+    { id: 'business-unit', label: 'Business Unit Report' },
+    { id: 'forecast', label: 'Forecast Report' }
+  ];
 
-    return {
-      totalEmployees: activeEmployees.length,
-      totalAnnualCost,
-      avgSalary,
-      totalDepartments: Object.keys(safeDepartmentCosts).length,
-      upcomingReviews: upcomingReviews.length,
-      monthlyAverageCost: totalAnnualCost / 12,
-      biweeklyAverageCost: totalAnnualCost / 26
-    };
-  };
-
-  const summaryData = generateSummaryReport();
-
-  // Export functions
   const exportToCSV = (data, filename) => {
+    if (!data.length) return;
     const headers = Object.keys(data[0]);
+    const escape = (v) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
     const csvContent = [
       headers.join(','),
-      ...data.map(row => headers.map(header => row[header]).join(','))
+      ...data.map(row => headers.map(h => escape(row[h])).join(','))
     ].join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv' });
@@ -77,7 +91,7 @@ const PayrollReports = ({
   };
 
   const exportEmployeeReport = () => {
-    const data = safeEmployees.map(emp => ({
+    exportToCSV(safeEmployees.map(emp => ({
       'Employee Name': emp.employee_name,
       'Department': emp.department,
       'Rate Type': emp.rate_type,
@@ -92,446 +106,362 @@ const PayrollReports = ({
       'OEM Work %': emp.allocations?.['OEM Work'] || 0,
       'Internal Operations %': emp.allocations?.['Internal Operations'] || 0,
       'Other Projects %': emp.allocations?.['Other Projects'] || 0
-    }));
-    
-    exportToCSV(data, 'employee_report.csv');
+    })), 'employee_report.csv');
   };
 
   const exportDepartmentReport = () => {
-    const data = Object.entries(safeDepartmentCosts).map(([dept, costs]) => ({
+    exportToCSV(Object.entries(safeDepartmentCosts).map(([dept, costs]) => ({
       'Department': dept,
       'Employee Count': costs.employees,
       'Annual Cost': costs.totalCost,
       'Average Cost per Employee': costs.employees > 0 ? costs.totalCost / costs.employees : 0,
       'Monthly Cost': costs.totalCost / 12,
       'Bi-weekly Cost': costs.totalCost / 26
-    }));
-    
-    exportToCSV(data, 'department_costs.csv');
+    })), 'department_costs.csv');
   };
 
   const exportBusinessUnitReport = () => {
-    const data = Object.entries(safeBusinessUnitCosts).map(([unit, costs]) => ({
+    exportToCSV(Object.entries(safeBusinessUnitCosts).map(([unit, costs]) => ({
       'Business Unit': unit,
       'FTE Allocation': costs.employees,
       'Annual Cost': costs.totalCost,
       'Monthly Cost': costs.totalCost / 12,
       'Bi-weekly Cost': costs.totalCost / 26
-    }));
-    
-    exportToCSV(data, 'business_unit_allocation.csv');
+    })), 'business_unit_allocation.csv');
   };
 
   const exportForecastReport = () => {
-    const data = safeForecast.slice(0, 26).map(period => ({
-      'Period': period.period,
-      'Date': period.date,
-      'Employee Count': period.employeeCount,
-      'Total Cost': period.totalCost,
-      'Gross Pay': period.employeeDetails.reduce((sum, emp) => sum + emp.compensation.grossPay, 0),
-      'Total Taxes': period.employeeDetails.reduce((sum, emp) => 
-        sum + emp.compensation.federalTax + emp.compensation.stateTax + 
-        emp.compensation.socialSecurity + emp.compensation.medicare + emp.compensation.unemployment, 0),
-      'Benefits': period.employeeDetails.reduce((sum, emp) => sum + emp.compensation.benefits, 0)
-    }));
-    
-    exportToCSV(data, 'payroll_forecast.csv');
+    exportToCSV(safeForecast.slice(0, 26).map(period => {
+      const details = period.employeeDetails || [];
+      return {
+        'Period': period.period,
+        'Date': period.date,
+        'Employee Count': period.employeeCount,
+        'Total Cost': period.totalCost,
+        'Gross Pay': details.reduce((sum, emp) => sum + (emp.compensation?.grossPay || 0), 0),
+        'Total Taxes': details.reduce((sum, emp) =>
+          sum + (emp.compensation?.federalTax || 0) + (emp.compensation?.stateTax || 0) +
+          (emp.compensation?.socialSecurity || 0) + (emp.compensation?.medicare || 0) + (emp.compensation?.unemployment || 0), 0),
+        'Benefits': details.reduce((sum, emp) => sum + (emp.compensation?.benefits || 0), 0)
+      };
+    }), 'payroll_forecast.csv');
   };
 
   return (
-    <div className="payroll-reports">
-      <div className="reports-header">
-        <h2>Payroll Reports & Analytics</h2>
-        <div className="date-range">
-          <label>Report Period:</label>
-          <input 
-            type="date" 
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <h2 className="text-xl font-semibold">Payroll Reports & Analytics</h2>
+        <div className="flex items-center gap-2">
+          <Label className="text-sm">Report Period:</Label>
+          <Input
+            type="date"
             value={dateRange.start}
-            onChange={(e) => setDateRange({...dateRange, start: e.target.value})}
+            onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+            className="w-40"
           />
-          <span>to</span>
-          <input 
-            type="date" 
+          <span className="text-sm text-gray-500">to</span>
+          <Input
+            type="date"
             value={dateRange.end}
-            onChange={(e) => setDateRange({...dateRange, end: e.target.value})}
+            onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+            className="w-40"
           />
         </div>
       </div>
 
-      <div className="reports-tabs">
-        <button 
-          className={`tab ${activeReport === 'summary' ? 'active' : ''}`}
-          onClick={() => setActiveReport('summary')}
-        >
-          Executive Summary
-        </button>
-        <button 
-          className={`tab ${activeReport === 'employee' ? 'active' : ''}`}
-          onClick={() => setActiveReport('employee')}
-        >
-          Employee Report
-        </button>
-        <button 
-          className={`tab ${activeReport === 'department' ? 'active' : ''}`}
-          onClick={() => setActiveReport('department')}
-        >
-          Department Report
-        </button>
-        <button 
-          className={`tab ${activeReport === 'business-unit' ? 'active' : ''}`}
-          onClick={() => setActiveReport('business-unit')}
-        >
-          Business Unit Report
-        </button>
-        <button 
-          className={`tab ${activeReport === 'forecast' ? 'active' : ''}`}
-          onClick={() => setActiveReport('forecast')}
-        >
-          Forecast Report
-        </button>
+      <div className="inline-flex flex-wrap rounded-md border bg-white">
+        {reportTabs.map(tab => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveReport(tab.id)}
+            className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+              activeReport === tab.id
+                ? 'bg-primary text-primary-foreground'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <div className="reports-content">
-        {activeReport === 'summary' && (
-          <div className="summary-report">
-            <div className="report-section">
-              <h3>Executive Summary</h3>
-              
-              <div className="summary-grid">
-                <div className="summary-metric">
-                  <h4>Total Workforce</h4>
-                  <div className="metric-value">{summaryData.totalEmployees}</div>
-                  <div className="metric-detail">Active employees</div>
-                </div>
-                
-                <div className="summary-metric">
-                  <h4>Annual Payroll Cost</h4>
-                  <div className="metric-value">{formatCurrency(summaryData.totalAnnualCost)}</div>
-                  <div className="metric-detail">All employees & benefits</div>
-                </div>
-                
-                <div className="summary-metric">
-                  <h4>Average Employee Cost</h4>
-                  <div className="metric-value">{formatCurrency(summaryData.avgSalary)}</div>
-                  <div className="metric-detail">Per employee annually</div>
-                </div>
-                
-                <div className="summary-metric">
-                  <h4>Monthly Payroll</h4>
-                  <div className="metric-value">{formatCurrency(summaryData.monthlyAverageCost)}</div>
-                  <div className="metric-detail">Average per month</div>
-                </div>
-                
-                <div className="summary-metric">
-                  <h4>Bi-weekly Payroll</h4>
-                  <div className="metric-value">{formatCurrency(summaryData.biweeklyAverageCost)}</div>
-                  <div className="metric-detail">Average per period</div>
-                </div>
-                
-                <div className="summary-metric">
-                  <h4>Upcoming Reviews</h4>
-                  <div className="metric-value">{summaryData.upcomingReviews}</div>
-                  <div className="metric-detail">Next 90 days</div>
-                </div>
+      {activeReport === 'summary' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <StatsCard title="Total Workforce" value={summary.totalEmployees} subtitle="Active employees" variant="primary" />
+            <StatsCard title="Annual Payroll Cost" value={formatCurrency(summary.totalAnnualCost)} subtitle="All employees & benefits" variant="success" />
+            <StatsCard title="Average Employee Cost" value={formatCurrency(summary.avgSalary)} subtitle="Per employee annually" variant="default" />
+            <StatsCard title="Monthly Payroll" value={formatCurrency(summary.monthlyAverageCost)} subtitle="Average per month" variant="warning" />
+            <StatsCard title="Bi-weekly Payroll" value={formatCurrency(summary.biweeklyAverageCost)} subtitle="Average per period" variant="warning" />
+            <StatsCard title="Upcoming Reviews" value={summary.upcomingReviews} subtitle="Next 90 days" variant="danger" />
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Key Insights</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div>
+                <span className="font-medium text-gray-800">Largest Department:</span>{' '}
+                <span className="text-gray-700">
+                  {largestDept ? `${largestDept[0]} (${formatCurrency(largestDept[1].totalCost)})` : 'N/A'}
+                </span>
               </div>
-
-              <div className="key-insights">
-                <h4>Key Insights</h4>
-                <div className="insights-list">
-                  <div className="insight">
-                    <strong>Largest Department:</strong> {
-                      Object.entries(safeDepartmentCosts)
-                        .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[0] || 'N/A'
-                    } ({formatCurrency(
-                      Object.entries(safeDepartmentCosts)
-                        .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[1]?.totalCost || 0
-                    )})
-                  </div>
-                  
-                  <div className="insight">
-                    <strong>Highest Business Unit Cost:</strong> {
-                      Object.entries(safeBusinessUnitCosts)
-                        .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[0] || 'N/A'
-                    } ({formatCurrency(
-                      Object.entries(safeBusinessUnitCosts)
-                        .sort((a, b) => b[1].totalCost - a[1].totalCost)[0]?.[1]?.totalCost || 0
-                    )})
-                  </div>
-                  
-                  <div className="insight">
-                    <strong>Next Quarter Forecast:</strong> {formatCurrency(
-                      safeForecast.slice(0, 6).reduce((sum, period) => sum + period.totalCost, 0)
-                    )} (6 pay periods)
-                  </div>
-                </div>
+              <div>
+                <span className="font-medium text-gray-800">Highest Business Unit Cost:</span>{' '}
+                <span className="text-gray-700">
+                  {highestBU ? `${highestBU[0]} (${formatCurrency(highestBU[1].totalCost)})` : 'N/A'}
+                </span>
               </div>
-            </div>
-          </div>
-        )}
+              <div>
+                <span className="font-medium text-gray-800">Next Quarter Forecast:</span>{' '}
+                <span className="text-gray-700">{formatCurrency(nextQuarterForecast)} (6 pay periods)</span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
-        {activeReport === 'employee' && (
-          <div className="employee-report">
-            <div className="report-actions">
-              <button onClick={exportEmployeeReport} className="btn-secondary">
-                Export Employee Data
-              </button>
-            </div>
-            
-            <EmployeeDetailReport employees={safeEmployees} />
-          </div>
-        )}
+      {activeReport === 'employee' && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Employee Detail Report</CardTitle>
+            <Button variant="outline" size="sm" onClick={exportEmployeeReport}>
+              Export Employee Data
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <ReportTable>
+              <thead>
+                <tr className="border-b bg-gray-50 text-left text-gray-600">
+                  <Th>Employee</Th>
+                  <Th>Department</Th>
+                  <Th>Rate</Th>
+                  <Th>Annual Cost</Th>
+                  <Th>Status</Th>
+                  <Th>Next Review</Th>
+                  <Th>Business Unit Distribution</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {safeEmployees.length === 0 ? (
+                  <EmptyRow colSpan={7} message="No employees" />
+                ) : safeEmployees.map(emp => (
+                  <tr key={emp.employee_id} className="border-b last:border-0">
+                    <Td>{emp.employee_name}</Td>
+                    <Td>{emp.department}</Td>
+                    <Td>
+                      {emp.rate_type === 'salary'
+                        ? `${formatCurrency(emp.hourly_rate * 40 * 52)}/year`
+                        : `${formatCurrency(emp.hourly_rate)}/hour`}
+                    </Td>
+                    <Td>{formatCurrency((emp.hourly_rate || 0) * (emp.weekly_hours || 0) * 52 * 1.4)}</Td>
+                    <Td>
+                      <Badge variant={emp.status === 'active' ? 'success' : 'secondary'}>
+                        {emp.status || 'unknown'}
+                      </Badge>
+                    </Td>
+                    <Td>{emp.next_review_date || '—'}</Td>
+                    <Td>
+                      <div className="space-y-0.5 text-xs">
+                        {Object.entries(emp.allocations || {}).map(([unit, percent]) => (
+                          <div key={unit} className="flex justify-between gap-4">
+                            <span className="text-gray-600">{unit}:</span>
+                            <span className="text-gray-800 font-medium">{percent}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </ReportTable>
+          </CardContent>
+        </Card>
+      )}
 
-        {activeReport === 'department' && (
-          <div className="department-report">
-            <div className="report-actions">
-              <button onClick={exportDepartmentReport} className="btn-secondary">
-                Export Department Costs
-              </button>
-            </div>
-            
-            <DepartmentCostReport departmentCosts={safeDepartmentCosts} />
-          </div>
-        )}
+      {activeReport === 'department' && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Department Cost Analysis</CardTitle>
+            <Button variant="outline" size="sm" onClick={exportDepartmentReport}>
+              Export Department Costs
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <DepartmentReportTable departmentCosts={safeDepartmentCosts} />
+          </CardContent>
+        </Card>
+      )}
 
-        {activeReport === 'business-unit' && (
-          <div className="business-unit-report">
-            <div className="report-actions">
-              <button onClick={exportBusinessUnitReport} className="btn-secondary">
-                Export Business Unit Data
-              </button>
-            </div>
-            
-            <BusinessUnitReport businessUnitCosts={safeBusinessUnitCosts} employees={safeEmployees} />
-          </div>
-        )}
+      {activeReport === 'business-unit' && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Business Unit Cost Allocation</CardTitle>
+            <Button variant="outline" size="sm" onClick={exportBusinessUnitReport}>
+              Export Business Unit Data
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <BusinessUnitReportTable
+              businessUnitCosts={safeBusinessUnitCosts}
+              employees={safeEmployees}
+            />
+          </CardContent>
+        </Card>
+      )}
 
-        {activeReport === 'forecast' && (
-          <div className="forecast-report">
-            <div className="report-actions">
-              <button onClick={exportForecastReport} className="btn-secondary">
-                Export Forecast Data
-              </button>
-            </div>
-            
-            <ForecastDetailReport forecast={safeForecast} />
-          </div>
-        )}
-      </div>
+      {activeReport === 'forecast' && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Payroll Forecast Report (Next 26 Periods)</CardTitle>
+            <Button variant="outline" size="sm" onClick={exportForecastReport}>
+              Export Forecast Data
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <ForecastReportTable forecast={safeForecast} />
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };
 
-// Employee Detail Report Component
-const EmployeeDetailReport = ({ employees }) => {
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
+const ReportTable = ({ children }) => (
+  <div className="overflow-x-auto">
+    <table className="w-full text-sm">{children}</table>
+  </div>
+);
+
+const Th = ({ children }) => <th className="px-3 py-2 font-medium">{children}</th>;
+const Td = ({ children }) => <td className="px-3 py-2 text-gray-700 align-top">{children}</td>;
+
+const EmptyRow = ({ colSpan, message }) => (
+  <tr>
+    <td colSpan={colSpan} className="px-3 py-8 text-center text-muted-foreground">
+      {message}
+    </td>
+  </tr>
+);
+
+const DepartmentReportTable = ({ departmentCosts }) => {
+  const entries = Object.entries(departmentCosts);
+  const totalCost = entries.reduce((sum, [, data]) => sum + (data.totalCost || 0), 0);
 
   return (
-    <div className="employee-detail-report">
-      <h3>Employee Detail Report</h3>
-      <table className="report-table">
-        <thead>
-          <tr>
-            <th>Employee</th>
-            <th>Department</th>
-            <th>Rate</th>
-            <th>Annual Cost</th>
-            <th>Status</th>
-            <th>Next Review</th>
-            <th>Business Unit Distribution</th>
-          </tr>
-        </thead>
-        <tbody>
-          {employees.map(emp => (
-            <tr key={emp.employee_id}>
-              <td>{emp.employee_name}</td>
-              <td>{emp.department}</td>
-              <td>
-                {emp.rate_type === 'salary' ? 
-                  formatCurrency(emp.hourly_rate * 40 * 52) + '/year' :
-                  formatCurrency(emp.hourly_rate) + '/hour'
-                }
-              </td>
-              <td>{formatCurrency(emp.hourly_rate * emp.weekly_hours * 52 * 1.4)}</td>
-              <td>
-                <span className={`status ${emp.status}`}>{emp.status}</span>
-              </td>
-              <td>{emp.next_review_date}</td>
-              <td>
-                <div className="allocation-summary">
-                  {Object.entries(emp.allocations || {}).map(([unit, percent]) => (
-                    <div key={unit} className="allocation-item">
-                      <span className="unit">{unit}:</span>
-                      <span className="percent">{percent}%</span>
-                    </div>
-                  ))}
-                </div>
-              </td>
+    <ReportTable>
+      <thead>
+        <tr className="border-b bg-gray-50 text-left text-gray-600">
+          <Th>Department</Th>
+          <Th>Employees</Th>
+          <Th>Annual Cost</Th>
+          <Th>% of Total</Th>
+          <Th>Cost per Employee</Th>
+          <Th>Monthly Cost</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.length === 0 ? (
+          <EmptyRow colSpan={6} message="No departments" />
+        ) : entries.map(([dept, data]) => {
+          const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost) * 100 : 0;
+          const costPerEmployee = data.employees > 0 ? data.totalCost / data.employees : 0;
+          return (
+            <tr key={dept} className="border-b last:border-0">
+              <Td>{dept}</Td>
+              <Td>{data.employees}</Td>
+              <Td>{formatCurrency(data.totalCost)}</Td>
+              <Td>{percentOfTotal.toFixed(1)}%</Td>
+              <Td>{formatCurrency(costPerEmployee)}</Td>
+              <Td>{formatCurrency(data.totalCost / 12)}</Td>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          );
+        })}
+      </tbody>
+    </ReportTable>
   );
 };
 
-// Department Cost Report Component
-const DepartmentCostReport = ({ departmentCosts }) => {
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  const totalCost = Object.values(departmentCosts).reduce((sum, dept) => sum + dept.totalCost, 0);
+const BusinessUnitReportTable = ({ businessUnitCosts, employees }) => {
+  const entries = Object.entries(businessUnitCosts);
+  const totalCost = entries.reduce((sum, [, data]) => sum + (data.totalCost || 0), 0);
 
   return (
-    <div className="department-cost-report">
-      <h3>Department Cost Analysis</h3>
-      <table className="report-table">
-        <thead>
-          <tr>
-            <th>Department</th>
-            <th>Employees</th>
-            <th>Annual Cost</th>
-            <th>% of Total</th>
-            <th>Cost per Employee</th>
-            <th>Monthly Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(departmentCosts).map(([dept, data]) => {
-            const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost * 100) : 0;
-            const costPerEmployee = data.employees > 0 ? data.totalCost / data.employees : 0;
-            
-            return (
-              <tr key={dept}>
-                <td>{dept}</td>
-                <td>{data.employees}</td>
-                <td>{formatCurrency(data.totalCost)}</td>
-                <td>{percentOfTotal.toFixed(1)}%</td>
-                <td>{formatCurrency(costPerEmployee)}</td>
-                <td>{formatCurrency(data.totalCost / 12)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <ReportTable>
+      <thead>
+        <tr className="border-b bg-gray-50 text-left text-gray-600">
+          <Th>Business Unit</Th>
+          <Th>FTE Allocation</Th>
+          <Th>Annual Cost</Th>
+          <Th>% of Total</Th>
+          <Th>Cost per FTE</Th>
+          <Th>Contributing Employees</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.length === 0 ? (
+          <EmptyRow colSpan={6} message="No business units" />
+        ) : entries.map(([unit, data]) => {
+          const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost) * 100 : 0;
+          const costPerFTE = data.employees > 0 ? data.totalCost / data.employees : 0;
+          const contributingEmployees = employees.filter(emp =>
+            emp.allocations && emp.allocations[unit] > 0
+          ).length;
+          return (
+            <tr key={unit} className="border-b last:border-0">
+              <Td>{unit}</Td>
+              <Td>{data.employees.toFixed(2)}</Td>
+              <Td>{formatCurrency(data.totalCost)}</Td>
+              <Td>{percentOfTotal.toFixed(1)}%</Td>
+              <Td>{formatCurrency(costPerFTE)}</Td>
+              <Td>{contributingEmployees}</Td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </ReportTable>
   );
 };
 
-// Business Unit Report Component
-const BusinessUnitReport = ({ businessUnitCosts, employees }) => {
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  const totalCost = Object.values(businessUnitCosts).reduce((sum, unit) => sum + unit.totalCost, 0);
-
-  return (
-    <div className="business-unit-report">
-      <h3>Business Unit Cost Allocation</h3>
-      <table className="report-table">
-        <thead>
-          <tr>
-            <th>Business Unit</th>
-            <th>FTE Allocation</th>
-            <th>Annual Cost</th>
-            <th>% of Total</th>
-            <th>Cost per FTE</th>
-            <th>Contributing Employees</th>
+const ForecastReportTable = ({ forecast }) => (
+  <ReportTable>
+    <thead>
+      <tr className="border-b bg-gray-50 text-left text-gray-600">
+        <Th>Period</Th>
+        <Th>Date</Th>
+        <Th>Employees</Th>
+        <Th>Gross Pay</Th>
+        <Th>Total Taxes</Th>
+        <Th>Benefits</Th>
+        <Th>Total Cost</Th>
+      </tr>
+    </thead>
+    <tbody>
+      {forecast.length === 0 ? (
+        <EmptyRow colSpan={7} message="No forecast data" />
+      ) : forecast.slice(0, 26).map(period => {
+        const details = period.employeeDetails || [];
+        const grossPay = details.reduce((sum, emp) => sum + (emp.compensation?.grossPay || 0), 0);
+        const totalTaxes = details.reduce((sum, emp) =>
+          sum + (emp.compensation?.federalTax || 0) + (emp.compensation?.stateTax || 0) +
+          (emp.compensation?.socialSecurity || 0) + (emp.compensation?.medicare || 0) + (emp.compensation?.unemployment || 0), 0);
+        const benefits = details.reduce((sum, emp) => sum + (emp.compensation?.benefits || 0), 0);
+        return (
+          <tr key={period.period} className="border-b last:border-0">
+            <Td>{period.period}</Td>
+            <Td>{formatDate(period.date)}</Td>
+            <Td>{period.employeeCount}</Td>
+            <Td>{formatCurrency(grossPay)}</Td>
+            <Td>{formatCurrency(totalTaxes)}</Td>
+            <Td>{formatCurrency(benefits)}</Td>
+            <Td>{formatCurrency(period.totalCost)}</Td>
           </tr>
-        </thead>
-        <tbody>
-          {Object.entries(businessUnitCosts).map(([unit, data]) => {
-            const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost * 100) : 0;
-            const costPerFTE = data.employees > 0 ? data.totalCost / data.employees : 0;
-            const contributingEmployees = employees.filter(emp => 
-              emp.allocations && emp.allocations[unit] > 0
-            ).length;
-            
-            return (
-              <tr key={unit}>
-                <td>{unit}</td>
-                <td>{data.employees.toFixed(2)}</td>
-                <td>{formatCurrency(data.totalCost)}</td>
-                <td>{percentOfTotal.toFixed(1)}%</td>
-                <td>{formatCurrency(costPerFTE)}</td>
-                <td>{contributingEmployees}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-// Forecast Detail Report Component
-const ForecastDetailReport = ({ forecast }) => {
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount);
-  };
-
-  const formatDate = (dateStr) => {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
-
-  return (
-    <div className="forecast-detail-report">
-      <h3>Payroll Forecast Report (Next 26 Periods)</h3>
-      <table className="report-table">
-        <thead>
-          <tr>
-            <th>Period</th>
-            <th>Date</th>
-            <th>Employees</th>
-            <th>Gross Pay</th>
-            <th>Total Taxes</th>
-            <th>Benefits</th>
-            <th>Total Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {forecast.slice(0, 26).map(period => {
-            const grossPay = period.employeeDetails.reduce((sum, emp) => sum + emp.compensation.grossPay, 0);
-            const totalTaxes = period.employeeDetails.reduce((sum, emp) => 
-              sum + emp.compensation.federalTax + emp.compensation.stateTax + 
-              emp.compensation.socialSecurity + emp.compensation.medicare + emp.compensation.unemployment, 0);
-            const benefits = period.employeeDetails.reduce((sum, emp) => sum + emp.compensation.benefits, 0);
-            
-            return (
-              <tr key={period.period}>
-                <td>{period.period}</td>
-                <td>{formatDate(period.date)}</td>
-                <td>{period.employeeCount}</td>
-                <td>{formatCurrency(grossPay)}</td>
-                <td>{formatCurrency(totalTaxes)}</td>
-                <td>{formatCurrency(benefits)}</td>
-                <td>{formatCurrency(period.totalCost)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
+        );
+      })}
+    </tbody>
+  </ReportTable>
+);
 
 export default PayrollReports;
