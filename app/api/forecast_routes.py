@@ -87,18 +87,19 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
         
         name = scenario_data.get('name', 'New Scenario')
         description = scenario_data.get('description', '')
-        
+        notes = scenario_data.get('notes', '')
+
         cursor.execute("""
-            INSERT INTO forecast (forecast_id, name, description)
-            VALUES (?, ?, ?)
-        """, (forecast_id, name, description))
-        
+            INSERT INTO forecast (forecast_id, name, description, notes)
+            VALUES (?, ?, ?, ?)
+        """, (forecast_id, name, description, notes))
+
         conn.commit()
         db_manager.close_connection(conn)
-        
+
         return ForecastResponse(
             status="success",
-            data={"forecast_id": forecast_id, "name": name, "description": description},
+            data={"forecast_id": forecast_id, "name": name, "description": description, "notes": notes},
             message=f"Forecast scenario {forecast_id} created successfully"
         )
         
