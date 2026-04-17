@@ -32,7 +32,7 @@ from .models import (
     ExpenseForecast, ExpenseWithDetails, ExpenseReportSummary,
     
     # API models
-    ChatRequest, SQLApplyRequest, ForecastResponse,
+    SQLApplyRequest, ForecastResponse,
     
     # Complex models
     SalesWithDetails, BOMWithDetails, RouterWithDetails, ForecastData
@@ -69,7 +69,7 @@ __all__ = [
     'ExpenseForecast', 'ExpenseWithDetails', 'ExpenseReportSummary',
     
     # API models
-    'ChatRequest', 'SQLApplyRequest', 'ForecastResponse',
+    'SQLApplyRequest', 'ForecastResponse',
     
     # Complex models
     'SalesWithDetails', 'BOMWithDetails', 'RouterWithDetails', 'ForecastData'

@@ -13,7 +13,6 @@ from api.data_routes import router as data_router
 from api.forecast_routes import router as forecast_router
 from api.crud_routes import router as crud_router
 from api.cost_routes import router as cost_router
-from api.chat_routes import router as chat_router
 from api.database_routes import router as database_router
 from api.payroll_routes import router as payroll_router
 from api.expense_routes import router as expense_router
@@ -57,7 +56,6 @@ app.include_router(data_router)
 app.include_router(forecast_router)
 app.include_router(crud_router)
 app.include_router(cost_router)
-app.include_router(chat_router)
 app.include_router(database_router)
 app.include_router(payroll_router)
 app.include_router(expense_router)
@@ -69,23 +67,7 @@ app.include_router(database_management_router)
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    return {"message": "Forecast Model + AI Assistant API", "status": "running"}
-
-@app.get("/schema")
-async def get_database_schema():
-    """Get database schema information for frontend"""
-    from services.llm_service import DatabaseSchema
-    
-    return {
-        "status": "success",
-        "data": {
-            "tables": DatabaseSchema.TABLES,
-            "schema_context": DatabaseSchema.get_schema_context()
-        },
-        "message": "Database schema retrieved successfully"
-    }
-
-
+    return {"message": "Forecast Model API", "status": "running"}
 
 
 

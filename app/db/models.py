@@ -167,10 +167,6 @@ class PayrollConfigCreate(PayrollConfigBase):
     pass
 
 # API Request/Response Models
-class ChatRequest(BaseModel):
-    message: str
-    context: Optional[dict] = None
-
 class SQLApplyRequest(BaseModel):
     sql_statement: str
     description: str

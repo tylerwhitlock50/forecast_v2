@@ -22,8 +22,8 @@ RUN mkdir -p /data
 # Set Python path to include the app directory
 ENV PYTHONPATH=/app
 
-# Test imports
-RUN python test_imports.py
+# Smoke-test app import during build
+RUN python -c "import main; print('Import smoke test passed')"
 
 # Expose port
 EXPOSE 8000
