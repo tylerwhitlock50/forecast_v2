@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { toast } from 'react-hot-toast';
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import { Textarea } from '../../ui/textarea';
 
 
 const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
@@ -10,6 +14,7 @@ const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
     version: '1.0'
   });
   const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
 
   // Initialize form when modal opens or bom changes
   useEffect(() => {
@@ -54,24 +59,23 @@ const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
 
   // Handle form submission. `openItemsAfter` short-circuits the default
   // two-step flow (create BOM → separately open items modal) so a new BOM
-  // can be created and have its lines added in one pass.
+  // can be created and have its lines added in one pass. The page shows the
+  // result toast; on failure the form stays open.
   const handleSubmit = async (e, { openItemsAfter = false } = {}) => {
     if (e && e.preventDefault) e.preventDefault();
+    if (!validateForm()) return;
 
-    if (!validateForm()) {
-      toast.error('Please fix the errors in the form');
-      return;
-    }
-
+    setSaving(true);
     try {
       const dataToSave = {
         ...formData,
         bom_id: formData.bom_id.trim() || null,
+        bom_name: formData.bom_name.trim(),
+        version: formData.version.trim() || '1.0',
       };
       await onSave(dataToSave, { openItemsAfter });
-    } catch (error) {
-      console.error('Error saving BOM:', error);
-      toast.error('Failed to save BOM');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -88,105 +92,94 @@ const BOMModal = ({ isOpen, onClose, onSave, bom }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="bom-modal-overlay" onClick={onClose}>
-      <div className="bom-modal-content" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>{bom ? 'Edit BOM' : 'Add New BOM'}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal onClose={onClose} className="max-w-xl">
+      <ModalHeader>
+        <ModalTitle>{bom ? `Edit BOM ${bom.bom_id}` : 'Add a BOM'}</ModalTitle>
+        <ModalClose onClick={onClose} />
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit} className="bom-form">
-          <div className="form-section">
-            <h3>BOM Information</h3>
-            <div className="form-row">
-              <div className="form-group">
-                <label>BOM ID {bom ? '*' : ''}</label>
-                <input
-                  type="text"
-                  value={formData.bom_id}
-                  onChange={(e) => handleInputChange('bom_id', e.target.value)}
-                  className={errors.bom_id ? 'error' : ''}
-                  placeholder={bom ? "e.g., BOM-001" : "Auto-generated if left empty"}
-                  disabled={bom} // Disable editing of ID for existing BOMs
-                />
-                {errors.bom_id && <span className="error-message">{errors.bom_id}</span>}
-                {!bom && <small style={{color: '#6c757d', fontSize: '0.8rem'}}>Leave empty to auto-generate</small>}
-              </div>
-
-              <div className="form-group">
-                <label>BOM Name *</label>
-                <input
-                  type="text"
-                  value={formData.bom_name}
-                  onChange={(e) => handleInputChange('bom_name', e.target.value)}
-                  className={errors.bom_name ? 'error' : ''}
-                  placeholder="Enter BOM name"
-                />
-                {errors.bom_name && <span className="error-message">{errors.bom_name}</span>}
-              </div>
-
-              <div className="form-group">
-                <label>Version</label>
-                <input
-                  type="text"
-                  value={formData.version}
-                  onChange={(e) => handleInputChange('version', e.target.value)}
-                  placeholder="1.0"
-                  disabled={bom} // Disable editing of version for existing BOMs
-                />
-              </div>
+      <form onSubmit={handleSubmit}>
+        <ModalContent className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_8rem]">
+            <div className="space-y-1.5">
+              <Label htmlFor="bom_id">BOM ID</Label>
+              <Input
+                id="bom_id"
+                value={formData.bom_id}
+                onChange={(e) => handleInputChange('bom_id', e.target.value)}
+                className={errors.bom_id ? 'border-red-500' : ''}
+                placeholder={bom ? 'e.g., BOM-001' : 'Leave empty to auto-generate'}
+                disabled={Boolean(bom)}
+                autoFocus={!bom}
+              />
+              {errors.bom_id && <p className="text-sm text-red-600">{errors.bom_id}</p>}
+              {!bom && <p className="text-xs text-gray-500">Usually the parent / assembly part number.</p>}
             </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Description</label>
-                <textarea
-                  value={formData.bom_description}
-                  onChange={(e) => handleInputChange('bom_description', e.target.value)}
-                  placeholder="Enter BOM description"
-                  rows="3"
-                  style={{ resize: 'vertical', minHeight: '80px' }}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bom_version">Version</Label>
+              <Input
+                id="bom_version"
+                value={formData.version}
+                onChange={(e) => handleInputChange('version', e.target.value)}
+                placeholder="1.0"
+                disabled={Boolean(bom)}
+              />
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="bom_name">Name *</Label>
+            <Input
+              id="bom_name"
+              value={formData.bom_name}
+              onChange={(e) => handleInputChange('bom_name', e.target.value)}
+              className={errors.bom_name ? 'border-red-500' : ''}
+              placeholder="e.g., Ridgeline 6.5 PRC"
+              autoFocus={Boolean(bom)}
+            />
+            {errors.bom_name && <p className="text-sm text-red-600">{errors.bom_name}</p>}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="bom_description">Description</Label>
+            <Textarea
+              id="bom_description"
+              value={formData.bom_description}
+              onChange={(e) => handleInputChange('bom_description', e.target.value)}
+              placeholder="Optional"
+              rows={3}
+            />
           </div>
 
           {!bom && (
-            <div className="form-section">
-              <h3>Next Steps</h3>
-              <div className="info-box">
-                <p>After creating this BOM, you can:</p>
-                <ul>
-                  <li>Add materials and components using the "Manage Items" button</li>
-                  <li>Set quantities, unit costs, and target costs for each item</li>
-                  <li>Clone this BOM to create variations</li>
-                  <li>Link this BOM to products in the units table</li>
-                </ul>
-              </div>
-            </div>
+            <p className="rounded-md bg-gray-50 p-3 text-sm text-gray-600">
+              Next, add the material lines (quantity and unit price per finished unit), then link the BOM to its
+              product on the Products screen. Have the BOM in a spreadsheet? Use <span className="font-medium">Import from file</span> instead.
+            </p>
           )}
+        </ModalContent>
 
-          <div className="form-actions">
-            <button type="button" className="btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn-primary">
-              {bom ? 'Update BOM' : 'Create BOM'}
-            </button>
-            {!bom && (
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={(e) => handleSubmit(e, { openItemsAfter: true })}
-                title="Create this BOM and jump straight to adding materials"
-              >
-                Create & Add Items →
-              </button>
-            )}
-          </div>
-        </form>
-      </div>
-    </div>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          {!bom && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={(e) => handleSubmit(e, { openItemsAfter: true })}
+              title="Create this BOM and go straight to adding its material lines"
+            >
+              Create &amp; add lines
+            </Button>
+          )}
+          <Button type="submit" disabled={saving} className="bg-orange-600 text-white hover:bg-orange-700">
+            {saving ? 'Saving…' : bom ? 'Save changes' : 'Create BOM'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 

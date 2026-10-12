@@ -26,18 +26,17 @@ const CustomerValidation = ({ customers }) => {
         customerIssues.push('Missing customer ID');
       }
 
-      // Customer ID format validation
-      if (customer.customer_id && !customer.customer_id.match(/^CUST-\d{3}$/)) {
-        customerWarnings.push('Customer ID should follow format CUST-XXX');
-      }
-
       // Customer type validation
       if (!customer.customer_type || customer.customer_type.trim() === '') {
         customerWarnings.push('No customer type specified');
       } else {
-        const validTypes = ['D2C-WEB', 'ONLINE-DEALER', 'DEALER', 'D2C-AMAZON', 'Enterprise', 'SMB', 'Startup', 'Government', 'Education', 'Healthcare', 'Retail', 'Manufacturing', 'Other'];
-        if (!validTypes.includes(customer.customer_type)) {
-          customerWarnings.push('Customer type may not be standard');
+        // Types are free text; flag only spellings that split one channel
+        // into several price groups ('Dealer' vs 'dealer ').
+        const type = customer.customer_type;
+        const variant = customers.find(c => c.customer_type && c.customer_type !== type
+          && c.customer_type.trim().toLowerCase() === type.trim().toLowerCase());
+        if (variant) {
+          customerWarnings.push(`Customer type "${type}" is also spelled "${variant.customer_type}"; use one spelling so prices apply to both`);
         }
       }
 

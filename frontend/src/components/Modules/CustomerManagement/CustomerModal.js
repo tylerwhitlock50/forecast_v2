@@ -1,238 +1,157 @@
-import React, { useState, useEffect } from 'react';
-import { toast } from 'react-hot-toast';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { Modal, ModalClose, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import { customerTypeOptions, nextCustomerId, normalizeChoice, regionOptions } from './customerOptions';
 
+/**
+ * Add or edit a customer. Customer type and region are free text with
+ * suggestions (the types already in use, then Dealer / Distributor / Direct /
+ * OEM / Government / Export), so an imported type like "OEM" always shows and
+ * can be kept.
+ */
 const CustomerModal = ({ isOpen, onClose, onSave, customer, existingCustomers = [] }) => {
-  const [formData, setFormData] = useState({
-    customer_id: '',
-    customer_name: '',
-    customer_type: '',
-    region: ''
-  });
+  const [formData, setFormData] = useState({ customer_id: '', customer_name: '', customer_type: '', region: '' });
   const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
 
-  // Generate next customer ID
-  const generateNextCustomerId = () => {
-    const existingIds = existingCustomers.map(c => c.customer_id);
-    let nextNumber = 1;
-    
-    // Find the highest existing number
-    existingIds.forEach(id => {
-      const match = id.match(/CUST-(\d+)/);
-      if (match) {
-        const num = parseInt(match[1]);
-        if (num >= nextNumber) {
-          nextNumber = num + 1;
-        }
-      }
-    });
-    
-    return `CUST-${nextNumber.toString().padStart(3, '0')}`;
-  };
+  const typeOptions = useMemo(() => customerTypeOptions(existingCustomers), [existingCustomers]);
+  const regions = useMemo(() => regionOptions(existingCustomers), [existingCustomers]);
 
-  // Initialize form when modal opens or customer changes
   useEffect(() => {
-    if (isOpen) {
-      if (customer) {
-        // Editing existing customer
-        setFormData({
-          customer_id: customer.customer_id || '',
-          customer_name: customer.customer_name || '',
-          customer_type: customer.customer_type || '',
-          region: customer.region || ''
-        });
-      } else {
-        // Creating new customer - auto-generate ID
-        setFormData({
-          customer_id: generateNextCustomerId(),
-          customer_name: '',
-          customer_type: '',
-          region: ''
-        });
-      }
-      setErrors({});
+    if (!isOpen) return;
+    if (customer) {
+      setFormData({
+        customer_id: customer.customer_id || '',
+        customer_name: customer.customer_name || '',
+        customer_type: customer.customer_type || '',
+        region: customer.region || '',
+      });
+    } else {
+      setFormData({ customer_id: nextCustomerId(existingCustomers), customer_name: '', customer_type: '', region: '' });
     }
-    // generateNextCustomerId derives from existingCustomers, which is already a dependency.
+    setErrors({});
+    setSaving(false);
+    // Reset when the modal opens or the customer changes, not on every data refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, customer, existingCustomers]);
+  }, [isOpen, customer]);
 
-  // Validate form
-  const validateForm = () => {
-    const newErrors = {};
-    
-    if (!formData.customer_id.trim()) {
-      newErrors.customer_id = 'Customer ID is required';
-    }
-    
-    if (!formData.customer_name.trim()) {
-      newErrors.customer_name = 'Customer name is required';
-    }
-    
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  const set = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    if (errors[field]) setErrors(prev => ({ ...prev, [field]: null }));
   };
 
-  // Handle form submission
+  const validate = () => {
+    const next = {};
+    const id = formData.customer_id.trim();
+    if (!id) next.customer_id = 'Customer ID is required';
+    else if (!customer && existingCustomers.some(c => String(c.customer_id).toLowerCase() === id.toLowerCase())) {
+      next.customer_id = `${id} is already used by another customer`;
+    }
+    if (!formData.customer_name.trim()) next.customer_name = 'Customer name is required';
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!validateForm()) {
-      toast.error('Please fix the errors in the form');
-      return;
-    }
-
+    if (!validate()) return;
+    setSaving(true);
     try {
-      await onSave(formData);
+      await onSave({
+        customer_id: formData.customer_id.trim(),
+        customer_name: formData.customer_name.trim(),
+        customer_type: normalizeChoice(formData.customer_type, typeOptions) || null,
+        region: normalizeChoice(formData.region, regions) || null,
+      });
     } catch (error) {
-      console.error('Error saving customer:', error);
-      toast.error('Failed to save customer');
-    }
-  };
-
-  // Handle input changes
-  const handleInputChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    
-    // Clear error when user starts typing
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: null }));
+      const detail = error?.response?.data?.detail;
+      setErrors(prev => ({ ...prev, form: typeof detail === 'string' ? detail : 'The customer could not be saved.' }));
+    } finally {
+      setSaving(false);
     }
   };
 
   if (!isOpen) return null;
+  const isEdit = Boolean(customer);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
-        {/* Modal Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">
-            {customer ? 'Edit Customer' : 'Add New Customer'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Modal Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {/* Customer ID */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Customer ID *
-            </label>
-            <input
-              type="text"
+    <Modal onClick={(e) => e.target === e.currentTarget && !saving && onClose()}>
+      <form onSubmit={handleSubmit}>
+        <ModalHeader>
+          <ModalTitle>{isEdit ? `Edit ${customer.customer_name || customer.customer_id}` : 'Add customer'}</ModalTitle>
+          <ModalClose type="button" onClick={onClose} aria-label="Close" />
+        </ModalHeader>
+        <ModalContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="cm-id">Customer ID *</Label>
+            <Input
+              id="cm-id"
               value={formData.customer_id}
-              onChange={(e) => handleInputChange('customer_id', e.target.value)}
-              className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                errors.customer_id ? 'border-red-500' : 'border-gray-300'
-              } ${!customer ? 'bg-gray-100 cursor-not-allowed' : ''}`}
-              placeholder="e.g., CUST-001"
-              disabled={!customer} // Disable for new customers, allow editing for existing
-              readOnly={!customer} // Make it read-only for new customers
+              onChange={(e) => set('customer_id', e.target.value)}
+              disabled={isEdit}
+              className={`${isEdit ? 'bg-gray-100' : ''} ${errors.customer_id ? 'border-red-500' : ''}`}
             />
-            {!customer && (
-              <p className="mt-1 text-sm text-gray-500">
-                Customer ID will be auto-generated
-              </p>
-            )}
-            {errors.customer_id && (
-              <p className="mt-1 text-sm text-red-600">{errors.customer_id}</p>
-            )}
+            {errors.customer_id
+              ? <p className="text-xs text-red-600">{errors.customer_id}</p>
+              : <p className="text-xs text-gray-500">{isEdit ? 'The ID links sales and prices, so it cannot be changed here.' : 'Use your ERP account number, or keep the suggested one.'}</p>}
           </div>
-
-          {/* Customer Name */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Customer Name *
-            </label>
-            <input
-              type="text"
+          <div className="space-y-1.5">
+            <Label htmlFor="cm-name">Customer name *</Label>
+            <Input
+              id="cm-name"
               value={formData.customer_name}
-              onChange={(e) => handleInputChange('customer_name', e.target.value)}
-              className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                errors.customer_name ? 'border-red-500' : 'border-gray-300'
-              }`}
-              placeholder="Enter customer name"
+              onChange={(e) => set('customer_name', e.target.value)}
+              placeholder="e.g. Sportsman's Warehouse"
+              className={errors.customer_name ? 'border-red-500' : ''}
             />
-            {errors.customer_name && (
-              <p className="mt-1 text-sm text-red-600">{errors.customer_name}</p>
-            )}
+            {errors.customer_name && <p className="text-xs text-red-600">{errors.customer_name}</p>}
           </div>
-
-          {/* Customer Type */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Customer Type
-            </label>
-            <select
-              value={formData.customer_type}
-              onChange={(e) => handleInputChange('customer_type', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-            >
-              <option value="">Select Type</option>
-              <option value="D2C-WEB">D2C-WEB</option>
-              <option value="ONLINE-DEALER">ONLINE-DEALER</option>
-              <option value="DEALER">DEALER</option>
-              <option value="D2C-AMAZON">D2C-AMAZON</option>
-              <option value="Enterprise">Enterprise</option>
-              <option value="SMB">SMB</option>
-              <option value="Startup">Startup</option>
-              <option value="Government">Government</option>
-              <option value="Education">Education</option>
-              <option value="Healthcare">Healthcare</option>
-              <option value="Retail">Retail</option>
-              <option value="Manufacturing">Manufacturing</option>
-              <option value="Other">Other</option>
-            </select>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="cm-type">Customer type</Label>
+              <Input
+                id="cm-type"
+                list="cm-type-options"
+                value={formData.customer_type}
+                onChange={(e) => set('customer_type', e.target.value)}
+                placeholder="Dealer, Distributor…"
+                autoComplete="off"
+              />
+              <datalist id="cm-type-options">
+                {typeOptions.map(t => <option key={t} value={t} />)}
+              </datalist>
+              <p className="text-xs text-gray-500">Prices and discounts can be set per type.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="cm-region">Region</Label>
+              <Input
+                id="cm-region"
+                list="cm-region-options"
+                value={formData.region}
+                onChange={(e) => set('region', e.target.value)}
+                placeholder="West, Midwest…"
+                autoComplete="off"
+              />
+              <datalist id="cm-region-options">
+                {regions.map(r => <option key={r} value={r} />)}
+              </datalist>
+            </div>
           </div>
-
-          {/* Region */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Region
-            </label>
-            <select
-              value={formData.region}
-              onChange={(e) => handleInputChange('region', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-            >
-              <option value="">Select Region</option>
-              <option value="US">US</option>
-              <option value="North America">North America</option>
-              <option value="Europe">Europe</option>
-              <option value="Asia Pacific">Asia Pacific</option>
-              <option value="Latin America">Latin America</option>
-              <option value="Middle East">Middle East</option>
-              <option value="Africa">Africa</option>
-            </select>
-          </div>
-
-          {/* Modal Footer */}
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 text-sm font-medium text-white bg-orange-600 border border-transparent rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
-            >
-              {customer ? 'Update Customer' : 'Create Customer'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          {errors.form && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">{errors.form}</div>}
+        </ModalContent>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button type="submit" disabled={saving} className="bg-orange-600 text-white hover:bg-orange-700">
+            {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            {isEdit ? 'Save changes' : 'Add customer'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 
-export default CustomerModal; 
+export default CustomerModal;

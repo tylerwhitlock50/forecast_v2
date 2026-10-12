@@ -323,8 +323,13 @@ class TestReportingRoutes:
         r = client.get("/reporting/statements/export", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-02"})
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/csv")
-        assert "Income Statement,2026-01,2026-02,Total" in r.text
-        assert "\nrevenue,1000" in r.text
+        # Wide layout: human label, line key, one column per period, then the total.
+        assert "Income Statement,line_item,2026-01,2026-02,Total" in r.text
+        assert "\nNet sales,revenue,1000" in r.text
+        # Lines added to the engine (sales deductions, commissions, excise payable) appear automatically.
+        for label_and_key in ("Gross sales,gross_sales", "Total sales deductions,total_sales_deductions",
+                              "Sales commissions,commissions", "Excise tax payable,excise_tax_payable"):
+            assert f"\n{label_and_key}," in r.text
 
     def test_assumptions_roundtrip(self, client):
         r = client.get("/reporting/assumptions", params={"forecast_id": "F-OTHER"})
@@ -644,7 +649,9 @@ class TestCashAggregation:
     def test_csv_export_total_column_carries_closing_balance(self, client, statements):
         r = client.get("/reporting/statements/export", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"})
         assert r.status_code == 200
-        rows = {line.split(",")[0]: line.split(",") for line in r.text.splitlines() if line}
+        import csv
+        import io
+        rows = {row[1]: row for row in csv.reader(io.StringIO(r.text)) if len(row) > 1}
         closing = statements["cash_flow"]["by_period"][-1]["closing_cash"]
         assert float(rows["closing_cash"][-1]) == pytest.approx(closing, abs=0.01)
         assert float(rows["opening_cash"][-1]) == pytest.approx(5000, abs=0.01)

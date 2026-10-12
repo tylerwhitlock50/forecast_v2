@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useForecast } from '../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
@@ -7,8 +7,15 @@ import { Badge } from '../ui/badge';
 import { cn } from '../../lib/utils';
 import DatabaseSaveModal from '../DatabaseModals/DatabaseSaveModal';
 import DatabaseLoadModal from '../DatabaseModals/DatabaseLoadModal';
+import useSetupProgress from '../Modules/DataImport/useSetupProgress';
 
 const navigationModules = {
+  "Get Started": {
+    icon: "🚀",
+    routes: {
+      "Import Data": "/import"
+    }
+  },
   "Scenarios": {
     icon: "🗂️",
     routes: {
@@ -20,7 +27,8 @@ const navigationModules = {
     routes: {
       "Sales Forecasting": "/sales-forecast",
       "Customer Setup": "/customers",
-      "Product Setup": "/products"
+      "Product Setup": "/products",
+      "Pricing & Deductions": "/pricing"
     }
   },
   "Manufacturing Setup": {
@@ -55,18 +63,45 @@ const navigationModules = {
     icon: "📈",
     routes: {
       "Statements": "/reporting",
+      "COGS & Labor Forecast": "/reporting/cogs-labor",
       "Compare Scenarios": "/reporting/comparison"
     }
   }
 };
 
+// The section that holds a screen ('/products/RF-100' belongs to Product Setup).
+const sectionFor = (pathname) => {
+  const entries = Object.entries(navigationModules);
+  const exact = entries.find(([, m]) => Object.values(m.routes).includes(pathname));
+  if (exact) return exact[0];
+  const prefix = entries
+    .flatMap(([name, m]) => Object.values(m.routes).map((route) => [name, route]))
+    .filter(([, route]) => route !== '/' && pathname.startsWith(`${route}/`))
+    .sort((a, b) => b[1].length - a[1].length)[0];
+  return prefix ? prefix[0] : null;
+};
+
 const MainNavigation = ({ isCollapsed, onToggle }) => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [expandedModules, setExpandedModules] = useState({});
+  // Only the section that holds the current screen is open, so every
+  // section (down to Reporting & Analysis) fits without scrolling.
+  const [expandedModules, setExpandedModules] = useState(() => {
+    const current = sectionFor(location.pathname);
+    return current ? { [current]: true } : {};
+  });
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
-  const { data, actions } = useForecast();
+  const { data, actions, scenarios, lastUpdated } = useForecast();
+  // The same steps and counts as the Import data page and the Sales Forecast
+  // checklist; the path refreshes the price / deduction rule counts.
+  const setup = useSetupProgress(location.pathname);
+
+  // On navigation, collapse the sections not in use and open the current one.
+  useEffect(() => {
+    const current = sectionFor(location.pathname);
+    setExpandedModules(current ? { [current]: true } : {});
+  }, [location.pathname]);
 
   // Ensure data is always an object with expected properties
   const safeData = data || {};
@@ -82,69 +117,58 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
     return location.pathname === route;
   };
 
+  // Setup status per module, from the data already loaded in context.
+  // Returns null when the module has nothing meaningful to report.
   const getModuleStatus = (moduleName) => {
-    // Ensure all data arrays exist and are actually arrays
-    const forecasts = Array.isArray(safeData.forecasts) ? safeData.forecasts : [];
-    const products = Array.isArray(safeData.products) ? safeData.products : [];
-    const customers = Array.isArray(safeData.customers) ? safeData.customers : [];
-    const machines = Array.isArray(safeData.machines) ? safeData.machines : [];
-    const routers = Array.isArray(safeData.routers) ? safeData.routers : [];
-    const bom = Array.isArray(safeData.bom) ? safeData.bom : [];
-    const laborRates = Array.isArray(safeData.labor_rates) ? safeData.labor_rates : [];
-    const employees = Array.isArray(safeData.employees) ? safeData.employees : [];
-    const payroll = Array.isArray(safeData.payroll) ? safeData.payroll : [];
-    const expenses = Array.isArray(safeData.expenses) ? safeData.expenses : [];
-    const loans = Array.isArray(safeData.loans) ? safeData.loans : [];
-    const validationErrors = Array.isArray(safeData.validation?.errors) ? safeData.validation.errors : [];
+    const list = (value) => (Array.isArray(value) ? value : []);
+    const products = list(safeData.products);
+    const payroll = list(safeData.payroll);
+    const scenarioList = Object.values(scenarios || {});
+    const has = (kind) => Boolean(setup.byKind[kind]?.done);
 
-    // Calculate completion status for each module
-    const completionStatus = {
-      "Revenue Planning": {
-        total: products.length + customers.length + forecasts.length,
-        completed: forecasts.filter(f => f.customer_id && f.product_id && f.quantity > 0).length
-      },
-      "Manufacturing Setup": {
-        total: machines.length + routers.length + bom.length + laborRates.length,
-        completed: machines.filter(m => m.machine_rate > 0).length + 
-                  routers.filter(r => r.machine_minutes > 0 || r.labor_minutes > 0).length +
-                  bom.filter(b => b.material_cost > 0).length +
-                  laborRates.filter(lr => lr.rate_amount > 0).length
-      },
-      "Cost Management": {
-        total: products.length,
-        completed: bom.filter(b => b.material_cost > 0).length
-      },
-      "Resource Planning": {
-        total: employees.length,
-        completed: payroll.filter(p => p.allocation_percentage > 0).length
-      },
-      "Financial Planning": {
-        total: expenses.length + loans.length,
-        completed: expenses.filter(e => e.amount > 0).length + loans.filter(l => l.principal > 0).length
-      },
-      "Reporting & Analysis": {
-        total: 1,
-        completed: validationErrors.length === 0 ? 1 : 0
+    const checks = (items) => ({ done: items.filter(Boolean).length, total: items.length });
+    switch (moduleName) {
+      case 'Get Started':
+        return { done: setup.done, total: setup.total };
+      case 'Scenarios':
+        return scenarioList.length
+          ? { label: `${scenarioList.length} scenario${scenarioList.length === 1 ? '' : 's'}`, tone: 'neutral' }
+          : { label: 'None yet', tone: 'empty' };
+      case 'Revenue Planning':
+        return checks([has('customers'), has('products'), has('prices'), has('sales')]);
+      case 'Manufacturing Setup':
+        return checks([has('machines'), has('routings'), has('boms'), has('labor_rates')]);
+      case 'Cost Management': {
+        if (!products.length) return { done: 0, total: 1 };
+        const costed = products.filter(p => p.bom).length;
+        return costed === products.length
+          ? { done: 1, total: 1 }
+          : { label: `${costed} of ${products.length} costed`, tone: costed ? 'partial' : 'empty' };
       }
-    };
-
-    const status = completionStatus[moduleName] || { total: 0, completed: 0 };
-    const percentage = status.total > 0 ? (status.completed / status.total) * 100 : 0;
-    
-    if (percentage >= 100) return 'complete';
-    if (percentage >= 50) return 'partial';
-    if (percentage > 0) return 'started';
-    return 'empty';
+      case 'Resource Planning':
+        return payroll.length
+          ? { label: `${payroll.length} employee${payroll.length === 1 ? '' : 's'}`, tone: 'neutral' }
+          : { label: 'Optional', tone: 'empty' };
+      default:
+        return null;
+    }
   };
 
-  const getStatusVariant = (status) => {
-    switch (status) {
-      case 'complete': return 'success';
-      case 'partial': return 'warning';
-      case 'started': return 'destructive';
-      case 'empty': return 'secondary';
-      default: return 'secondary';
-    }
+  // `short` keeps section badges narrow so long section names are not cut off.
+  const describeStatus = (status, short = false) => {
+    if (!status) return null;
+    if (status.label) return status;
+    if (status.done >= status.total) return { label: 'Ready', tone: 'complete' };
+    if (status.done === 0) return { label: short ? 'To do' : 'Not started', title: 'Not started', tone: 'empty' };
+    const full = `${status.done} of ${status.total} set up`;
+    return { label: short ? `${status.done} of ${status.total}` : full, title: full, tone: 'partial' };
+  };
+
+  const STATUS_TONES = {
+    complete: 'border-green-200 bg-green-50 text-green-700',
+    partial: 'border-amber-200 bg-amber-50 text-amber-800',
+    empty: 'border-gray-200 bg-gray-50 text-gray-500',
+    neutral: 'border-gray-200 bg-white text-gray-600',
   };
 
   // Handle database save
@@ -203,12 +227,13 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
       isCollapsed ? "w-16" : "w-80"
     )}>
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-border">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <Button
           variant="ghost"
           size="sm"
           onClick={onToggle}
           className="h-8 w-8 p-0"
+          aria-label={isCollapsed ? 'Expand navigation' : 'Collapse navigation'}
         >
           {isCollapsed ? (
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -222,7 +247,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         </Button>
         {!isCollapsed && (
           <div className="flex flex-col items-start">
-            <h1 className="text-xl font-bold text-foreground">Forecast AI</h1>
+            <h1 className="text-xl font-bold leading-tight text-foreground">Forecast AI</h1>
             <p className="text-xs text-muted-foreground">Budget &amp; cash flow model</p>
           </div>
         )}
@@ -230,58 +255,94 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
 
       {/* Navigation Content */}
       <div className="flex-1 overflow-y-auto p-2">
-        <div className="space-y-2">
+        <div className="space-y-0.5">
           {Object.entries(navigationModules).map(([moduleName, module]) => {
             const isExpanded = expandedModules[moduleName];
-            const moduleStatus = getModuleStatus(moduleName);
-            
+            const status = describeStatus(getModuleStatus(moduleName), moduleName !== 'Get Started');
+            const routes = Object.entries(module.routes);
+            const single = routes.length === 1 ? routes[0] : null;
+            const sectionActive = routes.some(([, route]) => isRouteActive(route));
+
+            // Get started: one prominent entry straight to the import screen.
+            if (moduleName === 'Get Started') {
+              const [routeName, route] = single;
+              return (
+                <button
+                  key={moduleName}
+                  type="button"
+                  onClick={() => navigate(route)}
+                  title={isCollapsed ? `${moduleName}: ${routeName}` : `${setup.done} of ${setup.total} import steps have data`}
+                  className={cn(
+                    "mb-1.5 flex w-full items-center rounded-lg border px-2.5 py-2 text-left transition-colors",
+                    isRouteActive(route)
+                      ? "border-orange-300 bg-orange-50"
+                      : "border-orange-200 bg-orange-50/50 hover:bg-orange-50"
+                  )}
+                >
+                  <span className="mr-2.5 w-6 text-center text-lg">{module.icon}</span>
+                  {!isCollapsed && (
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-gray-900">Get started</div>
+                      <div className="text-xs text-gray-600">Import your data</div>
+                    </div>
+                  )}
+                  {!isCollapsed && status && (
+                    <span className={cn("ml-2 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_TONES[status.tone])}>
+                      {status.label}
+                    </span>
+                  )}
+                </button>
+              );
+            }
+
             return (
               <div key={moduleName}>
                 <Button
                   variant="ghost"
                   className={cn(
-                    "w-full justify-start p-3 h-auto text-left",
-                    isExpanded && "bg-accent"
+                    "h-auto w-full justify-start px-2.5 py-2 text-left",
+                    (isExpanded || (single && sectionActive)) && "bg-accent"
                   )}
-                  onClick={() => toggleModule(moduleName)}
+                  title={isCollapsed ? moduleName : undefined}
+                  aria-expanded={single ? undefined : Boolean(isExpanded)}
+                  onClick={() => (single ? navigate(single[1]) : toggleModule(moduleName))}
                 >
-                  <div className="flex items-center w-full">
-                    <span className="text-lg mr-3">{module.icon}</span>
+                  <div className="flex w-full items-center gap-2">
+                    <span className="mr-0.5 w-6 flex-shrink-0 text-center text-lg">{module.icon}</span>
                     {!isCollapsed && (
                       <>
-                        <div className="flex-1">
-                          <div className="font-medium text-sm">{moduleName}</div>
-                          <Badge 
-                            variant={getStatusVariant(moduleStatus)} 
-                            className="mt-1 text-xs"
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{moduleName}</span>
+                        {status && (
+                          <span title={status.title} className={cn("flex-shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_TONES[status.tone])}>
+                            {status.label}
+                          </span>
+                        )}
+                        {!single && (
+                          <svg
+                            className={cn(
+                              "h-4 w-4 flex-shrink-0 transition-transform",
+                              isExpanded && "transform rotate-180"
+                            )}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
                           >
-                            {moduleStatus}
-                          </Badge>
-                        </div>
-                        <svg 
-                          className={cn(
-                            "h-4 w-4 transition-transform",
-                            isExpanded && "transform rotate-180"
-                          )}
-                          fill="none" 
-                          viewBox="0 0 24 24" 
-                          stroke="currentColor"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        )}
                       </>
                     )}
                   </div>
                 </Button>
 
-                {isExpanded && !isCollapsed && (
-                  <div className="ml-6 mt-1 space-y-1">
-                    {Object.entries(module.routes).map(([routeName, route]) => (
+                {!single && isExpanded && !isCollapsed && (
+                  <div className="mb-1 ml-9 mt-0.5 space-y-0.5">
+                    {routes.map(([routeName, route]) => (
                       <Button
                         key={route}
                         variant={isRouteActive(route) ? "secondary" : "ghost"}
                         size="sm"
-                        className="w-full justify-start text-sm"
+                        className="h-8 w-full justify-start px-2.5 text-sm"
                         onClick={() => navigate(route)}
                       >
                         {routeName}
@@ -297,23 +358,23 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
 
       {/* Quick Actions */}
       {!isCollapsed && (
-        <div className="p-4 border-t border-border">
-          <div className="space-y-2">
+        <div className="px-3 py-2.5 border-t border-border">
+          <div className="grid grid-cols-2 gap-2">
             <Button
               variant="outline"
               size="sm"
-              className="w-full justify-start"
+              className="w-full justify-center px-2"
               onClick={() => setShowLoadModal(true)}
             >
-              📥 Load Database
+              📥 Load database
             </Button>
             <Button
               variant="outline"
               size="sm"
-              className="w-full justify-start"
+              className="w-full justify-center px-2"
               onClick={() => setShowSaveModal(true)}
             >
-              💾 Save Database
+              💾 Save database
             </Button>
           </div>
         </div>
@@ -321,24 +382,19 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
 
       {/* Status Bar */}
       {!isCollapsed && (
-        <div className="p-4 border-t border-border bg-muted/30">
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Errors:</span>
-              <Badge 
-                variant={(safeData.validation?.errors || []).length > 0 ? 'destructive' : 'success'}
-                className="text-xs"
-              >
-                {(safeData.validation?.errors || []).length}
-              </Badge>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Last Updated:</span>
-              <span className="text-muted-foreground">
-                {safeData.lastUpdated ? new Date(safeData.lastUpdated).toLocaleTimeString() : 'Never'}
-              </span>
-            </div>
-          </div>
+        <div className="flex items-center justify-between gap-2 px-4 py-2 border-t border-border bg-muted/30 text-xs">
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            Errors:
+            <Badge
+              variant={(safeData.validation?.errors || []).length > 0 ? 'destructive' : 'success'}
+              className="text-xs"
+            >
+              {(safeData.validation?.errors || []).length}
+            </Badge>
+          </span>
+          <span className="text-muted-foreground">
+            Updated {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'never'}
+          </span>
         </div>
       )}
 
@@ -353,6 +409,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         isOpen={showLoadModal}
         onClose={() => setShowLoadModal(false)}
         onLoad={handleLoadDatabase}
+        onAfterReset={() => actions.fetchAllData()}
       />
     </nav>
   );

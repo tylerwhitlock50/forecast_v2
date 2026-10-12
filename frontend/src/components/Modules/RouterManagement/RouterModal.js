@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { toast } from 'react-hot-toast';
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
 
 
 const RouterModal = ({ isOpen, onClose, onSave, router }) => {
@@ -10,6 +13,7 @@ const RouterModal = ({ isOpen, onClose, onSave, router }) => {
     version: '1.0'
   });
   const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
 
   // Initialize form when modal opens or router changes
   useEffect(() => {
@@ -52,26 +56,22 @@ const RouterModal = ({ isOpen, onClose, onSave, router }) => {
     return Object.keys(newErrors).length === 0;
   };
 
-  // Handle form submission
+  // Handle form submission. The page shows the result toast; on failure the
+  // form stays open.
   const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (!validateForm()) {
-      toast.error('Please fix the errors in the form');
-      return;
-    }
+    if (e && e.preventDefault) e.preventDefault();
+    if (!validateForm()) return;
 
+    setSaving(true);
     try {
-      // Convert numeric fields to appropriate types
-      const dataToSave = {
+      await onSave({
         ...formData,
         router_id: formData.router_id.trim() || null, // Allow null for auto-generation
-      };
-      
-      await onSave(dataToSave);
-    } catch (error) {
-      console.error('Error saving router:', error);
-      toast.error('Failed to save router');
+        router_name: formData.router_name.trim(),
+        version: formData.version.trim() || '1.0',
+      });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -88,79 +88,81 @@ const RouterModal = ({ isOpen, onClose, onSave, router }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="router-modal-overlay" onClick={onClose}>
-      <div className="router-modal-content" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>{router ? 'Edit Router' : 'Add New Router'}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal onClose={onClose} className="max-w-xl">
+      <ModalHeader>
+        <ModalTitle>{router ? `Edit routing ${router.router_id}` : 'Add a routing'}</ModalTitle>
+        <ModalClose onClick={onClose} />
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit} className="router-form">
-          <div className="form-section">
-            <h3>Router Information</h3>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Router ID {router ? '*' : ''}</label>
-                <input
-                  type="text"
-                  value={formData.router_id}
-                  onChange={(e) => handleInputChange('router_id', e.target.value)}
-                  className={errors.router_id ? 'error' : ''}
-                  placeholder={router ? "e.g., R0001" : "Auto-generated if left empty"}
-                  disabled={router} // Disable editing of ID for existing routers
-                />
-                {errors.router_id && <span className="error-message">{errors.router_id}</span>}
-                {!router && <small style={{color: '#6c757d', fontSize: '0.8rem'}}>Leave empty to auto-generate</small>}
-              </div>
-
-              <div className="form-group">
-                <label>Router Name *</label>
-                <input
-                  type="text"
-                  value={formData.router_name}
-                  onChange={(e) => handleInputChange('router_name', e.target.value)}
-                  className={errors.router_name ? 'error' : ''}
-                  placeholder="Enter router name"
-                />
-                {errors.router_name && <span className="error-message">{errors.router_name}</span>}
-              </div>
-
-              <div className="form-group">
-                <label>Version</label>
-                <input
-                  type="text"
-                  value={formData.version}
-                  onChange={(e) => handleInputChange('version', e.target.value)}
-                  placeholder="1.0"
-                  disabled={router} // Disable editing of version for existing routers
-                />
-              </div>
+      <form onSubmit={handleSubmit}>
+        <ModalContent className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_8rem]">
+            <div className="space-y-1.5">
+              <Label htmlFor="router_id">Routing ID</Label>
+              <Input
+                id="router_id"
+                value={formData.router_id}
+                onChange={(e) => handleInputChange('router_id', e.target.value)}
+                className={errors.router_id ? 'border-red-500' : ''}
+                placeholder={router ? 'e.g., R0001' : 'Leave empty to auto-generate'}
+                disabled={Boolean(router)}
+                autoFocus={!router}
+              />
+              {errors.router_id && <p className="text-sm text-red-600">{errors.router_id}</p>}
             </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Description</label>
-                <input
-                  type="text"
-                  value={formData.router_description}
-                  onChange={(e) => handleInputChange('router_description', e.target.value)}
-                  placeholder="Enter router description"
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="router_version">Version</Label>
+              <Input
+                id="router_version"
+                value={formData.version}
+                onChange={(e) => handleInputChange('version', e.target.value)}
+                placeholder="1.0"
+                disabled={Boolean(router)}
+              />
             </div>
           </div>
 
-          <div className="form-actions">
-            <button type="button" className="btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn-primary">
-              {router ? 'Update Router' : 'Create Router'}
-            </button>
+          <div className="space-y-1.5">
+            <Label htmlFor="router_name">Name *</Label>
+            <Input
+              id="router_name"
+              value={formData.router_name}
+              onChange={(e) => handleInputChange('router_name', e.target.value)}
+              className={errors.router_name ? 'border-red-500' : ''}
+              placeholder="e.g., Bolt-action rifle routing"
+              autoFocus={Boolean(router)}
+            />
+            {errors.router_name && <p className="text-sm text-red-600">{errors.router_name}</p>}
           </div>
-        </form>
-      </div>
-    </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="router_description">Description</Label>
+            <Input
+              id="router_description"
+              value={formData.router_description}
+              onChange={(e) => handleInputChange('router_description', e.target.value)}
+              placeholder="Optional"
+            />
+          </div>
+
+          {!router && (
+            <p className="rounded-md bg-gray-50 p-3 text-sm text-gray-600">
+              After creating the routing, use <span className="font-medium">Manage</span> to add its operations
+              (machine, machine minutes, labor minutes and labor type per unit), then link it to products.
+            </p>
+          )}
+        </ModalContent>
+
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving} className="bg-orange-600 text-white hover:bg-orange-700">
+            {saving ? 'Saving…' : router ? 'Save changes' : 'Create routing'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 

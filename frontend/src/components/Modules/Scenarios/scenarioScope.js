@@ -19,17 +19,26 @@ export const SCOPE_KINDS = {
     tone: 'bg-gray-100 text-gray-700 border-gray-200',
     help: 'Shared by every scenario. Changing it changes all scenarios.',
   },
+  // Master data shared by every scenario, figures computed from the active
+  // scenario's sales (Cost Management, product detail).
+  sales: {
+    label: "Uses this scenario's sales",
+    tone: 'bg-amber-50 text-amber-800 border-amber-200',
+    help: "Products, BOMs, routings and rates are shared by every scenario; the quantities and costs shown come from the active scenario's sales forecast.",
+  },
   selection: {
-    label: 'Chosen on the page',
+    label: 'Follows the active scenario',
     tone: 'bg-gray-100 text-gray-700 border-gray-200',
-    help: 'Reporting uses the scenarios you pick on the page, not the active one.',
+    help: 'Reports follow the active scenario unless you pick several scenarios on the page to consolidate or compare them.',
   },
 };
 
 const ROUTE_SCOPES = [
   { test: (p) => p.startsWith('/scenarios'), kind: null },
   { test: (p) => p.startsWith('/sales-forecast'), kind: 'scenario' },
+  { test: (p) => p.startsWith('/pricing') || p.startsWith('/import'), kind: 'mixed' },
   { test: (p) => p.startsWith('/payroll') || p.startsWith('/expenses'), kind: 'mixed' },
+  { test: (p) => p.startsWith('/cost-management') || /^\/products\/[^/]+/.test(p), kind: 'sales' },
   { test: (p) => p.startsWith('/reporting'), kind: 'selection' },
 ];
 

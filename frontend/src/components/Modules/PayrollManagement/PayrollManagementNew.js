@@ -18,8 +18,16 @@ import BusinessUnitAllocation from './BusinessUnitAllocation';
 import DepartmentAnalytics from './DepartmentAnalytics';
 import PayrollReports from './PayrollReports';
 import { EmployeeModal, AllocationModal, ConfigurationModal } from './PayrollModals';
-
-const PAY_RUNS_PER_YEAR = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
+import {
+  parseAllocations,
+  indexEmployeeCosts,
+  summaryToDepartmentCosts,
+  summaryToBusinessUnitCosts,
+  mergeBusinessUnits,
+  serverForecastToView,
+  runsPerYearFor,
+  formatRate
+} from './payrollView';
 
 const serverConfigToForm = (cfg) => ({
   federalTaxRate: Number(cfg.federal_tax_rate ?? 0.22),
@@ -42,34 +50,6 @@ const formConfigToServer = (cfg) => ({
   workers_comp_rate: cfg.workersCompRate,
   pay_frequency: cfg.payFrequency || 'biweekly'
 });
-
-// Shape /payroll/forecast (pay-period mode) into what PayrollForecast renders.
-const serverForecastToView = (forecast, cfg = {}) => forecast.map((run) => ({
-  period: run.period,
-  date: run.date,
-  totalCost: run.total_cost || 0,
-  employeeCount: run.employee_count || 0,
-  employeeDetails: (run.employee_details || []).map((emp) => {
-    const gross = emp.gross_pay || 0;
-    return {
-      employee_id: emp.employee_id,
-      employee_name: emp.employee_name,
-      department: emp.department,
-      compensation: {
-        grossPay: gross,
-        federalTax: gross * (cfg.federal_tax_rate || 0),
-        stateTax: gross * (cfg.state_tax_rate || 0),
-        socialSecurity: gross * (cfg.social_security_rate || 0),
-        medicare: gross * (cfg.medicare_rate || 0),
-        unemployment: gross * (cfg.unemployment_rate || 0),
-        workersComp: gross * (cfg.workers_comp_rate || 0),
-        benefits: Math.max((emp.total_cost || 0) - gross * (1 + (cfg.federal_tax_rate || 0) + (cfg.state_tax_rate || 0)
-          + (cfg.social_security_rate || 0) + (cfg.medicare_rate || 0) + (cfg.unemployment_rate || 0) + (cfg.workers_comp_rate || 0)), 0),
-        totalCost: emp.total_cost || 0
-      }
-    };
-  })
-}));
 
 const PayrollManagement = () => {
   const { data, actions, activeScenario, scenarios } = useForecast();
@@ -100,6 +80,10 @@ const PayrollManagement = () => {
   });
   const [payrollForecast, setPayrollForecast] = useState([]);
   const [forecastLoading, setForecastLoading] = useState(false);
+  // Annual cost per employee, by department and by business unit, from the
+  // API (same rules as the income statement) - never re-derived here.
+  const [costIndex, setCostIndex] = useState({});
+  const [payrollSummary, setPayrollSummary] = useState(null);
 
   // Payroll config lives on the server (payroll_config) so the statements
   // engine and this screen burden payroll with the same rates.
@@ -117,14 +101,14 @@ const PayrollManagement = () => {
   // The forecast tab is served by /payroll/forecast so it matches the
   // reporting module instead of re-computing payroll in the browser.
   useEffect(() => {
-    if (activeTab !== 'forecast') return undefined;
+    if (activeTab !== 'forecast' && activeTab !== 'reports') return undefined;
     let cancelled = false;
     setForecastLoading(true);
     const query = `periods=${forecastHorizon}${activeScenario ? `&forecast_id=${encodeURIComponent(activeScenario)}` : ''}`;
     api.get(`/payroll/forecast?${query}`, { suppressErrorToast: true })
       .then((res) => {
         if (cancelled) return;
-        setPayrollForecast(serverForecastToView(res?.data?.forecast || [], res?.data?.config));
+        setPayrollForecast(serverForecastToView(res?.data?.forecast || []));
       })
       .catch(() => {
         if (!cancelled) {
@@ -134,10 +118,33 @@ const PayrollManagement = () => {
       })
       .finally(() => { if (!cancelled) setForecastLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, forecastHorizon, activeScenario, config]);
+  }, [activeTab, forecastHorizon, activeScenario, config, data?.payroll]);
+
+  // Costs: refetched whenever the roster, the scenario or the rates change.
+  useEffect(() => {
+    let cancelled = false;
+    const scope = activeScenario ? `forecast_id=${encodeURIComponent(activeScenario)}` : '';
+    Promise.all([
+      api.get(`/payroll/employees${scope ? `?${scope}` : ''}`, { suppressErrorToast: true }),
+      // Totals only: per-employee costs come from /payroll/employees above.
+      api.get(`/payroll/reports/summary?include_employees=false${scope ? `&${scope}` : ''}`, { suppressErrorToast: true })
+    ])
+      .then(([employeesRes, summaryRes]) => {
+        if (cancelled) return;
+        setCostIndex(indexEmployeeCosts(employeesRes?.data?.employees));
+        setPayrollSummary(summaryRes?.data?.summary || null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCostIndex({});
+          setPayrollSummary(null);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [data?.payroll, activeScenario, config]);
 
   // Business unit definitions
-  const [businessUnits] = useState([
+  const [standardBusinessUnits] = useState([
     'Customer-Centric Brands',
     'OEM Work',
     'Internal Operations',
@@ -156,79 +163,33 @@ const PayrollManagement = () => {
   const employees = useMemo(() => {
     if (!data?.payroll) return [];
     
-    return data.payroll.map(emp => ({
-      ...emp,
-      department: emp.department || emp.labor_type,
-      rate_type: emp.rate_type || 'hourly',
-      next_review_date: emp.next_review_date || getNextReviewDate(emp.start_date),
-      expected_raise: emp.expected_raise || 0,
-      allocations: emp.allocations || { 'Customer-Centric Brands': 100 },
-      benefits_eligible: !(emp.benefits_eligible === false || emp.benefits_eligible === 0 || emp.benefits_eligible === '0'),
-      status: emp.end_date && parseLocalDate(emp.end_date) && parseLocalDate(emp.end_date) < new Date() ? 'inactive' : 'active'
-    }));
-  }, [data?.payroll]);
-
-  // Calculate gross pay for an employee
-  const calculateGrossPay = (employee, payPeriods = 1) => {
-    const runsPerYear = PAY_RUNS_PER_YEAR[config.payFrequency] || 26;
-    if (employee.rate_type === 'salary') {
-      return (employee.hourly_rate * 40 * 52 / runsPerYear) * payPeriods; // Annual salary / pay runs
-    }
-    return employee.hourly_rate * employee.weekly_hours * (52 / runsPerYear) * payPeriods;
-  };
-
-  // Calculate total compensation including taxes and benefits
-  const calculateTotalCompensation = (employee, payPeriods = 1) => {
-    const grossPay = calculateGrossPay(employee, payPeriods);
-    const federalTax = grossPay * config.federalTaxRate;
-    const stateTax = grossPay * config.stateTaxRate;
-    const socialSecurity = grossPay * config.socialSecurityRate;
-    const medicare = grossPay * config.medicareRate;
-    const unemployment = grossPay * config.unemploymentRate;
-    const workersComp = grossPay * config.workersCompRate;
-    const benefits = employee.benefits_eligible ? grossPay * config.benefitsRate : 0;
-
-    return {
-      grossPay,
-      federalTax,
-      stateTax,
-      socialSecurity,
-      medicare,
-      unemployment,
-      workersComp,
-      benefits,
-      totalCost: grossPay + federalTax + stateTax + socialSecurity + medicare + unemployment + workersComp + benefits
-    };
-  };
-
-  // Calculate costs by department
-  const getDepartmentCosts = () => {
-    const departments = {};
-    
-    employees.forEach(emp => {
-      if (emp.status === 'active') {
-        const dept = emp.department || 'Unassigned';
-        if (!departments[dept]) {
-          departments[dept] = {
-            employees: 0,
-            totalCost: 0,
-            avgRate: 0
-          };
-        }
-        
-        departments[dept].employees++;
-        const compensation = calculateTotalCompensation(emp, PAY_RUNS_PER_YEAR[config.payFrequency] || 26); // Annual
-        departments[dept].totalCost += compensation.totalCost;
-      }
+    return data.payroll.map(emp => {
+      const costs = costIndex[emp.employee_id] || {};
+      // /data/payroll returns allocations as JSON text; parse to percent.
+      const allocations = parseAllocations(costs.allocations || emp.allocations);
+      return {
+        ...emp,
+        department: emp.department || emp.labor_type,
+        rate_type: emp.rate_type || 'hourly',
+        next_review_date: emp.next_review_date || getNextReviewDate(emp.start_date),
+        expected_raise: emp.expected_raise || 0,
+        allocations: Object.keys(allocations).length ? allocations : { 'Customer-Centric Brands': 100 },
+        benefits_eligible: !(emp.benefits_eligible === false || emp.benefits_eligible === 0 || emp.benefits_eligible === '0'),
+        status: emp.end_date && parseLocalDate(emp.end_date) && parseLocalDate(emp.end_date) < new Date() ? 'inactive' : 'active',
+        annual_gross: costs.annual_gross,
+        annual_cost: costs.annual_cost,
+        rate_basis: costs.rate_basis
+      };
     });
+  }, [data?.payroll, costIndex]);
 
-    // Calculate average rates
-    Object.keys(departments).forEach(dept => {
-      departments[dept].avgRate = departments[dept].totalCost / departments[dept].employees / (PAY_RUNS_PER_YEAR[config.payFrequency] || 26);
-    });
-
-    return departments;
-  };
+  const runsPerYear = payrollSummary?.runs_per_year || runsPerYearFor(config.payFrequency);
+  const departmentCosts = useMemo(() => summaryToDepartmentCosts(payrollSummary), [payrollSummary]);
+  const businessUnitCosts = useMemo(() => summaryToBusinessUnitCosts(payrollSummary), [payrollSummary]);
+  const businessUnits = useMemo(
+    () => mergeBusinessUnits(standardBusinessUnits, businessUnitCosts).filter(unit => unit !== 'Unallocated'),
+    [standardBusinessUnits, businessUnitCosts]
+  );
 
   // Filter employees based on current filters
   const filteredEmployees = useMemo(() => {
@@ -270,6 +231,11 @@ const PayrollManagement = () => {
     setShowEmployeeModal(true);
   };
 
+  const handleEditAllocations = (employee) => {
+    setSelectedEmployee({ ...employee });
+    setShowAllocationModal(true);
+  };
+
   const handleSaveEmployee = async (employee) => {
     try {
       // Validate allocations sum to 100%
@@ -279,21 +245,24 @@ const PayrollManagement = () => {
         return;
       }
 
-      // Save employee data
+      // Save employee data (display-only fields stay out of the payload)
+      const {
+        annual_gross: _annualGross, annual_cost: _annualCost, rate_basis: _rateBasis, status: _status,
+        ...fields
+      } = employee;
       const payload = {
-        ...employee,
+        ...fields,
         next_review_date: employee.next_review_date || getNextReviewDate(employee.start_date),
         end_date: employee.end_date || null,
       };
-      if (employee.employee_id) {
-        await actions.updateEmployee(employee.employee_id, payload);
-        toast.success('Employee updated successfully');
-      } else {
-        await actions.createEmployee(payload);
-        toast.success('Employee added successfully');
-      }
-      
+      const result = employee.employee_id
+        ? await actions.updateEmployee(employee.employee_id, payload)
+        : await actions.createEmployee(payload);
+      toast.success(employee.employee_id ? 'Employee updated successfully' : 'Employee added successfully');
+      (result?.warnings || []).forEach((warning) => toast(warning, { icon: '⚠️' }));
+
       setShowEmployeeModal(false);
+      setShowAllocationModal(false);
       setSelectedEmployee(null);
     } catch (error) {
       toast.error('Error saving employee: ' + error.message);
@@ -372,12 +341,24 @@ const PayrollManagement = () => {
           <Badge variant={value === 'salary' ? 'success' : 'info'}>
             {value === 'salary' ? 'Salary' : 'Hourly'}
           </Badge>
-          <div className="text-sm">
-            {value === 'salary' ? 
-              formatCurrency(row.hourly_rate * 40 * 52) + '/yr' : 
-              formatCurrency(row.hourly_rate) + '/hr'
-            }
-          </div>
+          <div className="text-sm">{formatRate(row, formatCurrency)}</div>
+          {row.rate_basis === 'legacy_hourly_equivalent' && (
+            <Badge variant="warning" className="text-xs" title="Salaries under 1,000 are read as an hourly rate x 2,080. Edit the employee and enter the annual salary.">
+              Check salary
+            </Badge>
+          )}
+        </div>
+      )
+    },
+    {
+      key: 'annual_cost',
+      title: 'Annual Cost',
+      render: (value, row) => (
+        <div className="space-y-1" title="Employer cost: gross pay + employer payroll taxes + benefits (income-tax withholding is not an employer cost)">
+          <div className="font-medium">{value === undefined || value === null ? '—' : formatCurrency(value)}</div>
+          {row.annual_gross !== undefined && row.annual_gross !== null && (
+            <div className="text-xs text-muted-foreground">Gross {formatCurrency(row.annual_gross)}</div>
+          )}
         </div>
       )
     },
@@ -395,7 +376,8 @@ const PayrollManagement = () => {
       key: 'next_review_date',
       title: 'Next Review',
       render: (value) => {
-        const reviewDate = new Date(value);
+        const reviewDate = parseLocalDate(value);
+        if (!reviewDate) return 'N/A';
         const today = new Date();
         const daysUntil = Math.ceil((reviewDate - today) / (1000 * 60 * 60 * 24));
         
@@ -425,16 +407,10 @@ const PayrollManagement = () => {
     }
   ];
 
-  // Calculate summary statistics
+  // Summary statistics (from /payroll/reports/summary)
   const activeEmployees = employees.filter(emp => emp.status === 'active');
-  const totalAnnualCost = activeEmployees.reduce((sum, emp) => {
-    const compensation = calculateTotalCompensation(emp, PAY_RUNS_PER_YEAR[config.payFrequency] || 26);
-    return sum + compensation.totalCost;
-  }, 0);
-  const avgHourlyRate = activeEmployees.length > 0 ? 
-    activeEmployees.reduce((sum, emp) => sum + emp.hourly_rate, 0) / activeEmployees.length : 0;
-  
-  const departmentCosts = getDepartmentCosts();
+  const totalAnnualCost = payrollSummary?.total_annual_cost || 0;
+  const avgHourlyRate = payrollSummary?.avg_hourly_rate || 0;
   const departmentCount = Object.keys(departmentCosts).length;
 
   const headerActions = [
@@ -468,11 +444,14 @@ const PayrollManagement = () => {
         <StatsCard
           title="Total Annual Cost"
           value={formatCurrency(totalAnnualCost)}
+          subtitle="Gross + employer taxes + benefits"
+          help="Annual employer cost at current rates, the same rules as the income statement. Income-tax withholding comes out of gross pay and is not added."
           variant="success"
         />
         <StatsCard
           title="Average Hourly Rate"
           value={formatCurrency(avgHourlyRate)}
+          subtitle="Salaries as an hourly equivalent"
           variant="info"
         />
         <StatsCard
@@ -546,14 +525,16 @@ const PayrollManagement = () => {
             forecast={payrollForecast}
             forecastHorizon={forecastHorizon}
             onHorizonChange={setForecastHorizon}
+            runsPerYear={runsPerYear}
+            payFrequency={config.payFrequency}
           />
         </TabsContent>
 
         <TabsContent value="departments" className="space-y-6">
           <DepartmentAnalytics
-            employees={employees}
             departmentCosts={departmentCosts}
-            calculateTotalCompensation={calculateTotalCompensation}
+            runsPerYear={runsPerYear}
+            payFrequency={config.payFrequency}
           />
         </TabsContent>
 
@@ -561,15 +542,19 @@ const PayrollManagement = () => {
           <BusinessUnitAllocation
             employees={employees}
             businessUnits={businessUnits}
-            calculateTotalCompensation={calculateTotalCompensation}
+            businessUnitCosts={businessUnitCosts}
+            onEditAllocations={handleEditAllocations}
           />
         </TabsContent>
 
         <TabsContent value="reports" className="space-y-6">
           <PayrollReports
             employees={employees}
-            calculateTotalCompensation={calculateTotalCompensation}
-            config={config}
+            forecast={payrollForecast}
+            departmentCosts={departmentCosts}
+            businessUnitCosts={businessUnitCosts}
+            runsPerYear={runsPerYear}
+            payFrequency={config.payFrequency}
           />
         </TabsContent>
       </Tabs>
@@ -594,12 +579,15 @@ const PayrollManagement = () => {
         <AllocationModal
           employee={selectedEmployee}
           businessUnits={businessUnits}
-          onSave={(allocations) => {
+          onSave={(updatedEmployee) => {
             if (selectedEmployee) {
-              handleSaveEmployee({ ...selectedEmployee, allocations });
+              handleSaveEmployee({ ...selectedEmployee, allocations: updatedEmployee.allocations });
             }
           }}
-          onCancel={() => setShowAllocationModal(false)}
+          onCancel={() => {
+            setShowAllocationModal(false);
+            setSelectedEmployee(null);
+          }}
         />
       )}
 

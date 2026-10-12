@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Textarea } from '../../ui/textarea';
+import { isDuplicateNameError, scenarioErrorMessage } from './scenarioErrors';
 
 /**
  * Create or edit a scenario's name, description, notes and base flag.
@@ -17,6 +18,8 @@ import { Textarea } from '../../ui/textarea';
 const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
   const [values, setValues] = useState({ name: '', description: '', notes: '', is_base: false });
   const [error, setError] = useState('');
+  // A problem with the name itself (blank, or another scenario has it: HTTP 409), shown under the field.
+  const [nameError, setNameError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -28,6 +31,7 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
         is_base: Boolean(scenario?.is_base),
       });
       setError('');
+      setNameError('');
       setSubmitting(false);
     }
   }, [open, scenario]);
@@ -39,8 +43,10 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
+    setNameError('');
     if (!values.name.trim()) {
-      setError('Name is required');
+      setNameError('Name is required');
       return;
     }
     setSubmitting(true);
@@ -48,7 +54,9 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
       await onSubmit({ ...values, name: values.name.trim() });
       onClose();
     } catch (err) {
-      setError(err?.userMessage || err?.message || 'Failed to save scenario');
+      const message = scenarioErrorMessage(err, 'Failed to save scenario');
+      if (isDuplicateNameError(err)) setNameError(message);
+      else setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -74,9 +82,19 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
                 id="scenario-name"
                 value={values.name}
                 autoFocus
-                onChange={(e) => setValues(v => ({ ...v, name: e.target.value }))}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  setValues(v => ({ ...v, name }));
+                  if (nameError) setNameError('');
+                }}
                 placeholder="e.g. FY27 Plan, Upside +10% price"
+                aria-invalid={nameError ? 'true' : undefined}
+                aria-describedby={nameError ? 'scenario-name-error' : undefined}
+                className={nameError ? 'border-red-500 focus-visible:ring-red-500' : ''}
               />
+              {nameError && (
+                <p id="scenario-name-error" role="alert" className="text-sm text-red-600">{nameError}</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="scenario-description">Description</Label>
@@ -114,7 +132,7 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
                 </span>
               </span>
             </label>
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
           </ModalContent>
           <ModalFooter>
             <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>

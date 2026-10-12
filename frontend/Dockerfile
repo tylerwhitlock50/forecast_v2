@@ -1,13 +1,13 @@
 # Build stage
-FROM node:18-alpine as build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (remove lock file and install fresh to avoid version conflicts)
-RUN rm -f package-lock.json && npm install --production
+# Install exactly what package-lock.json pins so every build is reproducible
+RUN npm ci --no-audit --no-fund
 
 # Copy source code
 COPY . .

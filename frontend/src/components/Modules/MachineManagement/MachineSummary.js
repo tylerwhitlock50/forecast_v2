@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
+import { formatCapacityHours } from './machineHelpers';
 
 const MachineSummary = ({ machines }) => {
   const summaryData = useMemo(() => {
@@ -38,14 +39,16 @@ const MachineSummary = ({ machines }) => {
     const withDescription = machines.filter(m => m.machine_description && (typeof m.machine_description === 'string' ? m.machine_description.trim() : true)).length;
     const withLaborType = machines.filter(m => m.labor_type && (typeof m.labor_type === 'string' ? m.labor_type.trim() : true)).length;
     
-    // Data quality metrics
-    const completeProfiles = machines.filter(m => 
-      m.machine_name && m.machine_rate && m.labor_type && m.available_minutes_per_month
+    // Complete = what costing and capacity need: an hourly rate and a capacity.
+    const completeProfiles = machines.filter(m =>
+      m.machine_rate > 0 && m.available_minutes_per_month > 0
     ).length;
+    const anyTyped = machines.some(m => m.labor_type && String(m.labor_type).trim());
     
     return {
       totalMachines,
       laborTypeBreakdown,
+      anyTyped,
       rateStats: {
         avgRate,
         minRate,
@@ -74,9 +77,9 @@ const MachineSummary = ({ machines }) => {
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5);
 
-  const formatCurrency = (value) => {
-    return `$${value.toFixed(2)}`;
-  };
+  const formatCurrency = (value) => new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
 
   const getLaborTypeColor = (type) => {
     const colors = {
@@ -113,7 +116,7 @@ const MachineSummary = ({ machines }) => {
               <div className="text-3xl">✅</div>
               <div>
                 <p className="text-2xl font-bold">{summaryData.dataQuality.completeProfiles}</p>
-                <p className="text-sm text-muted-foreground">Complete Profiles</p>
+                <p className="text-sm text-muted-foreground">With rate and capacity</p>
               </div>
             </div>
           </CardContent>
@@ -136,15 +139,16 @@ const MachineSummary = ({ machines }) => {
             <div className="flex items-center space-x-4">
               <div className="text-3xl">⏰</div>
               <div>
-                <p className="text-2xl font-bold">{summaryData.capacityStats.totalCapacity.toLocaleString()}</p>
-                <p className="text-sm text-muted-foreground">Total Capacity (min/month)</p>
+                <p className="text-2xl font-bold">{formatCapacityHours(summaryData.capacityStats.totalCapacity) ?? '0'}</p>
+                <p className="text-sm text-muted-foreground">Total capacity (hours / month)</p>
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Labor Type Distribution */}
+      {/* Labor Type Distribution (only when machines have a type) */}
+      {summaryData.anyTyped && (
       <Card>
         <CardHeader>
           <CardTitle>Labor Type Distribution</CardTitle>
@@ -175,6 +179,7 @@ const MachineSummary = ({ machines }) => {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {/* Rate Analysis */}
       <Card>
@@ -212,7 +217,7 @@ const MachineSummary = ({ machines }) => {
                       <div className="space-y-4">
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
-                  <span>Complete Profiles</span>
+                  <span>With rate and capacity</span>
                   <span className="font-medium">{summaryData.dataQuality.completeProfiles} of {summaryData.totalMachines}</span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
@@ -245,19 +250,6 @@ const MachineSummary = ({ machines }) => {
                   <div 
                     className="bg-orange-600 h-2 rounded-full transition-all duration-300"
                     style={{ width: `${(summaryData.completeness.withCapacity / summaryData.totalMachines) * 100}%` }}
-                  ></div>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>With Descriptions</span>
-                  <span className="font-medium">{summaryData.completeness.withDescription} of {summaryData.totalMachines}</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
-                    className="bg-purple-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${(summaryData.completeness.withDescription / summaryData.totalMachines) * 100}%` }}
                   ></div>
                 </div>
               </div>

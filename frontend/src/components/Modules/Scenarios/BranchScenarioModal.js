@@ -6,6 +6,7 @@ import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { Textarea } from '../../ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { isDuplicateNameError, scenarioErrorMessage } from './scenarioErrors';
 
 /**
  * BranchScenarioModal
@@ -112,8 +113,9 @@ const BranchScenarioModal = ({ open, onClose, scenarios = {}, activeScenarioId, 
       );
       onClose();
     } catch (err) {
-      // Surface to form-level error; toast handled by caller if any.
-      setErrors(prev => ({ ...prev, _submit: err?.message || 'Failed to branch scenario' }));
+      // A duplicate name (HTTP 409) goes under the name field; anything else under the form.
+      const message = scenarioErrorMessage(err, 'Failed to branch scenario');
+      setErrors(prev => (isDuplicateNameError(err) ? { ...prev, name: message } : { ...prev, _submit: message }));
     } finally {
       setSubmitting(false);
     }
@@ -164,9 +166,11 @@ const BranchScenarioModal = ({ open, onClose, scenarios = {}, activeScenarioId, 
                     onChange={handleChange}
                     placeholder="e.g., Upside +10% price"
                     className={errors.name ? 'border-red-500' : ''}
+                    aria-invalid={errors.name ? 'true' : undefined}
+                    aria-describedby={errors.name ? 'branch-name-error' : undefined}
                   />
                   {errors.name && (
-                    <p className="text-sm text-red-500">{errors.name}</p>
+                    <p id="branch-name-error" role="alert" className="text-sm text-red-600">{errors.name}</p>
                   )}
                 </div>
 
@@ -256,7 +260,7 @@ const BranchScenarioModal = ({ open, onClose, scenarios = {}, activeScenarioId, 
             </Card>
 
             {errors._submit && (
-              <p className="text-sm text-red-500">{errors._submit}</p>
+              <p role="alert" className="text-sm text-red-600">{errors._submit}</p>
             )}
           </ModalContent>
 

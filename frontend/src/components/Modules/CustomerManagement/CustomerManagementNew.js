@@ -1,10 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { useForecast } from '../../../context/ForecastContext';
+import { useNavigate } from 'react-router-dom';
+import Papa from 'papaparse';
 import { toast } from 'react-hot-toast';
+import { Download, Plus, Upload } from 'lucide-react';
+import { useForecast } from '../../../context/ForecastContext';
 import { useConfirm } from '../../Common/ConfirmDialog';
-import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
@@ -12,366 +15,238 @@ import { DataTable } from '../../ui/data-table';
 import CustomerModal from './CustomerModal';
 import CustomerSummary from './CustomerSummary';
 import CustomerValidation from './CustomerValidation';
-import CustomerImportModal from '../RevenueForecasting/CustomerImportModal';
+import { goToImport } from '../../Common/importLink';
+import { DependencyList, fetchSalesDependencies } from '../RevenueForecasting/salesDependencies';
+
+const EXPORT_COLUMNS = ['customer_id', 'customer_name', 'customer_type', 'region'];
+
+const TABS = [
+  { id: 'table', label: 'Customers' },
+  { id: 'summary', label: 'Summary' },
+  { id: 'validation', label: 'Data checks' },
+];
 
 const CustomerManagement = () => {
-  const { data, actions, loading } = useForecast();
+  const navigate = useNavigate();
+  const { data, actions, loading, scenarios } = useForecast();
   const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterSegment, setFilterSegment] = useState('all');
-  const [sortField] = useState('customer_name');
-  const [sortDirection] = useState('asc');
-  const [selectedCustomers, setSelectedCustomers] = useState([]);
-  const [bulkAction, setBulkAction] = useState('');
+  const [filterType, setFilterType] = useState('all');
 
-  // Get unique customer types for filtering
-  const customerTypes = useMemo(() => {
-    const customers = Array.isArray(data.customers) ? data.customers : [];
-    return [...new Set(customers.map(c => c.customer_type).filter(Boolean))];
-  }, [data.customers]);
+  const customers = useMemo(() => (Array.isArray(data.customers) ? data.customers : []), [data.customers]);
 
-  // Filter and sort customers
+  const customerTypes = useMemo(
+    () => [...new Set(customers.map(c => c.customer_type || 'No type'))].sort(),
+    [customers]
+  );
+
   const filteredCustomers = useMemo(() => {
-    let customers = Array.isArray(data.customers) ? data.customers : [];
-    
-    // Apply search filter
-    if (searchTerm) {
-      customers = customers.filter(customer => 
-        customer.customer_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.customer_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.customer_type?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.region?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-    
-    // Apply customer type filter
-    if (filterSegment !== 'all') {
-      customers = customers.filter(customer => 
-        customer.customer_type === filterSegment
-      );
-    }
-    
-    // Apply sorting
-    customers.sort((a, b) => {
-      const aValue = a[sortField] || '';
-      const bValue = b[sortField] || '';
-      
-      if (sortDirection === 'asc') {
-        return aValue.toString().localeCompare(bValue.toString());
-      } else {
-        return bValue.toString().localeCompare(aValue.toString());
-      }
-    });
-    
-    return customers;
-  }, [data.customers, searchTerm, filterSegment, sortField, sortDirection]);
+    const term = searchTerm.trim().toLowerCase();
+    return customers
+      .filter(c => !term || [c.customer_name, c.customer_id, c.customer_type, c.region]
+        .some(v => String(v || '').toLowerCase().includes(term)))
+      .filter(c => filterType === 'all' || (c.customer_type || 'No type') === filterType)
+      .sort((a, b) => String(a.customer_name || '').localeCompare(String(b.customer_name || '')));
+  }, [customers, searchTerm, filterType]);
 
-  // Handle customer creation/editing
   const handleSaveCustomer = async (customerData) => {
+    // The context shows the success / error toast and reloads the data.
+    if (editingCustomer) await actions.updateCustomer(editingCustomer.customer_id, customerData);
+    else await actions.createCustomer(customerData);
+    setShowCustomerModal(false);
+    setEditingCustomer(null);
+  };
+
+  // Say exactly which sales rows go with the customer before deleting it;
+  // sales are only deleted when the user confirms that.
+  const handleDeleteCustomer = async (customer) => {
+    const name = customer.customer_name || customer.customer_id;
+    let deps;
     try {
-      if (editingCustomer) {
-        await actions.updateCustomer(editingCustomer.customer_id, customerData);
-        toast.success('Customer updated successfully');
-      } else {
-        await actions.createCustomer(customerData);
-        toast.success('Customer created successfully');
-      }
-      
-      setShowCustomerModal(false);
-      setEditingCustomer(null);
-      await actions.fetchAllData();
-    } catch (error) {
-      console.error('Error saving customer:', error);
-      toast.error('Failed to save customer');
-    }
-  };
-
-  // Handle customer deletion
-  const handleDeleteCustomer = async (customerId) => {
-    if (await confirm({
-      title: 'Delete customer?',
-      body: 'This action cannot be undone.',
-      confirmLabel: 'Delete',
-      variant: 'destructive',
-    })) {
-      try {
-        await actions.deleteCustomer('customers', customerId);
-        toast.success('Customer deleted successfully');
-        await actions.fetchAllData();
-      } catch (error) {
-        console.error('Error deleting customer:', error);
-        toast.error('Failed to delete customer');
-      }
-    }
-  };
-
-  // Handle bulk operations
-  const handleBulkOperation = async () => {
-    if (selectedCustomers.length === 0) {
-      toast.error('Please select customers for bulk operation');
+      deps = await fetchSalesDependencies('customer_id', customer.customer_id, scenarios);
+    } catch {
+      toast.error('Could not check where this customer is used. Nothing was deleted.');
       return;
     }
-
-    if (bulkAction === 'delete') {
-      if (await confirm({
-        title: `Delete ${selectedCustomers.length} customers?`,
-        body: 'This action cannot be undone.',
-        confirmLabel: 'Delete',
-        variant: 'destructive',
-      })) {
-        try {
-          for (const customerId of selectedCustomers) {
-            await actions.deleteCustomer('customers', customerId);
-          }
-          toast.success(`${selectedCustomers.length} customers deleted successfully`);
-          setSelectedCustomers([]);
-          await actions.fetchAllData();
-        } catch (error) {
-          console.error('Error in bulk delete:', error);
-          toast.error('Failed to delete some customers');
-        }
-      }
-    } else if (bulkAction === 'export') {
-      const csvData = selectedCustomers.map(customerId => {
-        const customer = data.customers.find(c => c.customer_id === customerId);
-        return customer;
-      }).filter(Boolean);
-
-      if (csvData.length > 0) {
-        const csv = [
-          Object.keys(csvData[0]).join(','),
-          ...csvData.map(row => Object.values(row).join(','))
-        ].join('\n');
-
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `customers-export-${new Date().toISOString().split('T')[0]}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-        toast.success(`Exported ${csvData.length} customers`);
-      }
+    const ok = await confirm({
+      title: `Delete ${name}?`,
+      body: <DependencyList name={name} deps={deps} noun="customer" />,
+      confirmLabel: deps.rows ? `Delete customer and ${deps.rows.toLocaleString('en-US')} sales rows` : 'Delete customer',
+      variant: 'destructive',
+    });
+    if (!ok) return;
+    try {
+      await actions.deleteCustomer('customers', customer.customer_id, { cascade: deps.rows > 0 });
+    } catch {
+      // deleteCustomer already showed the server's reason.
     }
   };
 
-  // Define columns for DataTable
+  const handleExport = () => {
+    if (filteredCustomers.length === 0) {
+      toast.error('No customers to export');
+      return;
+    }
+    const rows = filteredCustomers.map(c => ({
+      customer_id: c.customer_id,
+      customer_name: c.customer_name || '',
+      customer_type: c.customer_type || '',
+      region: c.region || '',
+    }));
+    const csv = Papa.unparse(rows, { columns: EXPORT_COLUMNS });
+    const url = URL.createObjectURL(new Blob([`﻿${csv}\n`], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `customers_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast.success(`Exported ${rows.length} customers`);
+  };
+
   const customerColumns = [
     {
       key: 'customer_name',
-      title: 'Customer Name',
+      title: 'Customer',
       render: (value, row) => (
-        <div className="space-y-1">
-          <div className="font-semibold">{value}</div>
-          <div className="text-sm text-muted-foreground">ID: {row.customer_id}</div>
+        <div className="space-y-0.5">
+          <div className="font-semibold text-gray-900">{value || row.customer_id}</div>
+          <div className="font-mono text-xs text-gray-500">{row.customer_id}</div>
         </div>
       )
     },
     {
       key: 'customer_type',
-      title: 'Customer Type',
-      render: (value) => {
-        const variants = {
-          'D2C-WEB': 'default',
-          'ONLINE-DEALER': 'secondary',
-          'DEALER': 'outline',
-          'D2C-AMAZON': 'default',
-          'Enterprise': 'success',
-          'SMB': 'warning',
-          'Retail': 'info',
-          'Manufacturing': 'secondary'
-        };
-        return <Badge variant={variants[value] || 'default'}>{value || 'N/A'}</Badge>;
-      }
+      title: 'Customer type',
+      render: (value) => (value
+        ? <Badge variant="outline">{value}</Badge>
+        : <span className="text-xs font-medium text-amber-700">No type</span>)
     },
     {
       key: 'region',
       title: 'Region',
-      render: (value) => value || 'N/A'
+      render: (value) => <span className="text-sm text-gray-700">{value || ''}</span>
     }
   ];
 
-  if (loading) {
+  if (loading && customers.length === 0) {
     return (
       <div className="container mx-auto px-6 py-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="ml-4 text-muted-foreground">Loading customer data...</p>
+        <div className="flex h-64 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-orange-600" />
+          <p className="ml-4 text-gray-500">Loading customers…</p>
         </div>
       </div>
     );
   }
 
-  const headerActions = [
-    {
-      label: 'Add Customer',
-      onClick: () => {
-        setEditingCustomer(null);
-        setShowCustomerModal(true);
-      },
-      variant: 'default',
-      className: 'bg-orange-600 hover:bg-orange-700'
-    },
-    {
-      label: 'Import Customers',
-      onClick: () => setShowCustomerImportModal(true),
-      variant: 'outline'
-    }
-  ];
-
-  if (selectedCustomers.length > 0) {
-    headerActions.push({
-      label: 'Export Selected',
-      onClick: () => {
-        setBulkAction('export');
-        handleBulkOperation();
-      },
-      variant: 'outline'
-    });
-    headerActions.push({
-      label: 'Delete Selected',
-      onClick: () => {
-        setBulkAction('delete');
-        handleBulkOperation();
-      },
-      variant: 'destructive'
-    });
-  }
-
   return (
     <div className="container mx-auto px-6 py-8">
-      <PageHeader
-        title="Customer Management"
-        description="Manage your customer database, segments, and contact information"
-        actions={headerActions}
-      />
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 max-w-2xl lg:flex-1">
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Customers</h1>
+          <p className="mt-1 text-gray-600">Who you sell to. The customer type (Dealer, Distributor, Direct…) picks the price list and the discounts.</p>
+        </div>
+        <div className="flex flex-shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">
+          <Button variant="outline" onClick={() => goToImport(navigate, 'customers')} title="Import data, step 1: Customers">
+            <Upload className="mr-1.5 h-4 w-4" />
+            Import customers
+          </Button>
+          <Button variant="outline" onClick={handleExport} disabled={filteredCustomers.length === 0}>
+            <Download className="mr-1.5 h-4 w-4" />
+            Export CSV
+          </Button>
+          <Button
+            onClick={() => { setEditingCustomer(null); setShowCustomerModal(true); }}
+            className="bg-orange-600 text-white hover:bg-orange-700"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Add customer
+          </Button>
+        </div>
+      </div>
 
-      {/* Search and Filter Controls */}
-      <div className="flex flex-wrap gap-4 mb-6">
+      <div className="mb-5 flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
-          <Label>Search:</Label>
+          <Label htmlFor="customer-search">Search</Label>
           <Input
+            id="customer-search"
             type="text"
-            placeholder="Search customers..."
+            placeholder="Name, ID, type, region…"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-64"
           />
         </div>
-        
         <div className="flex items-center gap-2">
-          <Label>Customer Type:</Label>
-          <Select value={filterSegment} onChange={(e) => setFilterSegment(e.target.value)}>
-            <SelectOption value="all">All Types</SelectOption>
-            {customerTypes.map(type => (
-              <SelectOption key={type} value={type}>{type}</SelectOption>
-            ))}
+          <Label htmlFor="customer-type-filter">Customer type</Label>
+          <Select id="customer-type-filter" value={filterType} onChange={(e) => setFilterType(e.target.value)} className="w-44">
+            <SelectOption value="all">All types</SelectOption>
+            {customerTypes.map(type => <SelectOption key={type} value={type}>{type}</SelectOption>)}
           </Select>
         </div>
-
-        {selectedCustomers.length > 0 && (
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="px-3 py-1">
-              {selectedCustomers.length} selected
-            </Badge>
-          </div>
-        )}
       </div>
 
-      {/* Custom Tab Navigation */}
-      <div className="space-y-6">
-        {/* Tab Buttons */}
-        <div className="grid w-full grid-cols-3 bg-gray-100 p-1 rounded-lg">
+      <div className="mb-5 inline-flex rounded-lg bg-gray-100 p-1" role="tablist" aria-label="Customer views">
+        {TABS.map(tab => (
           <button
-            onClick={() => setActiveTab('table')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'table'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
           >
-            Customer Table
+            {tab.label}
           </button>
-          <button
-            onClick={() => setActiveTab('summary')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'summary'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Summary
-          </button>
-          <button
-            onClick={() => setActiveTab('validation')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'validation'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Data Validation
-          </button>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'table' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>All Customers ({filteredCustomers.length})</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  data={filteredCustomers}
-                  columns={customerColumns}
-                  onEdit={(customer) => {
-                    setEditingCustomer(customer);
-                    setShowCustomerModal(true);
-                  }}
-                  onDelete={(customer) => handleDeleteCustomer(customer.customer_id)}
-                  emptyMessage="No customers found. Click 'Add Customer' to get started."
-                />
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {activeTab === 'summary' && (
-          <div className="space-y-6">
-            <CustomerSummary customers={data.customers || []} />
-          </div>
-        )}
-
-        {activeTab === 'validation' && (
-          <div className="space-y-6">
-            <CustomerValidation customers={data.customers || []} />
-          </div>
-        )}
+        ))}
       </div>
+
+      {activeTab === 'table' && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">
+              {filteredCustomers.length === customers.length ? `${customers.length} customers` : `${filteredCustomers.length} of ${customers.length} customers`}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {customers.length === 0 ? (
+              <div className="py-12 text-center">
+                <h3 className="mb-2 text-lg font-semibold text-gray-900">No customers yet</h3>
+                <p className="mb-4 text-sm text-gray-600">Import your customer list with each customer's type, or add customers one at a time.</p>
+                <div className="flex justify-center gap-2">
+                  <Button variant="outline" onClick={() => goToImport(navigate, 'customers')}>Import customers</Button>
+                  <Button onClick={() => { setEditingCustomer(null); setShowCustomerModal(true); }} className="bg-orange-600 text-white hover:bg-orange-700">Add customer</Button>
+                </div>
+              </div>
+            ) : (
+              <DataTable
+                data={filteredCustomers}
+                columns={customerColumns}
+                rowKey="customer_id"
+                onEdit={(customer) => { setEditingCustomer(customer); setShowCustomerModal(true); }}
+                onDelete={handleDeleteCustomer}
+                emptyMessage="No customers match the search."
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === 'summary' && <CustomerSummary customers={customers} />}
+
+      {activeTab === 'validation' && <CustomerValidation customers={customers} />}
 
       <CustomerModal
         isOpen={showCustomerModal}
-        onClose={() => {
-          setShowCustomerModal(false);
-          setEditingCustomer(null);
-        }}
+        onClose={() => { setShowCustomerModal(false); setEditingCustomer(null); }}
         onSave={handleSaveCustomer}
         customer={editingCustomer}
-        existingCustomers={data.customers || []}
-      />
-
-      <CustomerImportModal
-        isOpen={showCustomerImportModal}
-        onClose={() => setShowCustomerImportModal(false)}
-        onComplete={async () => {
-          await actions.fetchAllData();
-          setShowCustomerImportModal(false);
-        }}
+        existingCustomers={customers}
       />
     </div>
   );

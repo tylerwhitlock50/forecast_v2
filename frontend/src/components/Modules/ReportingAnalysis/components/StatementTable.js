@@ -5,7 +5,12 @@ import { formatAccounting, formatPct, formatPeriod } from '../utils/formatters';
 /**
  * Reusable financial statement table.
  *
- * rows:    [{ key, label, kind: 'header'|'line'|'subtotal'|'total'|'pct', indent?, negate?, format?: 'currency'|'number'|'pct' }]
+ * rows:    [{ key, label, kind: 'header'|'line'|'subtotal'|'total'|'pct', indent?, negate?, deduction?,
+ *            format?: 'currency'|'number'|'pct', decimals?, help? }]
+ *          negate:    show the value with the opposite sign (red when that is negative).
+ *          deduction: an amount taken off the line above (sales deductions); shown in
+ *                     parentheses in gray, never red, because it is expected, not a loss.
+ *          help:      tooltip on the row label explaining the line.
  * columns: [{ key, label?, values: { [rowKey]: number }, emphasis?: bool }]
  *          label defaults to formatPeriod(key) so plain 'YYYY-MM' keys render as "Jan 2026".
  *
@@ -27,12 +32,12 @@ export const formatCell = (value, row) => {
   const format = row.format || (row.kind === 'pct' ? 'pct' : 'currency');
   if (format === 'pct') return formatPct(value);
   let v = value;
-  if (row.negate && typeof v === 'number') v = -v;
-  return formatAccounting(v, { decimals: 0 });
+  if ((row.negate || row.deduction) && typeof v === 'number') v = -v;
+  return formatAccounting(v, { decimals: row.decimals || 0 });
 };
 
 const isNegative = (value, row) => {
-  if (typeof value !== 'number') return false;
+  if (typeof value !== 'number' || row.deduction) return false;
   const v = row.negate ? -value : value;
   return v < 0 && Number(Math.abs(v).toFixed(2)) !== 0;
 };
@@ -85,8 +90,11 @@ const StatementTable = ({ rows, columns, className, firstColumnLabel = '', testI
                     row.kind === 'total' && 'font-bold bg-gray-50',
                     INDENT_CLASS[row.indent || 0] || ''
                   )}
+                  title={row.help}
                 >
-                  {row.label}
+                  {row.help ? (
+                    <span className="cursor-help border-b border-dotted border-gray-300">{row.label}</span>
+                  ) : row.label}
                 </th>
                 {columns.map(col => {
                   const value = col.values ? col.values[row.key] : undefined;
@@ -97,6 +105,7 @@ const StatementTable = ({ rows, columns, className, firstColumnLabel = '', testI
                       className={cn(
                         'px-2 py-1 text-right whitespace-nowrap',
                         negative && 'text-red-600',
+                        row.deduction && 'text-gray-600',
                         col.emphasis && 'bg-gray-50 border-l border-gray-200',
                         row.kind === 'total' && col.emphasis && 'bg-gray-100'
                       )}

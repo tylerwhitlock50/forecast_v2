@@ -11,10 +11,20 @@ services:
     environment:
       # Set to 'true' to force reload CSV data over existing database
       - FORCE_DB_RELOAD=false
-      # MCP endpoint (/mcp) accepts Host localhost / 127.0.0.1 only; add LAN
-      # addresses here to connect Claude Code / Codex from another machine,
-      # e.g. MCP_ALLOWED_HOSTS=192.168.1.20:*
+      # MCP endpoint (/mcp, also proxied by the frontend at :3000/mcp)
+      # accepts Host localhost / 127.0.0.1 / [::1] (any port) only, as
+      # DNS-rebinding protection. Add the host:port the client uses, comma-
+      # separated, when it connects another way, e.g. in a .env file:
+      #   Claude Code on another machine:   MCP_ALLOWED_HOSTS=192.168.1.20:*
+      #   Claude Code in a dev container:   MCP_ALLOWED_HOSTS=host.docker.internal:*
+      # A refused Host gets HTTP 421; a refused browser Origin gets 403
+      # (MCP_ALLOWED_ORIGINS, e.g. http://192.168.1.20:*).
       - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-}
+      # Largest MCP tool result in characters before the tool asks for a
+      # narrower request (Claude Code rejects results over ~25k tokens; 60000 chars
+      # of compact JSON is about 20k tokens); 0 = off.
+      - MCP_MAX_RESPONSE_CHARS=${MCP_MAX_RESPONSE_CHARS:-60000}
     networks:
       - forecast-network
 

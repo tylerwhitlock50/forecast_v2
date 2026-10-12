@@ -1,0 +1,16 @@
+Customer Type,Customer,Item,Price,Discount,Effective,Notes
+Dealer,,RF-100,"$1,110.00",,2027-01,Dealer price sheet 2027
+Dealer,,RF-200,"$1,795.00",,2027-01,Dealer price sheet 2027
+Dealer,,RF-300,"$3,495.00",,2027-01,Dealer price sheet 2027
+Dealer,,PS-100,$525.00,,2027-01,Dealer price sheet 2027
+Dealer,,PS-200,$479.00,,2027-01,Dealer price sheet 2027
+Dealer,,AC-100,$105.00,,2027-01,Dealer price sheet 2027
+Dealer,,AC-200,$69.00,,2027-01,Dealer price sheet 2027
+Dealer,,AC-300,$155.00,,2027-01,Dealer price sheet 2027
+Distributor,,,,22%,2027-01,Distributor: 22% off list
+Government,,RF-100,"$1,050.00",,2027-01,GSA contract
+Government,,PS-100,$495.00,,2027-01,GSA contract
+Government,,PS-200,$455.00,,2027-01,GSA contract
+Export,,,,18%,2027-01,Export: 18% off list
+,C1001,RF-100,"$1,080.00",,2027-01,Big Sky volume deal
+,C2001,,,25%,2027-01,Gulf Coast stocking program 25% off list

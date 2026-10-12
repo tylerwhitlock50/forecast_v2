@@ -20,6 +20,8 @@ from api.loan_routes import router as loan_router
 from api.reporting_routes import router as reporting_router
 from api.source_data_routes import router as source_data_router
 from api.database_management_routes import router as database_management_router
+from api.pricing_routes import router as pricing_router
+from api.import_routes import router as import_router
 
 # MCP server (AI assistants manage the model through the same API)
 from mcp_server import mcp_lifespan, mount_mcp
@@ -67,6 +69,8 @@ app.include_router(loan_router)
 app.include_router(reporting_router)
 app.include_router(source_data_router)
 app.include_router(database_management_router)
+app.include_router(pricing_router)
+app.include_router(import_router)
 
 # MCP endpoint for Claude Code / Codex: http://localhost:8000/mcp
 mount_mcp(app)

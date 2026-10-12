@@ -30,11 +30,6 @@ const CustomerSummary = ({ customers }) => {
       c.customer_id && c.customer_name && c.customer_type && c.region
     ).length;
     
-    // Customer ID format compliance
-    const validIdFormat = customers.filter(c => 
-      c.customer_id && c.customer_id.match(/^CUST-\d{3}$/)
-    ).length;
-    
     return {
       totalCustomers,
       typeBreakdown,
@@ -47,20 +42,18 @@ const CustomerSummary = ({ customers }) => {
       },
       dataQuality: {
         completeProfiles,
-        incompleteProfiles: totalCustomers - completeProfiles,
-        validIdFormat,
-        invalidIdFormat: totalCustomers - validIdFormat
+        incompleteProfiles: totalCustomers - completeProfiles
       }
     };
   }, [customers]);
 
+  // Every type (types drive pricing), the largest regions.
   const topCustomerTypes = Object.entries(summaryData.typeBreakdown)
-    .sort(([,a], [,b]) => b - a)
-    .slice(0, 5);
+    .sort(([,a], [,b]) => b - a);
 
   const topRegions = Object.entries(summaryData.regionBreakdown)
     .sort(([,a], [,b]) => b - a)
-    .slice(0, 5);
+    .slice(0, 8);
 
   const summaryCards = [
     {
@@ -76,9 +69,9 @@ const CustomerSummary = ({ customers }) => {
       color: "text-green-600"
     },
     {
-      title: "Valid ID Format",
-      value: summaryData.dataQuality.validIdFormat,
-      icon: "🆔",
+      title: "Customer Types",
+      value: Object.keys(summaryData.typeBreakdown).filter(t => t !== 'Unspecified').length,
+      icon: "🏷️",
       color: "text-purple-600"
     },
     {
@@ -88,6 +81,17 @@ const CustomerSummary = ({ customers }) => {
       color: "text-orange-600"
     }
   ];
+
+  // Customer ids are free text (C1001, ERP account numbers, CUST-001 ...):
+  // only missing data that affects pricing is worth a recommendation.
+  const untyped = summaryData.totalCustomers - summaryData.dataMetrics.withCustomerType;
+  const recommendations = [];
+  if (untyped > 0) {
+    recommendations.push({
+      key: 'type',
+      text: `${untyped} ${untyped === 1 ? 'customer has' : 'customers have'} no customer type, so customer-type prices and discounts do not apply to ${untyped === 1 ? 'it' : 'them'}.`,
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -250,78 +254,28 @@ const CustomerSummary = ({ customers }) => {
                 ></div>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-sm">
-                <span className="font-medium">Valid ID Format</span>
-                <span className="text-muted-foreground">{summaryData.dataQuality.validIdFormat}</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div 
-                  className="h-2 rounded-full bg-teal-500 transition-all duration-300"
-                  style={{ 
-                    width: `${(summaryData.dataQuality.validIdFormat / summaryData.totalCustomers) * 100}%`
-                  }}
-                ></div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-sm">
-                <span className="font-medium">Invalid ID Format</span>
-                <span className="text-muted-foreground">{summaryData.dataQuality.invalidIdFormat}</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div 
-                  className="h-2 rounded-full bg-red-500 transition-all duration-300"
-                  style={{ 
-                    width: `${(summaryData.dataQuality.invalidIdFormat / summaryData.totalCustomers) * 100}%`
-                  }}
-                ></div>
-              </div>
-            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Recommendations */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            {summaryData.dataQuality.incompleteProfiles > 0 && (
-              <div className="flex items-start gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <span className="text-xl">⚠️</span>
-                <span className="text-sm text-yellow-800">
-                  {summaryData.dataQuality.incompleteProfiles} customers have incomplete profiles. 
-                  Consider reaching out to gather missing information.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.dataQuality.invalidIdFormat > 0 && (
-              <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <span className="text-xl">⚠️</span>
-                <span className="text-sm text-red-800">
-                  {summaryData.dataQuality.invalidIdFormat} customers have invalid ID format. 
-                  Please ensure all customer IDs follow the CUST-XXX format.
-                </span>
-              </div>
-            )}
-            
-            {Object.keys(summaryData.typeBreakdown).length < 3 && (
-              <div className="flex items-start gap-3 p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                <span className="text-xl">🏷️</span>
-                <span className="text-sm text-purple-800">
-                  Customer types are not well diversified. Consider adding more customer type categories.
-                </span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Recommendations (only when there is something to do) */}
+      {recommendations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {recommendations.map((r) => (
+                <div key={r.key} className="flex items-start gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <span className="text-xl">⚠️</span>
+                  <span className="text-sm text-yellow-800">{r.text}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };
@@ -329,15 +283,12 @@ const CustomerSummary = ({ customers }) => {
 // Helper functions for colors
 const getTypeColor = (type) => {
   const colors = {
-    'Enterprise': '#007bff',
-    'SMB': '#28a745',
-    'Startup': '#ffc107',
-    'Government': '#6f42c1',
-    'Education': '#17a2b8',
-    'Healthcare': '#e83e8c',
-    'Retail': '#fd7e14',
-    'Manufacturing': '#6c757d',
-    'Other': '#6c757d',
+    'Dealer': '#ea580c',
+    'Distributor': '#2563eb',
+    'Direct': '#16a34a',
+    'OEM': '#7c3aed',
+    'Government': '#0891b2',
+    'Export': '#db2777',
     'Unspecified': '#6c757d'
   };
   return colors[type] || '#6c757d';

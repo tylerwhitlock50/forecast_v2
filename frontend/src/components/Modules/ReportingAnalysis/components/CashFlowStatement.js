@@ -10,6 +10,7 @@ export const CASH_FLOW_ROWS = [
   { key: 'change_in_accounts_receivable', label: 'Change in accounts receivable', kind: 'line', indent: 1 },
   { key: 'change_in_inventory', label: 'Change in inventory', kind: 'line', indent: 1 },
   { key: 'change_in_accounts_payable', label: 'Change in accounts payable', kind: 'line', indent: 1 },
+  { key: 'change_in_excise_tax_payable', label: 'Change in excise tax payable', kind: 'line', indent: 1, help: 'Excise tax collected from customers but not yet paid to the government is a source of cash until it is paid.' },
   { key: 'operating_cash_flow', label: 'Cash from operations', kind: 'subtotal' },
   { key: 'investing_header', label: 'Investing activities', kind: 'header' },
   { key: 'capex', label: 'Capital expenditures', kind: 'line', indent: 1 },

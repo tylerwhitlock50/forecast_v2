@@ -1,47 +1,67 @@
 #!/usr/bin/env python3
 """
-Local development runner for the Forecast API
-This script sets up the correct Python path and runs the application locally.
+Local development runner for the Forecast API.
+
+    python scripts/run_local.py                       # http://localhost:8000, auto-reload
+    python scripts/run_local.py --port 8001 --no-reload
+
+Runs uvicorn on app/main.py (with app/ on the import path, as the backend
+expects) from the repository root. Unless DATABASE_PATH or DATA_DIR is set,
+the database is <repo>/data/forecast.db - the same file Docker mounts at
+/data/forecast.db and `python main.py` uses - whatever directory you start
+from.
 """
 
-import sys
+import argparse
 import os
 import subprocess
+import sys
 
-def main():
-    """Run the application locally"""
-    
-    # Add the app directory to Python path
-    app_dir = os.path.join(os.path.dirname(__file__), 'app')
-    sys.path.insert(0, app_dir)
-    
-    print("🚀 Starting Forecast API locally...")
-    print(f"📁 App directory: {app_dir}")
-    print(f"🐍 Python path: {sys.path[0]}")
-    print()
-    
-    # Change to app directory
-    os.chdir(app_dir)
-    
-    # Run uvicorn
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+APP_DIR = os.path.join(REPO_ROOT, "app")
+
+
+def build_command(host: str, port: int, reload: bool) -> list:
     cmd = [
-        sys.executable, "-m", "uvicorn",
-        "main:app",
-        "--host", "0.0.0.0",
-        "--port", "8000",
-        "--reload"
+        sys.executable, "-m", "uvicorn", "main:app",
+        "--app-dir", APP_DIR,
+        "--host", host,
+        "--port", str(port),
     ]
-    
-    print(f"🔧 Running: {' '.join(cmd)}")
+    if reload:
+        # Watch the backend only (not frontend/node_modules).
+        cmd += ["--reload", "--reload-dir", APP_DIR]
+    return cmd
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Run the Forecast API locally")
+    parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
+    parser.add_argument("--no-reload", action="store_true", help="do not restart on code changes")
+    args = parser.parse_args(argv)
+
+    if not os.path.isfile(os.path.join(APP_DIR, "main.py")):
+        print(f"Cannot find the backend at {APP_DIR}/main.py", file=sys.stderr)
+        return 1
+
+    env = dict(os.environ)
+    if not env.get("DATABASE_PATH") and not env.get("DATA_DIR"):
+        env["DATABASE_PATH"] = os.path.join(REPO_ROOT, "data", "forecast.db")
+
+    cmd = build_command(args.host, args.port, not args.no_reload)
+    print("Starting Forecast API locally")
+    print(f"  app directory: {APP_DIR}")
+    print(f"  database:      {env.get('DATABASE_PATH') or os.path.join(env['DATA_DIR'], 'forecast.db')}")
+    print(f"  running:       {' '.join(cmd)}")
     print()
-    
+
     try:
-        subprocess.run(cmd, check=True)
+        return subprocess.run(cmd, cwd=REPO_ROOT, env=env).returncode
     except KeyboardInterrupt:
-        print("\n👋 Shutting down...")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error running application: {e}")
-        sys.exit(1)
+        print("\nShutting down...")
+        return 0
+
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main())

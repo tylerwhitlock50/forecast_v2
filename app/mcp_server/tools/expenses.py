@@ -51,13 +51,23 @@ async def list_expenses(
     is_active: Optional[bool] = None,
     department: Optional[str] = None,
     vendor: Optional[str] = None,
+    limit: Annotated[int, Field(description="Expenses per page", ge=1, le=2000)] = 50,
+    offset: Annotated[int, Field(ge=0)] = 0,
 ) -> Dict[str, Any]:
     """List operating expenses with category, frequency, dates, next payment
-    and annual cost."""
-    return await call("GET", "/expenses/", params={
+    and annual cost. Paged: total_count covers every matching expense; for
+    totals by category use forecast_expense_summary."""
+    body = await call("GET", "/expenses/", params={
         "forecast_id": forecast_id, "category_id": category_id, "frequency": frequency,
         "is_active": is_active, "department": department, "vendor": vendor,
     })
+    expenses = body.get("expenses")
+    if isinstance(expenses, list):
+        body["expenses"] = expenses[offset:offset + limit]
+        body["total_count"] = len(expenses)
+        more = offset + len(body["expenses"]) < len(expenses)
+        body["next_offset"] = offset + len(body["expenses"]) if more else None
+    return body
 
 
 @mcp.tool(name="forecast_create_expense", annotations=WRITE)

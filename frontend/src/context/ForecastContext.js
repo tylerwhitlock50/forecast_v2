@@ -1,25 +1,12 @@
 import React, { createContext, useContext, useReducer, useEffect, useRef } from 'react';
-import api from '../lib/apiClient';
+import api, { showErrorToast, showSuccessToast } from '../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { debounce } from 'lodash';
 import { normalizePeriod } from '../utils/periodNormalizer';
 
-// The UI uses `bom`/`router` for historical reasons; the `units` table uses
-// `bom_id`/`router_id` plus `*_version`. Translate on write.
-const mapProductForBackend = (productData) => {
-  const payload = { ...productData };
-  if ('bom' in payload) {
-    payload.bom_id = payload.bom || null;
-    delete payload.bom;
-  }
-  if ('router' in payload) {
-    payload.router_id = payload.router || null;
-    delete payload.router;
-  }
-  if (payload.bom_id && !payload.bom_version) payload.bom_version = '1.0';
-  if (payload.router_id && !payload.router_version) payload.router_version = '1.0';
-  return payload;
-};
+// `bom`/`router` -> `bom_id`/`router_id`; versions default to 1.0 only on create
+// (see ProductManagement/productOptions.js).
+import { mapProductForBackend } from '../components/Modules/ProductManagement/productOptions';
 
 // Shape the enriched rows from GET /forecast/scenarios into the map the UI
 // keys by forecast_id. Counts / window / is_base come straight from the API.
@@ -323,11 +310,11 @@ export const ForecastProvider = ({ children }) => {
             forecast_id: sale.forecast_id || activeScenario
           }));
           // eslint-disable-next-line no-await-in-loop
-          await api.post('/forecast/bulk_update', { forecasts, operation }, { suppressSuccessToast: true });
+          await api.post('/forecast/bulk_update', { forecasts, operation }, { suppressSuccessToast: true, suppressErrorToast: true });
         }
       } catch (error) {
         console.error('Error saving forecast updates:', error);
-        toast.error('Failed to save forecast changes');
+        showErrorToast(error, 'Could not save forecast changes');
         // Rollback on error
         if (previousSales) {
           dispatchRef({ 
@@ -736,11 +723,13 @@ export const ForecastProvider = ({ children }) => {
             forecast_id: sale.forecast_id || state.activeScenario
           }));
           
-          await api.post('/forecast/bulk_update', { 
+          // Awaited end to end: the caller (e.g. the forecast-line modal)
+          // shows the error itself and sees the saved rows when this returns.
+          await api.post('/forecast/bulk_update', {
             forecasts,
-            operation 
-          }, { suppressSuccessToast: true });
-          
+            operation
+          }, { suppressSuccessToast: true, suppressErrorToast: true });
+
           // Only fetch sales data, not all data
           const salesRes = await api.get(`/data/sales${state.activeScenario ? `?forecast_id=${state.activeScenario}` : ''}`, { suppressErrorToast: true });
           const sales = salesRes?.data || [];
@@ -748,11 +737,13 @@ export const ForecastProvider = ({ children }) => {
             ...sale,
             period: sale.period ? normalizePeriod(sale.period) : sale.period
           }));
-          
+
           dispatch({
             type: actionTypes.UPDATE_DATA,
             payload: { type: 'sales_forecast', data: normalizedSales }
           });
+          // The scenario's sales window and counts move with its sales.
+          await actions.fetchScenarios();
         }
       } catch (error) {
         console.error('Error bulk updating forecast:', error);
@@ -896,72 +887,69 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Customer Management Functions
-    createCustomer: async (customerData) => {
+    createCustomer: async (customerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
+        const record = { ...customerData };
+
         // Generate a unique customer ID if not provided
-        if (!customerData.customer_id) {
+        if (!record.customer_id) {
           const customers = Array.isArray(state.data.customers) ? state.data.customers : [];
           const maxId = Math.max(...customers.map(c => {
             const id = c.customer_id?.replace('CUST-', '') || '0';
-            return parseInt(id) || 0;
+            return parseInt(id, 10) || 0;
           }), 0);
-          customerData.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
+          record.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
         }
 
-        await api.post('/forecast/create', { 
-          table: 'customers',
-          data: customerData 
-        });
-        
-        // API client already handles response format
-        toast.success('Customer created successfully');
+        // One toast per action: this one, not the API client's as well.
+        await api.post('/forecast/create', { table: 'customers', data: record }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Customer ${record.customer_name || record.customer_id} added`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating customer:', error);
-        toast.error('Failed to create customer');
+        console.error('Could not create customer:', error);
+        if (!silent) showErrorToast(error, 'Could not create customer');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateCustomer: async (customerId, customerData) => {
+    updateCustomer: async (customerId, customerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'customers',
-          id: customerId,
-          updates: customerData
-        });
-        
-        // API client already handles response format
-        toast.success('Customer updated successfully');
+        await api.post('/forecast/update', { table: 'customers', id: customerId, updates: customerData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Customer ${customerData?.customer_name || customerId} saved`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating customer:', error);
-        toast.error('Failed to update customer');
+        console.error('Could not update customer:', error);
+        if (!silent) showErrorToast(error, 'Could not update customer');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteCustomer: async (tableName, customerId) => {
+    // Sales rows are deleted with the customer only when the caller passes
+    // { cascade: true } after the user confirmed it (in every scenario: a
+    // customer cannot be deleted while any scenario still sells to it).
+    deleteCustomer: async (tableName, customerId, { cascade = false } = {}) => {
       try {
         actions.setLoading(true);
-        // Cascade delete related sales for the active scenario when removing a customer
-        const params = { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) };
-        await api.delete(`/forecast/delete/${tableName}/${customerId}`, { params });
-        
-        // API client already handles response format
-        toast.success('Customer deleted successfully');
+        const params = cascade ? { cascade: true } : {};
+        const res = await api.delete(`/forecast/delete/${tableName}/${encodeURIComponent(customerId)}`, {
+          params, suppressSuccessToast: true, suppressErrorToast: true,
+        });
+        const deletedSales = res?.data?.deleted_sales || 0;
+        toast.success(deletedSales
+          ? `Customer deleted with ${deletedSales.toLocaleString('en-US')} sales row${deletedSales === 1 ? '' : 's'}`
+          : 'Customer deleted');
         await actions.fetchAllData();
+        return res?.data;
       } catch (error) {
         console.error('Error deleting customer:', error);
-        toast.error('Failed to delete customer');
+        const detail = error?.response?.data?.detail;
+        toast.error(typeof detail === 'string' ? detail : 'Failed to delete customer');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -969,61 +957,45 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Machine Management Functions
-    createMachine: async (machineData) => {
+    createMachine: async (machineData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/create', { 
-          table: 'machines',
-          data: machineData 
-        });
-        
-        // API client already handles response format
-        toast.success('Machine created successfully');
+        await api.post('/forecast/create', { table: 'machines', data: machineData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Machine created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating machine:', error);
-        toast.error('Failed to create machine');
+        console.error('Could not create machine:', error);
+        if (!silent) showErrorToast(error, 'Could not create machine');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateMachine: async (machineId, machineData) => {
+    updateMachine: async (machineId, machineData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'machines',
-          id: machineId,
-          updates: machineData
-        });
-        
-        // API client already handles response format
-        toast.success('Machine updated successfully');
+        await api.post('/forecast/update', { table: 'machines', id: machineId, updates: machineData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Machine updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating machine:', error);
-        toast.error('Failed to update machine');
+        console.error('Could not update machine:', error);
+        if (!silent) showErrorToast(error, 'Could not update machine');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteMachine: async (machineId) => {
+    deleteMachine: async (machineId, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/machines/${machineId}`);
-        
-        // API client already handles response format
-        toast.success('Machine deleted successfully');
+        await api.delete(`/forecast/delete/machines/${encodeURIComponent(machineId)}`, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Machine ${machineId} deleted`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error deleting machine:', error);
-        toast.error('Failed to delete machine');
+        console.error('Could not delete machine:', error);
+        if (!silent) showErrorToast(error, 'Could not delete machine');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1034,57 +1006,52 @@ export const ForecastProvider = ({ children }) => {
     createRouter: async (routerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-
-        await api.post('/forecast/create', {
-          table: 'router_definitions',
-          data: routerData
-        });
-
-        if (!silent) toast.success('Router created successfully');
+        await api.post('/forecast/create', { table: 'router_definitions', data: routerData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Routing created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating router:', error);
-        if (!silent) toast.error('Failed to create router');
+        console.error('Could not create routing:', error);
+        if (!silent) showErrorToast(error, 'Could not create routing');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateRouter: async (routerId, routerData) => {
+    updateRouter: async (routerId, routerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'router_definitions',
-          id: routerId,
-          updates: routerData
-        });
-        
-        // API client already handles response format
-        toast.success('Router updated successfully');
+        await api.post('/forecast/update', { table: 'router_definitions', id: routerId, updates: routerData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Routing updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating router:', error);
-        toast.error('Failed to update router');
+        console.error('Could not update routing:', error);
+        if (!silent) showErrorToast(error, 'Could not update routing');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteRouter: async (routerId) => {
+    deleteRouter: async (routerId, { cascade = false, silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/router_definitions/${routerId}`);
-        
-        // API client already handles response format
-        toast.success('Router deleted successfully');
+        const response = await api.delete(
+          `/forecast/delete/router_definitions/${encodeURIComponent(routerId)}${cascade ? '?cascade=true' : ''}`,
+          { suppressSuccessToast: true, suppressErrorToast: true }
+        );
+        const details = response?.data || {};
+        if (!silent) {
+          const parts = [];
+          if (details.deleted_operations) parts.push(`${details.deleted_operations} operation${details.deleted_operations === 1 ? '' : 's'} removed`);
+          if (details.unlinked_products?.length) parts.push(`${details.unlinked_products.length} product${details.unlinked_products.length === 1 ? '' : 's'} unlinked`);
+          showSuccessToast(`Routing ${routerId} deleted${parts.length ? ` (${parts.join(', ')})` : ''}`);
+        }
         await actions.fetchAllData();
+        return details;
       } catch (error) {
-        console.error('Error deleting router:', error);
-        toast.error('Failed to delete router');
+        console.error('Could not delete routing:', error);
+        if (!silent) showErrorToast(error, 'Could not delete routing');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1092,61 +1059,45 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Router Operation Management Functions
-    createRouterOperation: async (operationData) => {
+    createRouterOperation: async (operationData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/create', { 
-          table: 'router_operations',
-          data: operationData 
-        });
-        
-        // API client already handles response format
-        toast.success('Router operation created successfully');
+        await api.post('/forecast/create', { table: 'router_operations', data: operationData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Operation created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating router operation:', error);
-        toast.error('Failed to create router operation');
+        console.error('Could not create operation:', error);
+        if (!silent) showErrorToast(error, 'Could not create operation');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateRouterOperation: async (operationId, operationData) => {
+    updateRouterOperation: async (operationId, operationData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'router_operations',
-          id: operationId,
-          updates: operationData
-        });
-        
-        // API client already handles response format
-        toast.success('Router operation updated successfully');
+        await api.post('/forecast/update', { table: 'router_operations', id: operationId, updates: operationData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Operation updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating router operation:', error);
-        toast.error('Failed to update router operation');
+        console.error('Could not update operation:', error);
+        if (!silent) showErrorToast(error, 'Could not update operation');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteRouterOperation: async (operationId) => {
+    deleteRouterOperation: async (operationId, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/router_operations/${operationId}`);
-        
-        // API client already handles response format
-        toast.success('Router operation deleted successfully');
+        await api.delete(`/forecast/delete/router_operations/${encodeURIComponent(operationId)}`, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Operation deleted');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error deleting router operation:', error);
-        toast.error('Failed to delete router operation');
+        console.error('Could not delete operation:', error);
+        if (!silent) showErrorToast(error, 'Could not delete operation');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1171,14 +1122,14 @@ export const ForecastProvider = ({ children }) => {
 
         await api.post('/forecast/create', {
           table: 'units',
-          data: mapProductForBackend(productData)
-        });
+          data: mapProductForBackend(productData, { isCreate: true })
+        }, { suppressSuccessToast: true, suppressErrorToast: true });
 
-        toast.success('Product created successfully');
+        toast.success(`Product ${productData.unit_id} added`);
         await actions.fetchAllData();
       } catch (error) {
         console.error('Error creating product:', error);
-        toast.error('Failed to create product');
+        toast.error(typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : 'Failed to create product');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1189,17 +1140,19 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
 
+        const updates = mapProductForBackend(productData);
+        delete updates.unit_id; // the key is the record id, not an update
         await api.post('/forecast/update', {
           table: 'units',
           id: productId,
-          updates: mapProductForBackend(productData)
-        });
+          updates
+        }, { suppressSuccessToast: true, suppressErrorToast: true });
 
-        toast.success('Product updated successfully');
+        toast.success('Product saved');
         await actions.fetchAllData();
       } catch (error) {
         console.error('Error updating product:', error);
-        toast.error('Failed to update product');
+        toast.error(typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : 'Failed to update product');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1225,61 +1178,45 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Labor Rate Management Functions
-    createLaborRate: async (laborRateData) => {
+    createLaborRate: async (laborRateData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/create', { 
-          table: 'labor_rates',
-          data: laborRateData 
-        });
-        
-        // API client already handles response format
-        toast.success('Labor rate created successfully');
+        await api.post('/forecast/create', { table: 'labor_rates', data: laborRateData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Labor rate created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating labor rate:', error);
-        toast.error('Failed to create labor rate');
+        console.error('Could not create labor rate:', error);
+        if (!silent) showErrorToast(error, 'Could not create labor rate');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateLaborRate: async (laborRateId, laborRateData) => {
+    updateLaborRate: async (laborRateId, laborRateData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'labor_rates',
-          id: laborRateId,
-          updates: laborRateData
-        });
-        
-        // API client already handles response format
-        toast.success('Labor rate updated successfully');
+        await api.post('/forecast/update', { table: 'labor_rates', id: laborRateId, updates: laborRateData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('Labor rate updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating labor rate:', error);
-        toast.error('Failed to update labor rate');
+        console.error('Could not update labor rate:', error);
+        if (!silent) showErrorToast(error, 'Could not update labor rate');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteLaborRate: async (tableName, laborRateId) => {
+    deleteLaborRate: async (tableName, laborRateId, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/${tableName}/${laborRateId}`);
-        
-        // API client already handles response format
-        toast.success('Labor rate deleted successfully');
+        await api.delete(`/forecast/delete/${tableName || 'labor_rates'}/${encodeURIComponent(laborRateId)}`, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Labor rate ${laborRateId} deleted`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error deleting labor rate:', error);
-        toast.error('Failed to delete labor rate');
+        console.error('Could not delete labor rate:', error);
+        if (!silent) showErrorToast(error, 'Could not delete labor rate');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1331,21 +1268,15 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // BOM Management Functions
-    createBOM: async (bomData) => {
+    createBOM: async (bomData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/create', { 
-          table: 'bom',
-          data: bomData 
-        });
-        
-        // API client already handles response format
-        toast.success('BOM created successfully');
+        await api.post('/forecast/create', { table: 'bom', data: bomData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('BOM line created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating BOM:', error);
-        toast.error('Failed to create BOM');
+        console.error('Could not create bom line:', error);
+        if (!silent) showErrorToast(error, 'Could not create bom line');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1355,103 +1286,82 @@ export const ForecastProvider = ({ children }) => {
     createBOMDefinition: async (bomData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-
-        await api.post('/forecast/create', {
-          table: 'bom_definitions',
-          data: bomData
-        });
-
-        if (!silent) toast.success('BOM definition created successfully');
+        await api.post('/forecast/create', { table: 'bom_definitions', data: bomData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('BOM created');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating BOM definition:', error);
-        if (!silent) toast.error('Failed to create BOM definition');
+        console.error('Could not create bom:', error);
+        if (!silent) showErrorToast(error, 'Could not create bom');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateBOMDefinition: async (bomId, bomData) => {
+    updateBOMDefinition: async (bomId, bomData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'bom_definitions',
-          id: bomId,
-          updates: bomData
-        });
-        
-        // API client already handles response format
-        toast.success('BOM definition updated successfully');
+        await api.post('/forecast/update', { table: 'bom_definitions', id: bomId, updates: bomData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('BOM updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating BOM definition:', error);
-        toast.error('Failed to update BOM definition');
+        console.error('Could not update bom:', error);
+        if (!silent) showErrorToast(error, 'Could not update bom');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteBOMDefinition: async (bomId) => {
+    deleteBOMDefinition: async (bomId, { cascade = false, silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/bom_definitions/${bomId}`);
-        
-        // API client already handles response format
-        toast.success('BOM definition deleted successfully');
+        const response = await api.delete(
+          `/forecast/delete/bom_definitions/${encodeURIComponent(bomId)}${cascade ? '?cascade=true' : ''}`,
+          { suppressSuccessToast: true, suppressErrorToast: true }
+        );
+        const details = response?.data || {};
+        if (!silent) {
+          const parts = [];
+          if (details.deleted_lines) parts.push(`${details.deleted_lines} line${details.deleted_lines === 1 ? '' : 's'} removed`);
+          if (details.unlinked_products?.length) parts.push(`${details.unlinked_products.length} product${details.unlinked_products.length === 1 ? '' : 's'} unlinked`);
+          showSuccessToast(`BOM ${bomId} deleted${parts.length ? ` (${parts.join(', ')})` : ''}`);
+        }
         await actions.fetchAllData();
+        return details;
       } catch (error) {
-        console.error('Error deleting BOM definition:', error);
-        toast.error('Failed to delete BOM definition');
+        console.error('Could not delete BOM:', error);
+        if (!silent) showErrorToast(error, 'Could not delete BOM');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateBOM: async (bomId, bomData) => {
+    updateBOM: async (bomId, bomData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        console.log('updateBOM called with:', { bomId, bomData });
-        
-        const response = await api.post('/forecast/update', {
-          table: 'bom',
-          id: bomId,
-          updates: bomData
-        });
-        
-        console.log('updateBOM response:', response.data);
-        
-        // API client already handles response format
-        toast.success('BOM updated successfully');
-        // Add a small delay to ensure database transaction is committed
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await api.post('/forecast/update', { table: 'bom', id: bomId, updates: bomData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('BOM line updated');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating BOM:', error);
-        toast.error('Failed to update BOM');
+        console.error('Could not update bom line:', error);
+        if (!silent) showErrorToast(error, 'Could not update bom line');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteBOM: async (bomId) => {
+    deleteBOM: async (bomId, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.delete(`/forecast/delete/bom/${bomId}`);
-        
-        // API client already handles response format
-        toast.success('BOM deleted successfully');
+        await api.delete(`/forecast/delete/bom/${encodeURIComponent(bomId)}`, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast('BOM line deleted');
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error deleting BOM:', error);
-        toast.error('Failed to delete BOM');
+        console.error('Could not delete BOM line:', error);
+        if (!silent) showErrorToast(error, 'Could not delete BOM line');
         throw error;
       } finally {
         actions.setLoading(false);
@@ -1500,7 +1410,7 @@ export const ForecastProvider = ({ children }) => {
       }
     },
 
-    createExpense: async (expenseData) => {
+    createExpense: async (expenseData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
         // Scope is explicit: forecast_id null means company-wide. Only
@@ -1509,49 +1419,52 @@ export const ForecastProvider = ({ children }) => {
         if (!('forecast_id' in payload)) {
           payload.forecast_id = state.activeScenario || null;
         }
-        const response = await api.post('/expenses/', payload);
-        
+        const response = await api.post('/expenses/', payload, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(response?.message || 'Expense created');
+
         // Refresh expenses data
         await actions.fetchExpenses();
         return response.data;
       } catch (error) {
-        console.error('Error creating expense:', error);
-        actions.setError('Failed to create expense');
+        console.error('Could not create expense:', error);
+        if (!silent) showErrorToast(error, 'Could not create expense');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateExpense: async (expenseId, expenseData) => {
+    updateExpense: async (expenseId, expenseData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
         const payload = { ...expenseData };
-        const response = await api.put(`/expenses/${expenseId}`, payload);
-        
+        const response = await api.put(`/expenses/${expenseId}`, payload, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(response?.message || 'Expense updated');
+
         // Refresh expenses data
         await actions.fetchExpenses();
         return response.data;
       } catch (error) {
-        console.error('Error updating expense:', error);
-        actions.setError('Failed to update expense');
+        console.error('Could not update expense:', error);
+        if (!silent) showErrorToast(error, 'Could not update expense');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    deleteExpense: async (expenseId) => {
+    deleteExpense: async (expenseId, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        const response = await api.delete(`/expenses/${expenseId}`);
-        
+        const response = await api.delete(`/expenses/${expenseId}`, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(response?.message || 'Expense deleted');
+
         // Refresh expenses data
         await actions.fetchExpenses();
         return response.data;
       } catch (error) {
-        console.error('Error deleting expense:', error);
-        actions.setError('Failed to delete expense');
+        console.error('Could not delete expense:', error);
+        if (!silent) showErrorToast(error, 'Could not delete expense');
         throw error;
       } finally {
         actions.setLoading(false);

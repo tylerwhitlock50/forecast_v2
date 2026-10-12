@@ -1,0 +1,13 @@
+Customer No,Customer Name,Class,Territory
+C1001,Big Sky Outfitters,Dealer,Mountain West
+C1002,Lone Star Gun Works,Dealer,South Central
+C1003,Great Lakes Sporting Goods,Dealer,Midwest
+C1004,Blue Ridge Arms & Tackle,Dealer,Southeast
+C2001,Gulf Coast Wholesale Supply,Distributor,Southeast
+C2002,Prairie State Distributors,Distributor,Midwest
+C2003,Pacific Crest Distribution,Distributor,Pacific
+C3001,Web Store (Direct),Direct,National
+C3002,Factory Showroom,Direct,Mountain West
+C4001,State Highway Patrol,Government,Mountain West
+C4002,Metro County Sheriff,Government,Midwest
+C5001,Nordic Hunting Supply AB,Export,International

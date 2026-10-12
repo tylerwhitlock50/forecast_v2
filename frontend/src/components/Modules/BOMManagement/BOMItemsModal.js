@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
+import api, { showErrorToast } from '../../../lib/apiClient';
 import { useConfirm } from '../../Common/ConfirmDialog';
+import { Modal, ModalHeader, ModalTitle, ModalClose } from '../../ui/modal';
 
 
 const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], onSave }) => {
@@ -87,21 +89,17 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
         target_cost: parseFloat(formData.target_cost) || 0
       };
 
+      // The context action shows the one toast (or the server's reason).
       if (editingItem) {
-        // Update existing item
         await actions.updateBOM(`${editingItem.bom_id}-${editingItem.version}-${editingItem.bom_line}`, itemData);
-        toast.success('BOM item updated successfully');
       } else {
-        // Create new item
         await actions.createBOM(itemData);
-        toast.success('BOM item added successfully');
       }
 
       resetForm();
       await onSave(); // Refresh data
     } catch (error) {
       console.error('Error saving BOM item:', error);
-      toast.error('Failed to save BOM item');
     }
   };
 
@@ -114,11 +112,9 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
     })) {
       try {
         await actions.deleteBOM(`${item.bom_id}-${item.version}-${item.bom_line}`);
-        toast.success('BOM item deleted successfully');
         await onSave(); // Refresh data
       } catch (error) {
         console.error('Error deleting BOM item:', error);
-        toast.error('Failed to delete BOM item');
       }
     }
   };
@@ -165,35 +161,41 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
     }
     setCopying(true);
     try {
+      // One append request: new lines are numbered after the existing ones.
       let next = getNextLineNumber();
-      for (const line of sourceLines) {
-        await actions.createBOM({
-          bom_id: bom.bom_id,
-          version: bom.version || '1.0',
-          bom_line: next,
-          material_description: line.material_description,
-          qty: line.qty,
-          unit: line.unit,
-          unit_price: line.unit_price,
-          material_cost: line.material_cost,
-          target_cost: line.target_cost,
-        });
-        next += 1;
-      }
+      const rows = sourceLines.map((line) => ({
+        bom_id: bom.bom_id,
+        version: bom.version || '1.0',
+        bom_line: next++,
+        material_description: line.material_description,
+        qty: line.qty,
+        unit: line.unit,
+        unit_price: line.unit_price,
+        material_cost: line.material_cost,
+        target_cost: line.target_cost,
+      }));
+      const res = await api.post(
+        '/import/boms',
+        { rows, mode: 'append', link_products: false },
+        { suppressSuccessToast: true, suppressErrorToast: true }
+      );
+      const errors = res?.data?.errors || [];
+      if (errors.length) throw new Error(errors.map(e => e.error).join('; '));
+      await actions.fetchAllData();
       toast.success(`Copied ${sourceLines.length} line${sourceLines.length === 1 ? '' : 's'} from ${srcBomId}`);
       setCopySourceBomId('');
       await onSave();
     } catch (err) {
       console.error('Error copying lines:', err);
-      toast.error('Failed to copy lines');
+      showErrorToast(err, 'Could not copy lines');
     } finally {
       setCopying(false);
     }
   };
 
-  const formatCurrency = (value) => {
-    return `$${Number(value || 0).toFixed(2)}`;
-  };
+  const formatCurrency = (value) => new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(value || 0));
 
   // BOM.material_cost is stored per unit of finished good, so summing
   // across lines gives the material cost contributed by this BOM to one
@@ -208,14 +210,16 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
   if (!isOpen || !bom) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '1000px', maxHeight: '90vh' }}>
-        <div className="modal-header">
-          <h2>Manage BOM Items - {bom.bom_name}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal onClose={onClose} className="max-w-5xl">
+        <ModalHeader className="pr-14">
+          <ModalTitle>
+            Material lines: {bom.bom_name || bom.bom_id}
+            <span className="ml-2 text-sm font-normal text-gray-500">{bom.bom_id} v{bom.version || '1.0'}</span>
+          </ModalTitle>
+          <ModalClose onClick={onClose} />
+        </ModalHeader>
 
-        <div className="bom-items-container">
+        <div className="bom-items-container px-6 pt-6">
           {/* Summary Section */}
           <div className="bom-summary">
             <div className="summary-item">
@@ -231,10 +235,14 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
               <span className="summary-value">{formatCurrency(totalTargetCost)}</span>
             </div>
             <div className="summary-item">
-              <span className="summary-label">Variance:</span>
-              <span className={`summary-value ${costVariance > 0 ? 'over' : costVariance < 0 ? 'under' : 'on-target'}`}>
-                {costVariance > 0 ? '+' : ''}{formatCurrency(costVariance)}
-              </span>
+              <span className="summary-label">Variance to target:</span>
+              {totalTargetCost > 0 ? (
+                <span className={`summary-value ${costVariance > 0 ? 'over' : costVariance < 0 ? 'under' : 'on-target'}`}>
+                  {costVariance > 0 ? '+' : ''}{formatCurrency(costVariance)}
+                </span>
+              ) : (
+                <span className="summary-value text-gray-400" title="No target costs on these lines">—</span>
+              )}
             </div>
             {incompleteLines.length > 0 && (
               <div className="summary-item" style={{ color: '#b45309' }}>
@@ -428,13 +436,12 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
           </div>
         </div>
 
-        <div className="modal-footer">
+        <div className="modal-footer px-6 pb-6">
           <button className="btn-secondary" onClick={onClose}>
             Done
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
 import { Select, SelectOption } from '../../ui/select';
 import { Label } from '../../ui/label';
+import { PAY_FREQUENCY_LABELS } from './payrollView';
 
 const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -15,8 +16,11 @@ const formatCompact = (amount) => new Intl.NumberFormat('en-US', {
   notation: 'compact'
 }).format(amount || 0);
 
-const DepartmentAnalytics = ({ departmentCosts }) => {
+// departmentCosts comes from /payroll/reports/summary: annual employer cost
+// per department (gross + employer taxes + benefits), the statements' rules.
+const DepartmentAnalytics = ({ departmentCosts, runsPerYear = 26, payFrequency = 'biweekly' }) => {
   const safeDepartmentCosts = departmentCosts || {};
+  const runLabel = PAY_FREQUENCY_LABELS[payFrequency] || 'Per pay run';
   const [sortBy, setSortBy] = useState('totalCost');
   const [sortOrder, setSortOrder] = useState('desc');
 
@@ -54,7 +58,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="w-40">
             <SelectOption value="totalCost">Total Cost</SelectOption>
             <SelectOption value="employees">Employee Count</SelectOption>
-            <SelectOption value="avgRate">Average Rate</SelectOption>
+            <SelectOption value="avgRate">Average Hourly Rate</SelectOption>
             <SelectOption value="name">Department Name</SelectOption>
           </Select>
           <Select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="w-36">
@@ -80,7 +84,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
         <StatsCard
           title="Total Annual Cost"
           value={formatCurrency(totals.totalCost)}
-          subtitle="All departments combined"
+          subtitle="Gross + employer taxes + benefits"
           variant="warning"
         />
         <StatsCard
@@ -135,7 +139,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
                   <th className="px-3 py-2 font-medium">Annual Cost</th>
                   <th className="px-3 py-2 font-medium">% of Total</th>
                   <th className="px-3 py-2 font-medium">Avg Cost/Employee</th>
-                  <th className="px-3 py-2 font-medium">Bi-weekly</th>
+                  <th className="px-3 py-2 font-medium">{runLabel} run</th>
                   <th className="px-3 py-2 font-medium">Monthly</th>
                 </tr>
               </thead>
@@ -163,7 +167,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
                       <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost)}</td>
                       <td className="px-3 py-2 text-gray-700">{percentOfTotal.toFixed(1)}%</td>
                       <td className="px-3 py-2 text-gray-700">{formatCurrency(costPerEmployee)}</td>
-                      <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost / 26)}</td>
+                      <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost / runsPerYear)}</td>
                       <td className="px-3 py-2 text-gray-700">{formatCurrency(deptData.totalCost / 12)}</td>
                     </tr>
                   );
@@ -177,7 +181,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
                     <td className="px-3 py-2">{formatCurrency(totals.totalCost)}</td>
                     <td className="px-3 py-2">100.0%</td>
                     <td className="px-3 py-2">{formatCurrency(avgCostPerEmployee)}</td>
-                    <td className="px-3 py-2">{formatCurrency(totals.totalCost / 26)}</td>
+                    <td className="px-3 py-2">{formatCurrency(totals.totalCost / runsPerYear)}</td>
                     <td className="px-3 py-2">{formatCurrency(totals.totalCost / 12)}</td>
                   </tr>
                 </tfoot>
@@ -197,6 +201,8 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
                 name={deptName}
                 data={deptData}
                 totalCost={totals.totalCost}
+                runsPerYear={runsPerYear}
+                runLabel={runLabel}
               />
             ))}
           </div>
@@ -206,7 +212,7 @@ const DepartmentAnalytics = ({ departmentCosts }) => {
   );
 };
 
-const DepartmentCard = ({ name, data, totalCost }) => {
+const DepartmentCard = ({ name, data, totalCost, runsPerYear, runLabel }) => {
   const percentOfTotal = totalCost > 0 ? (data.totalCost / totalCost) * 100 : 0;
   const costPerEmployee = data.employees > 0 ? data.totalCost / data.employees : 0;
 
@@ -232,7 +238,7 @@ const DepartmentCard = ({ name, data, totalCost }) => {
         <Row label="Annual Cost" value={formatCurrency(data.totalCost)} />
         <Row label="Cost per Employee" value={formatCurrency(costPerEmployee)} />
         <Row label="Monthly Cost" value={formatCurrency(data.totalCost / 12)} />
-        <Row label="Bi-weekly Cost" value={formatCurrency(data.totalCost / 26)} />
+        <Row label={`${runLabel} Run Cost`} value={formatCurrency(data.totalCost / runsPerYear)} />
         <div className="h-1.5 mt-2 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full bg-primary" style={{ width: `${percentOfTotal}%` }} />
         </div>

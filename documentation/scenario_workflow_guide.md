@@ -6,13 +6,16 @@ scoped, where they are managed, and how to compare them.
 ## How scoping works
 
 Every screen shows a scope badge in the scenario bar at the top of the page.
+The badge texts come from `frontend/src/components/Modules/Scenarios/scenarioScope.js`.
 
-| Scope | Screens | Rule |
+| Badge | Screens | Rule |
 | --- | --- | --- |
 | Scenario-specific | Sales Forecasting | Sales lines belong to exactly one scenario. |
-| Company-wide + this scenario | Payroll, Expenses, Capex | Each row is either company-wide (`forecast_id` NULL, included in every scenario) or pinned to one scenario. The screens list both, exactly as the statements engine uses them. |
-| Company-wide | Customers, Products, BOMs, Routings, Machines, Labor Rates, Loans | Shared by every scenario. |
-| Chosen on the page | Statements, Compare | Reporting uses the scenarios you pick on the page. Statements default to the active scenario. |
+| Company-wide + this scenario | Payroll, Expenses, Pricing & Deductions, Import Data | Each row is either company-wide (`forecast_id` NULL, included in every scenario) or pinned to one scenario. The screens list both, exactly as the statements engine uses them. Capex (on the statements' Assumptions tab) follows the same rule. The sales step of Import Data always imports into the active scenario. |
+| Uses this scenario's sales | Cost Management, product detail | Products, BOMs, routings and rates are shared by every scenario; the quantities and costs shown come from the active scenario's sales forecast. |
+| Company-wide | Customers, Products, BOMs, Routings, Machines, Labor Rates, Loans | Shared by every scenario. Changing it changes all scenarios. |
+| Follows the active scenario | Statements, COGS & Labor Forecast, Compare | Reports follow the active scenario unless you pick scenarios on the page. Statements show the active scenario (choosing another one on the page switches the active scenario) until you tick *Consolidate several scenarios*, which adds the ticked scenarios together. COGS & Labor Forecast shows the active scenario until you pick another one on that page; switching the active scenario takes over again. Compare starts with the base and the active scenario and lets you pick 1 to 4. |
+| (no badge) | Scenarios | Manages every scenario. |
 
 Financial assumptions (opening balances, DSO/DIO/DPO, tax rate) are stored per scenario.
 
@@ -30,7 +33,7 @@ The list shows each scenario's sales window, number of lines, total revenue, sce
 
 ## 2. Switch the active scenario
 
-Use the select in the scenario bar. The choice is remembered in the browser. The Sales Forecasting, Payroll and Expenses screens reload for the active scenario.
+Use the select in the scenario bar (the Scenario select on the Statements page does the same). The choice is remembered in the browser. The Sales Forecasting, Payroll and Expenses screens reload for the active scenario.
 
 ## 3. Enter assumptions
 
@@ -43,7 +46,7 @@ Open **Reporting & Analysis → Compare Scenarios**. Pick two to four scenarios.
 
 ## 5. Statements
 
-Open **Reporting & Analysis → Statements**. Statements follow the active scenario. Tick "Consolidate several scenarios" to sum two or more scenarios into one set of statements; assumptions then come from the first selected scenario.
+Open **Reporting & Analysis → Statements**. Statements follow the active scenario; choosing a different scenario in the page's Scenario select switches the active scenario. Tick "Consolidate several scenarios" to sum two or more scenarios into one set of statements; assumptions then come from the first selected scenario.
 
 ## API summary
 

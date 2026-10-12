@@ -1,306 +1,131 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import api from '../../../lib/apiClient';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
+import { productCostChecks } from './productOptions';
 
+const money2 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = (v) => (v === null || v === undefined ? '—' : money2.format(Number(v) || 0));
+
+/**
+ * Costing checks per product, from the same cost rollup the COGS forecast
+ * uses (GET /products/cost-summary): does the BOM (and its version) exist
+ * and cost something, does the routing have operations, machines and labor
+ * rates, and what does one unit cost.
+ */
 const ProductValidation = ({ products }) => {
-  const validationResults = useMemo(() => {
-    const issues = [];
-    const warnings = [];
-    const stats = {
-      total: products.length,
-      valid: 0,
-      withIssues: 0,
-      withWarnings: 0
-    };
+  const [costRows, setCostRows] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-    products.forEach((product, index) => {
-      const productIssues = [];
-      const productWarnings = [];
-
-      // Required field validation
-      if (!product.unit_name || (typeof product.unit_name === 'string' && product.unit_name.trim() === '') || product.unit_name === null || product.unit_name === undefined) {
-        productIssues.push('Missing product name');
-      }
-
-      if (!product.unit_id || (typeof product.unit_id === 'string' && product.unit_id.trim() === '') || product.unit_id === null || product.unit_id === undefined) {
-        productIssues.push('Missing product ID');
-      }
-
-      // Price validation
-      if (product.base_price) {
-        const price = parseFloat(product.base_price);
-        if (isNaN(price)) {
-          productIssues.push('Invalid price format');
-        } else if (price < 0) {
-          productIssues.push('Price cannot be negative');
-        } else if (price === 0) {
-          productWarnings.push('Product has zero price');
-        }
-      } else {
-        productWarnings.push('No base price provided');
-      }
-
-      // BOM validation
-      if (!product.bom || (typeof product.bom === 'string' && product.bom.trim() === '') || product.bom === null || product.bom === undefined) {
-        productWarnings.push('No BOM assigned');
-      }
-
-      // Router validation
-      if (!product.router || (typeof product.router === 'string' && product.router.trim() === '') || product.router === null || product.router === undefined) {
-        productWarnings.push('No router assigned');
-      }
-
-      // Duplicate check
-      const duplicateName = products.find((p, i) => 
-        i !== index && 
-        p.unit_name && 
-        p.unit_name.toLowerCase() === product.unit_name?.toLowerCase()
-      );
-      if (duplicateName) {
-        productWarnings.push('Duplicate product name detected');
-      }
-
-      const duplicateId = products.find((p, i) => 
-        i !== index && 
-        p.unit_id && 
-        p.unit_id.toLowerCase() === product.unit_id?.toLowerCase()
-      );
-      if (duplicateId) {
-        productIssues.push('Duplicate product ID detected');
-      }
-
-      // Data completeness check
-      const hasCompleteProfile = product.unit_name && product.base_price && product.bom && product.router;
-      if (!hasCompleteProfile) {
-        productWarnings.push('Incomplete product profile');
-      }
-
-      // Description check
-      if (!product.unit_description || (typeof product.unit_description === 'string' && product.unit_description.trim() === '') || product.unit_description === null || product.unit_description === undefined) {
-        productWarnings.push('No product description provided');
-      }
-
-      // Add to overall stats
-      if (productIssues.length > 0) {
-        issues.push({
-          product,
-          issues: productIssues
-        });
-        stats.withIssues++;
-      } else if (productWarnings.length > 0) {
-        warnings.push({
-          product,
-          warnings: productWarnings
-        });
-        stats.withWarnings++;
-      } else {
-        stats.valid++;
-      }
-    });
-
-    return { issues, warnings, stats };
-  }, [products]);
-
-  const summaryCards = [
-    {
-      icon: "✅",
-      value: validationResults.stats.valid,
-      label: "Valid Records",
-      color: "text-green-600"
-    },
-    {
-      icon: "⚠️",
-      value: validationResults.stats.withWarnings,
-      label: "With Warnings",
-      color: "text-yellow-600"
-    },
-    {
-      icon: "❌",
-      value: validationResults.stats.withIssues,
-      label: "With Issues",
-      color: "text-red-600"
-    },
-    {
-      icon: "📊",
-      value: validationResults.stats.total,
-      label: "Total Records",
-      color: "text-blue-600"
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await api.get('/products/cost-summary', { suppressErrorToast: true });
+      setCostRows(res?.data?.products || []);
+    } catch (err) {
+      setLoadError(err?.userMessage || 'Could not load unit costs');
+      setCostRows([]);
+    } finally {
+      setLoading(false);
     }
-  ];
+  }, []);
+
+  useEffect(() => { load(); }, [load, products]);
+
+  const rows = useMemo(() => {
+    const byId = new Map((costRows || []).map(r => [r.product_id, r]));
+    return (products || []).map(p => {
+      const cost = byId.get(p.unit_id) || null;
+      const { problems, unitCost } = productCostChecks(p, cost);
+      return { product: p, cost, problems, unitCost, errors: problems.filter(x => x.level === 'error').length };
+    }).sort((a, b) => b.errors - a.errors || b.problems.length - a.problems.length
+      || String(a.product.unit_name || '').localeCompare(String(b.product.unit_name || '')));
+  }, [products, costRows]);
+
+  const ok = rows.filter(r => r.problems.length === 0).length;
+  const withErrors = rows.filter(r => r.errors > 0).length;
+  const withWarnings = rows.length - ok - withErrors;
 
   return (
-    <div className="space-y-6">
-      {/* Validation Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {summaryCards.map((card, index) => (
-          <Card key={index} className="hover:shadow-lg transition-shadow">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-                <span>{card.icon}</span>
-                {card.label}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className={`text-2xl font-bold ${card.color}`}>
-                {card.value}
-              </p>
-            </CardContent>
-          </Card>
-        ))}
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-green-200 bg-green-50/50 px-4 py-3">
+          <div className="text-sm font-medium text-gray-600">Cost out fully</div>
+          <div className="mt-1 text-2xl font-bold text-green-700 tabular-nums">{ok}</div>
+        </div>
+        <div className="rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
+          <div className="text-sm font-medium text-gray-600">Missing cost (COGS understated)</div>
+          <div className="mt-1 text-2xl font-bold text-red-700 tabular-nums">{withErrors}</div>
+        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50/50 px-4 py-3">
+          <div className="text-sm font-medium text-gray-600">Worth a look</div>
+          <div className="mt-1 text-2xl font-bold text-amber-700 tabular-nums">{withWarnings}</div>
+        </div>
       </div>
 
-      {/* Critical Issues */}
-      {validationResults.issues.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg font-semibold text-red-600 flex items-center gap-2">
-              <span>❌</span>
-              Critical Issues ({validationResults.issues.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {validationResults.issues.map((item, index) => (
-                <div key={index} className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-red-600">❌</span>
-                    <span className="font-semibold">{item.product.unit_name || 'Unnamed Product'}</span>
-                    <Badge variant="outline" className="text-xs">{item.product.unit_id}</Badge>
-                  </div>
-                  <div className="ml-6 space-y-1">
-                    {item.issues.map((issue, issueIndex) => (
-                      <div key={issueIndex} className="flex items-start gap-2 text-sm text-red-800">
-                        <span className="text-red-400 mt-1">•</span>
-                        <span>{issue}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Warnings */}
-      {validationResults.warnings.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg font-semibold text-yellow-600 flex items-center gap-2">
-              <span>⚠️</span>
-              Warnings ({validationResults.warnings.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {validationResults.warnings.map((item, index) => (
-                <div key={index} className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-yellow-600">⚠️</span>
-                    <span className="font-semibold">{item.product.unit_name || 'Unnamed Product'}</span>
-                    <Badge variant="outline" className="text-xs">{item.product.unit_id}</Badge>
-                  </div>
-                  <div className="ml-6 space-y-1">
-                    {item.warnings.map((warning, warningIndex) => (
-                      <div key={warningIndex} className="flex items-start gap-2 text-sm text-yellow-800">
-                        <span className="text-yellow-400 mt-1">•</span>
-                        <span>{warning}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* All Clear Message */}
-      {validationResults.issues.length === 0 && validationResults.warnings.length === 0 && (
-        <Card>
-          <CardContent className="text-center py-12">
-            <div className="text-6xl mb-4">🎉</div>
-            <h4 className="text-2xl font-bold text-green-600 mb-2">All Clear!</h4>
-            <p className="text-gray-600">Your product database looks great! All records are valid and complete.</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Data Quality Score */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Data Quality Score</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center justify-center w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white">
-              <div className="text-center">
-                <div className="text-2xl font-bold">
-                  {Math.round((validationResults.stats.valid / validationResults.stats.total) * 100)}%
-                </div>
-                <div className="text-xs">Quality Score</div>
-              </div>
-            </div>
-            <div className="flex-1 ml-8 space-y-2">
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-gray-600">Valid Records:</span>
-                <span className="font-semibold">{validationResults.stats.valid}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-gray-600">Records with Issues:</span>
-                <span className="font-semibold text-red-600">{validationResults.stats.withIssues}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-gray-600">Records with Warnings:</span>
-                <span className="font-semibold text-yellow-600">{validationResults.stats.withWarnings}</span>
-              </div>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-lg">Unit cost by product</CardTitle>
+            <div className="flex items-center gap-3 text-sm">
+              <Link to="/bom" className="font-medium text-orange-700 hover:underline">BOMs</Link>
+              <Link to="/routing" className="font-medium text-orange-700 hover:underline">Routings</Link>
+              <Button variant="outline" size="sm" onClick={load} disabled={loading}>{loading ? 'Checking…' : 'Check again'}</Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Recommendations */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
+          <p className="text-sm text-gray-600">Material from the product's BOM version, labor and machine time from its routing: the same numbers the COGS forecast uses.</p>
+          {loadError && <p className="text-sm text-red-700">{loadError}</p>}
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {validationResults.issues.length > 0 && (
-              <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <span className="text-xl">🔧</span>
-                <span className="text-sm text-red-800">
-                  Fix {validationResults.issues.length} critical issues to improve data quality.
-                </span>
-              </div>
-            )}
-            
-            {validationResults.warnings.length > 0 && (
-              <div className="flex items-start gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <span className="text-xl">📝</span>
-                <span className="text-sm text-yellow-800">
-                  Address {validationResults.warnings.length} warnings to enhance data completeness.
-                </span>
-              </div>
-            )}
-            
-            {validationResults.stats.valid < validationResults.stats.total * 0.8 && (
-              <div className="flex items-start gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <span className="text-xl">📊</span>
-                <span className="text-sm text-blue-800">
-                  Consider implementing data validation rules to prevent future issues.
-                </span>
-              </div>
-            )}
-            
-            {validationResults.stats.valid === validationResults.stats.total && (
-              <div className="flex items-start gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-xl">🌟</span>
-                <span className="text-sm text-green-800">
-                  Excellent data quality! Consider setting up automated validation checks.
-                </span>
-              </div>
-            )}
+          <div className="overflow-x-auto rounded-md border border-gray-200">
+            <table className="min-w-full text-sm tabular-nums">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th scope="col" className="px-3 py-2 text-left font-medium">Product</th>
+                  <th scope="col" className="px-3 py-2 text-left font-medium">BOM</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Material</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Labor</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Machine</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Unit cost</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">List price</th>
+                  <th scope="col" className="px-3 py-2 text-left font-medium">Checks</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map(({ product: p, cost, problems, unitCost }) => (
+                  <tr key={p.unit_id} className="align-top hover:bg-gray-50">
+                    <td className="px-3 py-2">
+                      <Link to={`/products/${encodeURIComponent(p.unit_id)}`} className="font-medium text-gray-900 hover:text-orange-700 hover:underline">
+                        {p.unit_name || p.unit_id}
+                      </Link>
+                      <div className="font-mono text-xs text-gray-500">{p.unit_id}{p.unit_type ? ` · ${p.unit_type}` : ''}</div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-700">
+                      {p.bom ? `${p.bom} v${cost?.bom_version_used || p.bom_version || '1.0'}` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">{cost ? fmt(cost.unit_material_cost) : '—'}</td>
+                    <td className="px-3 py-2 text-right">{cost ? fmt(cost.unit_labor_cost) : '—'}</td>
+                    <td className="px-3 py-2 text-right">{cost ? fmt(cost.unit_machine_cost) : '—'}</td>
+                    <td className="px-3 py-2 text-right font-semibold text-gray-900">{unitCost === null ? '—' : fmt(unitCost)}</td>
+                    <td className="px-3 py-2 text-right">{Number(p.base_price) > 0 ? fmt(p.base_price) : '—'}</td>
+                    <td className="px-3 py-2">
+                      {problems.length === 0 ? (
+                        <span className="text-xs font-medium text-green-700">OK</span>
+                      ) : (
+                        <ul className="space-y-0.5">
+                          {problems.map(pr => (
+                            <li key={pr.text} className={`text-xs ${pr.level === 'error' ? 'font-medium text-red-700' : 'text-amber-800'}`}>{pr.text}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </CardContent>
       </Card>
@@ -308,4 +133,4 @@ const ProductValidation = ({ products }) => {
   );
 };
 
-export default ProductValidation; 
+export default ProductValidation;

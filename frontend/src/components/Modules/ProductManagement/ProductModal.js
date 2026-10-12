@@ -1,352 +1,321 @@
-import React, { useState, useEffect } from 'react';
-import { toast } from 'react-hot-toast';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { useForecast } from '../../../context/ForecastContext';
 import UnitCostPreview from '../../Common/UnitCostPreview';
+import { Modal, ModalClose, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import {
+  bomLineCount,
+  bomVersionsFor,
+  canonicalChoice,
+  defaultBomVersion,
+  productTypeOptions,
+} from './productOptions';
+
+const CREATE_NEW = '__create__';
+const fieldClass = 'h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500';
 
 const nextSequentialId = (items, field, prefix, width) => {
-  const list = Array.isArray(items) ? items : [];
-  const maxId = list.reduce((max, item) => {
-    const raw = item?.[field] || '';
-    const digits = raw.replace(prefix, '');
-    const n = parseInt(digits, 10);
+  const maxId = (items || []).reduce((max, item) => {
+    const raw = String(item?.[field] || '');
+    if (!raw.startsWith(prefix)) return max;
+    const n = parseInt(raw.slice(prefix.length), 10);
     return Number.isFinite(n) && n > max ? n : max;
   }, 0);
   return `${prefix}${String(maxId + 1).padStart(width, '0')}`;
 };
 
-const ProductModal = ({ isOpen, onClose, onSave, product, bomData, routerData, actions }) => {
-  const [formData, setFormData] = useState({
-    unit_id: '',
-    unit_name: '',
-    unit_description: '',
-    base_price: '',
-    unit_type: '',
-    bom: '',
-    router: ''
-  });
+const emptyForm = {
+  unit_id: '',
+  unit_name: '',
+  unit_description: '',
+  base_price: '',
+  unit_type: '',
+  bom: '',
+  bom_version: '',
+  router: '',
+};
+
+/**
+ * Add or edit a product. The BOM and routing are links to existing records;
+ * "None (assign later)" leaves them empty, and a new empty BOM or routing is
+ * created only when the user picks that option. Editing never changes the
+ * BOM version behind the user's back: the product's version is kept and the
+ * versions that exist are offered.
+ */
+const ProductModal = ({ isOpen, onClose, onSave, product }) => {
+  const { data, actions } = useForecast();
+  const [formData, setFormData] = useState(emptyForm);
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
+
+  const bomDefinitions = useMemo(() => data.bom_definitions || [], [data.bom_definitions]);
+  const bomLines = useMemo(() => data.bom || [], [data.bom]);
+  const routers = useMemo(() => data.router_definitions || [], [data.router_definitions]);
+  const typeOptions = useMemo(() => productTypeOptions(data.products), [data.products]);
 
   useEffect(() => {
     if (!isOpen) return;
     if (product) {
+      const bom = product.bom ?? product.bom_id ?? '';
       setFormData({
         unit_id: product.unit_id || '',
         unit_name: product.unit_name || '',
         unit_description: product.unit_description || '',
-        base_price: product.base_price || '',
+        base_price: product.base_price ?? '',
         unit_type: product.unit_type || '',
-        bom: product.bom || '',
-        router: product.router || ''
+        bom: bom || '',
+        bom_version: bom ? (product.bom_version || defaultBomVersion(bom, { bomLines, bomDefinitions })) : '',
+        router: product.router ?? product.router_id ?? '',
       });
     } else {
-      setFormData({
-        unit_id: '',
-        unit_name: '',
-        unit_description: '',
-        base_price: '',
-        unit_type: '',
-        bom: '',
-        router: ''
-      });
+      setFormData(emptyForm);
     }
     setErrors({});
+    // Reset when the modal opens or the product changes, not on every data refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, product]);
 
-  const uniqueBOMs = [...new Set((bomData || []).map(item => item.bom_id))].sort();
-  const uniqueRouters = [...new Set((routerData || []).map(item => item.router_id))].sort();
+  const bomIds = useMemo(() => {
+    const ids = new Set();
+    bomDefinitions.forEach(d => d?.bom_id && ids.add(d.bom_id));
+    bomLines.forEach(l => l?.bom_id && ids.add(l.bom_id));
+    if (formData.bom && formData.bom !== CREATE_NEW) ids.add(formData.bom);
+    return Array.from(ids).sort();
+  }, [bomDefinitions, bomLines, formData.bom]);
 
-  const getBOMDisplayName = (bomId) => {
-    if (!bomId) return '';
-    const bomDefinition = (bomData || []).find(item => item.bom_id === bomId);
-    if (bomDefinition && bomDefinition.bom_name) {
-      return `${bomId} - ${bomDefinition.bom_name}`;
-    }
-    const bomItems = (bomData || []).filter(item => item.bom_id === bomId);
-    if (bomItems.length > 0) {
-      return `${bomId} (${bomItems.length} materials)`;
-    }
-    return bomId;
+  const routerIds = useMemo(() => {
+    const ids = new Set(routers.map(r => r?.router_id).filter(Boolean));
+    if (formData.router && formData.router !== CREATE_NEW) ids.add(formData.router);
+    return Array.from(ids).sort();
+  }, [routers, formData.router]);
+
+  const versions = useMemo(() => (
+    formData.bom && formData.bom !== CREATE_NEW
+      ? bomVersionsFor(formData.bom, { bomLines, bomDefinitions, keep: formData.bom_version })
+      : []
+  ), [formData.bom, formData.bom_version, bomLines, bomDefinitions]);
+
+  const bomLabel = (id) => {
+    const def = bomDefinitions.find(d => d.bom_id === id);
+    return def?.bom_name ? `${id} — ${def.bom_name}` : id;
+  };
+  const routerLabel = (id) => {
+    const r = routers.find(x => x.router_id === id);
+    return r?.router_name ? `${id} — ${r.router_name}` : id;
   };
 
-  const getRouterDisplayName = (routerId) => {
-    if (!routerId) return '';
-    const router = (routerData || []).find(item => item.router_id === routerId);
-    if (router && router.router_name) {
-      return `${routerId} - ${router.router_name}`;
-    }
-    return routerId;
+  const set = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    if (errors[field]) setErrors(prev => ({ ...prev, [field]: null }));
   };
 
-  const validateForm = () => {
-    const newErrors = {};
-    if (!formData.unit_name.trim()) {
-      newErrors.unit_name = 'Product name is required';
-    }
-    if (formData.base_price && isNaN(parseFloat(formData.base_price))) {
-      newErrors.base_price = 'Base price must be a valid number';
-    }
-    if (formData.base_price && parseFloat(formData.base_price) < 0) {
-      newErrors.base_price = 'Base price cannot be negative';
-    }
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  const chooseBom = (value) => {
+    setFormData(prev => ({
+      ...prev,
+      bom: value,
+      bom_version: value && value !== CREATE_NEW ? defaultBomVersion(value, { bomLines, bomDefinitions, current: product && (product.bom ?? product.bom_id) === value ? product.bom_version : null }) : '',
+    }));
+  };
+
+  const validate = () => {
+    const next = {};
+    if (!formData.unit_name.trim()) next.unit_name = 'Product name is required';
+    const price = String(formData.base_price).replace(/[$,\s]/g, '');
+    if (price !== '' && !(Number(price) >= 0)) next.base_price = 'Enter a price of 0 or more';
+    setErrors(next);
+    return Object.keys(next).length === 0;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validateForm()) {
-      toast.error('Please fix the errors in the form');
-      return;
-    }
-
+    if (!validate()) return;
     setSubmitting(true);
     try {
+      const name = formData.unit_name.trim();
       let { bom, router } = formData;
-      const productName = formData.unit_name.trim();
+      let bomVersion = formData.bom_version;
 
-      // Auto-create BOM if left blank
-      if (!bom) {
-        const newBomId = nextSequentialId(bomData, 'bom_id', 'BOM-', 3);
-        await actions.createBOMDefinition({
-          bom_id: newBomId,
-          bom_name: `${productName} BOM`,
-          bom_description: `Auto-created for ${productName}`,
-          version: '1.0'
-        }, { silent: true });
-        bom = newBomId;
+      if (bom === CREATE_NEW) {
+        bom = nextSequentialId(bomDefinitions, 'bom_id', 'BOM-', 3);
+        bomVersion = '1.0';
+        await actions.createBOMDefinition({ bom_id: bom, bom_name: `${name} BOM`, version: '1.0' }, { silent: true });
+      }
+      if (router === CREATE_NEW) {
+        router = nextSequentialId(routers, 'router_id', 'R', 4);
+        await actions.createRouter({ router_id: router, router_name: `${name} routing`, version: '1.0' }, { silent: true });
       }
 
-      // Auto-create Router if left blank
-      if (!router) {
-        const newRouterId = nextSequentialId(routerData, 'router_id', 'R', 4);
-        await actions.createRouter({
-          router_id: newRouterId,
-          router_name: `${productName} Routing`,
-          router_description: `Auto-created for ${productName}`,
-          version: '1.0'
-        }, { silent: true });
-        router = newRouterId;
-      }
-
-      const submitData = {
-        ...formData,
-        bom,
-        router,
-        base_price: formData.base_price ? parseFloat(formData.base_price) : 0
-      };
-
-      await onSave(submitData);
+      const price = String(formData.base_price).replace(/[$,\s]/g, '');
+      await onSave({
+        unit_id: formData.unit_id.trim(),
+        unit_name: name,
+        unit_description: formData.unit_description.trim() || null,
+        base_price: price === '' ? 0 : Number(price),
+        unit_type: canonicalChoice(formData.unit_type, typeOptions) || null,
+        bom: bom || null,
+        bom_version: bom ? (bomVersion || '1.0') : null,
+        router: router || null,
+      });
     } catch (error) {
-      console.error('Error saving product:', error);
-      toast.error('Failed to save product');
+      setErrors(prev => ({ ...prev, form: error?.response?.data?.detail || error?.message || 'The product could not be saved.' }));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleInputChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: null }));
-    }
-  };
-
   if (!isOpen) return null;
 
+  const isEdit = Boolean(product);
+  const lines = formData.bom && formData.bom !== CREATE_NEW && formData.bom_version
+    ? bomLineCount(formData.bom, formData.bom_version, bomLines)
+    : null;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">
-            {product ? 'Edit Product' : 'Add New Product'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 border-b border-gray-200 pb-2">
-              Product Information
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Product ID
-                </label>
-                <input
-                  type="text"
+    <Modal onClick={(e) => e.target === e.currentTarget && !submitting && onClose()} className="max-w-3xl">
+      <form onSubmit={handleSubmit}>
+        <ModalHeader>
+          <ModalTitle>{isEdit ? `Edit ${product.unit_name || product.unit_id}` : 'Add product'}</ModalTitle>
+          <ModalClose type="button" onClick={onClose} aria-label="Close" />
+        </ModalHeader>
+        <ModalContent className="space-y-6">
+          <section className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-id">Product ID</Label>
+                <Input
+                  id="pm-id"
                   value={formData.unit_id}
-                  onChange={(e) => handleInputChange('unit_id', e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                    errors.unit_id ? 'border-red-500' : 'border-gray-300'
-                  } ${!!product ? 'bg-gray-100 cursor-not-allowed' : ''}`}
-                  placeholder={product ? "e.g., PROD-001" : "Auto-generated if left empty"}
-                  disabled={!!product}
+                  onChange={(e) => set('unit_id', e.target.value)}
+                  disabled={isEdit}
+                  placeholder={isEdit ? '' : 'e.g. RFL-308 (left empty: PROD-###)'}
+                  className={isEdit ? 'bg-gray-100' : ''}
                 />
-                {!product && (
-                  <p className="mt-1 text-sm text-gray-500">
-                    Product ID will be auto-generated if left empty
-                  </p>
-                )}
-                {errors.unit_id && (
-                  <p className="mt-1 text-sm text-red-600">{errors.unit_id}</p>
-                )}
+                {isEdit && <p className="text-xs text-gray-500">The ID links sales, prices and BOMs, so it cannot be changed here.</p>}
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Product Name *
-                </label>
-                <input
-                  type="text"
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-name">Product name *</Label>
+                <Input
+                  id="pm-name"
                   value={formData.unit_name}
-                  onChange={(e) => handleInputChange('unit_name', e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                    errors.unit_name ? 'border-red-500' : 'border-gray-300'
-                  }`}
-                  placeholder="Enter product name"
+                  onChange={(e) => set('unit_name', e.target.value)}
+                  placeholder="e.g. Ridgeline Hunter .308"
+                  className={errors.unit_name ? 'border-red-500' : ''}
                 />
-                {errors.unit_name && (
-                  <p className="mt-1 text-sm text-red-600">{errors.unit_name}</p>
-                )}
+                {errors.unit_name && <p className="text-xs text-red-600">{errors.unit_name}</p>}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-type">Product type</Label>
+                <Input
+                  id="pm-type"
+                  list="pm-type-options"
+                  value={formData.unit_type}
+                  onChange={(e) => set('unit_type', e.target.value)}
+                  placeholder="Rifle, Pistol, Component…"
+                  autoComplete="off"
+                />
+                <datalist id="pm-type-options">
+                  {typeOptions.map(t => <option key={t} value={t} />)}
+                </datalist>
+                <p className="text-xs text-gray-500">Excise tax and discount rules can target a product type.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-price">List price</Label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">$</span>
+                  <Input
+                    id="pm-price"
+                    inputMode="decimal"
+                    value={formData.base_price}
+                    onChange={(e) => set('base_price', e.target.value)}
+                    placeholder="0.00"
+                    className={`pl-7 ${errors.base_price ? 'border-red-500' : ''}`}
+                  />
+                </div>
+                {errors.base_price
+                  ? <p className="text-xs text-red-600">{errors.base_price}</p>
+                  : <p className="text-xs text-gray-500">Used when no customer or customer-type price applies.</p>}
               </div>
             </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Description
-              </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="pm-desc">Description</Label>
               <textarea
+                id="pm-desc"
+                rows={2}
                 value={formData.unit_description}
-                onChange={(e) => handleInputChange('unit_description', e.target.value)}
-                placeholder="Enter product description"
-                rows="3"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                onChange={(e) => set('unit_description', e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                placeholder="Optional"
               />
             </div>
+          </section>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Base Price
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={formData.base_price}
-                  onChange={(e) => handleInputChange('base_price', e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                    errors.base_price ? 'border-red-500' : 'border-gray-300'
-                  }`}
-                  placeholder="0.00"
-                />
-                {errors.base_price && (
-                  <p className="mt-1 text-sm text-red-600">{errors.base_price}</p>
-                )}
+          <section className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Costing</h3>
+              <p className="text-xs text-gray-500">Material cost comes from the BOM version, labor and machine cost from the routing.</p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-[2fr_1fr_2fr]">
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-bom">Bill of materials</Label>
+                <select id="pm-bom" className={fieldClass} value={formData.bom} onChange={(e) => chooseBom(e.target.value)}>
+                  <option value="">None (assign later)</option>
+                  {bomIds.map(id => <option key={id} value={id}>{bomLabel(id)}</option>)}
+                  <option value={CREATE_NEW}>+ Create a new empty BOM</option>
+                </select>
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Product Type
-                </label>
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-bom-version">BOM version</Label>
                 <select
-                  value={formData.unit_type}
-                  onChange={(e) => handleInputChange('unit_type', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                  id="pm-bom-version"
+                  className={fieldClass}
+                  value={formData.bom_version}
+                  onChange={(e) => set('bom_version', e.target.value)}
+                  disabled={!formData.bom || formData.bom === CREATE_NEW}
                 >
-                  <option value="">Select Type</option>
-                  <option value="each">Each</option>
-                  <option value="unit">Unit</option>
-                  <option value="piece">Piece</option>
-                  <option value="set">Set</option>
-                  <option value="kit">Kit</option>
-                  <option value="box">Box</option>
-                  <option value="case">Case</option>
-                  <option value="pallet">Pallet</option>
+                  {!formData.bom && <option value="">—</option>}
+                  {formData.bom === CREATE_NEW && <option value="">1.0</option>}
+                  {versions.map(v => (
+                    <option key={v} value={v}>
+                      {v} ({bomLineCount(formData.bom, v, bomLines)} lines)
+                    </option>
+                  ))}
+                </select>
+                {lines === 0 && <p className="text-xs text-amber-700">This version has no lines yet: $0 material.</p>}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pm-router">Routing</Label>
+                <select id="pm-router" className={fieldClass} value={formData.router} onChange={(e) => set('router', e.target.value)}>
+                  <option value="">None (assign later)</option>
+                  {routerIds.map(id => <option key={id} value={id}>{routerLabel(id)}</option>)}
+                  <option value={CREATE_NEW}>+ Create a new empty routing</option>
                 </select>
               </div>
             </div>
-          </div>
-
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 border-b border-gray-200 pb-2">
-              Manufacturing Configuration
-            </h3>
-            <p className="text-sm text-gray-500">
-              Leave either dropdown empty to auto-create a matching BOM or Router for this product.
-            </p>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Bill of Materials (BOM)
-                </label>
-                <select
-                  value={formData.bom}
-                  onChange={(e) => handleInputChange('bom', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                >
-                  <option value="">Auto-create new BOM</option>
-                  {uniqueBOMs.map(bomId => (
-                    <option key={bomId} value={bomId}>{getBOMDisplayName(bomId)}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Router
-                </label>
-                <select
-                  value={formData.router}
-                  onChange={(e) => handleInputChange('router', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                >
-                  <option value="">Auto-create new Router</option>
-                  {uniqueRouters.map(routerId => (
-                    <option key={routerId} value={routerId}>{getRouterDisplayName(routerId)}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
+            {isEdit && product.bom_version && formData.bom === (product.bom ?? product.bom_id) && formData.bom_version !== product.bom_version && (
+              <p className="text-xs text-amber-700">BOM version changes from {product.bom_version} to {formData.bom_version}; material cost will follow the new version.</p>
+            )}
             <UnitCostPreview
-              bomId={formData.bom || null}
-              bomVersion={product?.bom_version || '1.0'}
-              routerId={formData.router || null}
-              className="mt-2"
+              bomId={formData.bom && formData.bom !== CREATE_NEW ? formData.bom : null}
+              bomVersion={formData.bom_version || '1.0'}
+              routerId={formData.router && formData.router !== CREATE_NEW ? formData.router : null}
+              className="mt-1"
             />
-          </div>
+          </section>
 
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-2 text-sm font-medium text-white bg-orange-600 border border-transparent rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:opacity-50"
-            >
-              {submitting ? 'Saving…' : (product ? 'Update Product' : 'Create Product')}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          {errors.form && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">{String(errors.form)}</div>}
+        </ModalContent>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button type="submit" disabled={submitting} className="bg-orange-600 text-white hover:bg-orange-700">
+            {submitting && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+            {isEdit ? 'Save changes' : 'Add product'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 

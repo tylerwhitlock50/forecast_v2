@@ -28,11 +28,12 @@ const FIELD_GROUPS = [
   },
   {
     title: 'Working capital days',
-    help: 'Drive receivables, inventory and payables from revenue and COGS.',
+    help: 'Drive receivables, inventory and payables (and the excise tax still owed) from monthly sales and costs.',
     fields: [
-      { key: 'dso_days', label: 'DSO (days sales outstanding)', type: 'int', help: 'Days of revenue held as accounts receivable.' },
+      { key: 'dso_days', label: 'DSO (days sales outstanding)', type: 'int', help: 'Days of sales held as accounts receivable (net sales plus the excise tax in the price).' },
       { key: 'dio_days', label: 'DIO (days inventory outstanding)', type: 'int', help: 'Days of COGS held as inventory.' },
-      { key: 'dpo_days', label: 'DPO (days payable outstanding)', type: 'int', help: 'Days of COGS and expenses owed as accounts payable.' }
+      { key: 'dpo_days', label: 'DPO (days payable outstanding)', type: 'int', help: 'Days of purchases owed to suppliers: materials, overhead, other COGS, admin and operating expenses and commissions (payroll is paid in the month).' },
+      { key: 'excise_payable_days', label: 'Excise tax payable (days)', type: 'int', blankValue: 30, help: 'Days between collecting federal excise tax in the selling price and paying it to the government. Default 30.' }
     ]
   },
   {
@@ -62,7 +63,7 @@ export const toForm = (assumptions = {}) => {
   return form;
 };
 
-// Form strings -> API payload (tax as decimal, blank nullable -> null).
+// Form strings -> API payload (tax as decimal, blank nullable -> null, other blanks -> blankValue or 0).
 export const fromForm = (form) => {
   const payload = {};
   ALL_FIELDS.forEach(f => {
@@ -70,7 +71,7 @@ export const fromForm = (form) => {
     if (f.type === 'text' || f.type === 'period') {
       payload[f.key] = raw === '' || raw === undefined ? null : raw;
     } else if (raw === '' || raw === undefined || raw === null) {
-      payload[f.key] = f.nullable ? null : 0;
+      payload[f.key] = f.nullable ? null : (f.blankValue ?? 0);
     } else if (f.type === 'percent') {
       payload[f.key] = parseFloat(raw) / 100;
     } else if (f.type === 'int') {
@@ -289,7 +290,7 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleResetToDefaults} disabled={!defaults || saving}>Reset to defaults</Button>
-          <Button size="sm" onClick={handleSave} disabled={saving || loading}>{saving ? 'Saving...' : dirty ? 'Save assumptions' : 'Saved'}</Button>
+          <Button size="sm" onClick={handleSave} disabled={saving || loading}>{saving ? 'Saving...' : dirty || (assumptions && !assumptions.found) ? 'Save assumptions' : 'Saved'}</Button>
         </div>
       </div>
 

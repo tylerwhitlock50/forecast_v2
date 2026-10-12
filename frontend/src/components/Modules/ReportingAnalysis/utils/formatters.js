@@ -1,4 +1,8 @@
 // Utility functions for formatting financial data
+//
+// Money is rounded the shared way (lib/money): to 4 dp first, then half away
+// from zero, so a per-unit cost of 70.475 shows as 70.48 on every screen.
+import { roundHalfAwayFromZero } from '../../../../lib/money';
 
 export const formatCurrency = (amount, options = {}) => {
   const {
@@ -20,12 +24,14 @@ export const formatCurrency = (amount, options = {}) => {
     amount = parsed;
   }
 
+  if (!Number.isFinite(amount)) return showZero ? '$0.00' : '-';
+  const rounded = roundHalfAwayFromZero(amount, maximumFractionDigits);
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency,
     minimumFractionDigits,
     maximumFractionDigits
-  }).format(amount);
+  }).format(rounded === 0 ? 0 : rounded);
 };
 
 export const formatPercentage = (value, total, options = {}) => {
@@ -272,11 +278,11 @@ export const formatAccounting = (value, options = {}) => {
   if (value === null || value === undefined || value === '') return dash;
 
   const num = typeof value === 'number' ? value : parseFloat(value);
-  if (isNaN(num)) return dash;
+  if (!Number.isFinite(num)) return dash;
 
-  const abs = Math.abs(num);
-  // Treat tiny rounding noise as zero so "-0" never shows as "(0)".
-  const rounded = Number(abs.toFixed(decimals));
+  // Shared money rounding (4 dp, then half away from zero). Tiny noise
+  // rounds to zero, so "-0" never shows as "(0)".
+  const rounded = Math.abs(roundHalfAwayFromZero(num, decimals));
   const formatted = new Intl.NumberFormat('en-US', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals
@@ -293,6 +299,28 @@ export const formatPct = (value, options = {}) => {
   const { decimals = 1, dash = '—' } = options;
   if (value === null || value === undefined || value === '') return dash;
   const num = typeof value === 'number' ? value : parseFloat(value);
-  if (isNaN(num)) return dash;
-  return `${num.toFixed(decimals)}%`;
+  if (!Number.isFinite(num)) return dash;
+  return `${roundHalfAwayFromZero(num, decimals).toFixed(decimals)}%`;
+};
+
+// ['2027-01','2027-02','2027-03','2027-05'] -> "Jan – Mar 2027, May 2027".
+// Consecutive months collapse into ranges so long period lists stay readable.
+export const formatPeriodRanges = (periods) => {
+  const valid = [...new Set((periods || []).filter(p => /^\d{4}-\d{2}$/.test(p)))].sort();
+  const others = (periods || []).filter(p => !/^\d{4}-\d{2}$/.test(p));
+  const index = (p) => Number(p.slice(0, 4)) * 12 + Number(p.slice(5, 7)) - 1;
+  const runs = [];
+  valid.forEach(p => {
+    const last = runs[runs.length - 1];
+    if (last && index(p) === index(last.end) + 1) last.end = p;
+    else runs.push({ start: p, end: p });
+  });
+  const label = ({ start, end }) => {
+    if (start === end) return formatPeriod(start);
+    if (start.slice(0, 4) === end.slice(0, 4)) {
+      return `${formatPeriod(start).split(' ')[0]} – ${formatPeriod(end)}`;
+    }
+    return `${formatPeriod(start)} – ${formatPeriod(end)}`;
+  };
+  return [...runs.map(label), ...others].join(', ');
 };

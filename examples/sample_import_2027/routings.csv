@@ -1,0 +1,36 @@
+Routing,Routing Name,Op Seq,Work Center,Operation Description,Setup Time,Run Time,Labor Time,Labor Class,Product
+RT-RF100,RF-100 routing,10,WC-LATH1,Turn and chamber barrel,15,42,20,MACH,RF-100
+RT-RF100,RF-100 routing,20,WC-MILL1,Mill receiver,15,55,25,MACH,RF-100
+RT-RF100,RF-100 routing,30,WC-FIN1,Cerakote finish,15,18,18,FIN,RF-100
+RT-RF100,RF-100 routing,40,WC-TEST,Assemble and headspace,15,10,75,ASSY,RF-100
+RT-RF100,RF-100 routing,50,WC-TEST,Function test and inspect,15,12,15,QC,RF-100
+RT-RF200,RF-200 routing,10,WC-LATH1,"Turn, flute and chamber barrel",15,60,25,MACH,RF-200
+RT-RF200,RF-200 routing,20,WC-MILL1,Mill receiver and bolt,15,70,30,MACH,RF-200
+RT-RF200,RF-200 routing,30,WC-EDM1,EDM bolt lugs,15,25,5,MACH,RF-200
+RT-RF200,RF-200 routing,40,WC-FIN1,Cerakote finish,15,22,22,FIN,RF-200
+RT-RF200,RF-200 routing,50,WC-TEST,"Assemble, bed and headspace",15,10,95,ASSY,RF-200
+RT-RF200,RF-200 routing,60,WC-TEST,Accuracy test and inspect,15,20,25,QC,RF-200
+RT-RF300,RF-300 routing,10,WC-LATH1,Turn and chamber carbon barrel,15,75,30,MACH,RF-300
+RT-RF300,RF-300 routing,20,WC-MILL1,Mill titanium receiver,15,85,35,MACH,RF-300
+RT-RF300,RF-300 routing,30,WC-EDM1,EDM bolt lugs,15,30,5,MACH,RF-300
+RT-RF300,RF-300 routing,40,WC-FIN1,Cerakote finish,15,25,25,FIN,RF-300
+RT-RF300,RF-300 routing,50,WC-TEST,Assemble and bed,15,10,120,ASSY,RF-300
+RT-RF300,RF-300 routing,60,WC-TEST,Accuracy test and inspect,15,25,30,QC,RF-300
+RT-PS100,PS-100 routing,10,WC-MILL1,Mill slide,15,35,15,MACH,PS-100
+RT-PS100,PS-100 routing,20,WC-LATH1,Turn barrel,15,20,8,MACH,PS-100
+RT-PS100,PS-100 routing,30,WC-FIN1,Nitride / finish,15,12,12,FIN,PS-100
+RT-PS100,PS-100 routing,40,WC-TEST,Assemble,15,5,40,ASSY,PS-100
+RT-PS100,PS-100 routing,50,WC-TEST,Live fire test,15,8,10,QC,PS-100
+RT-PS200,PS-200 routing,10,WC-MILL1,Mill slide,15,30,14,MACH,PS-200
+RT-PS200,PS-200 routing,20,WC-LATH1,Turn barrel,15,18,7,MACH,PS-200
+RT-PS200,PS-200 routing,30,WC-FIN1,Nitride / finish,15,10,10,FIN,PS-200
+RT-PS200,PS-200 routing,40,WC-TEST,Assemble,15,5,35,ASSY,PS-200
+RT-PS200,PS-200 routing,50,WC-TEST,Live fire test,15,8,10,QC,PS-200
+RT-AC100,AC-100 routing,10,WC-LATH1,Turn and port brake,15,12,4,MACH,AC-100
+RT-AC100,AC-100 routing,20,WC-FIN1,Finish,15,4,4,FIN,AC-100
+RT-AC100,AC-100 routing,30,WC-TEST,Inspect and pack,0,0,3,QC,AC-100
+RT-AC200,AC-200 routing,10,WC-MILL1,Mill mount,15,15,5,MACH,AC-200
+RT-AC200,AC-200 routing,20,WC-FIN1,Anodize prep,15,3,3,FIN,AC-200
+RT-AC200,AC-200 routing,30,WC-TEST,Inspect and pack,0,0,3,QC,AC-200
+RT-AC300,AC-300 routing,10,WC-TEST,Fit foam and assemble case,0,0,12,ASSY,AC-300
+RT-AC300,AC-300 routing,20,WC-TEST,Inspect and pack,0,0,2,QC,AC-300

@@ -14,6 +14,7 @@ from db.models import (
     ForecastResponse
 )
 from db.database import db_manager
+from services.financial_statements import add_months
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
@@ -35,6 +36,7 @@ async def get_expense_categories(
     """
     Get all expense categories with optional filtering
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -93,6 +95,7 @@ async def create_expense_category(category: ExpenseCategoryCreate):
     """
     Create a new expense category
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -138,6 +141,7 @@ async def get_expenses(
     """
     Get all expenses with optional filtering and category details
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -244,6 +248,7 @@ async def create_expense(expense: ExpenseCreate):
     """
     Create a new expense and generate allocations
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -301,6 +306,7 @@ async def update_expense(expense_id: str, expense_update: ExpenseUpdate):
     """
     Update an existing expense and regenerate allocations if necessary
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -386,6 +392,7 @@ async def delete_expense(expense_id: str):
     """
     Delete an expense and its allocations
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -426,6 +433,7 @@ async def get_expense_allocations(
     """
     Get expense allocations with filtering
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -508,6 +516,7 @@ async def get_expense_forecast(
     """
     Get expense forecast for a period range
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -575,6 +584,7 @@ async def get_expense_summary(
     Headline totals for the expense overview: monthly-equivalent run rate,
     annual total and annual totals by category type, over active expenses.
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -621,8 +631,13 @@ async def get_expense_summary(
             },
             message="Expense summary",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build expense summary: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/report", response_model=ForecastResponse)
 async def get_expense_report(
@@ -631,6 +646,7 @@ async def get_expense_report(
     """
     Get comprehensive expense report with summary statistics
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -808,53 +824,51 @@ async def get_expense_report(
 # Helper Functions
 # ========================
 
+# Months between payments for the calendar-month frequencies.
+_MONTH_STEPS = {'monthly': 1, 'quarterly': 3, 'biannually': 6, 'annually': 12}
+
+
+def _occurrence(start: date, frequency: str, index: int) -> date:
+    """
+    The index-th payment date of a recurring expense, counted from its start
+    date on real calendars: weekly adds 7 days; the monthly frequencies add
+    calendar months with the day clamped to the month end, always from the
+    START date so a payment on the 31st lands on Feb 28/29 and then on Mar 31
+    again (no drift, no 'day is out of range').
+    """
+    if frequency == 'weekly':
+        return start + timedelta(weeks=index)
+    return add_months(start, _MONTH_STEPS[frequency] * index)
+
+
 def calculate_next_payment(start_date: str, frequency: str, amount: float, end_date: str = None) -> tuple:
     """Calculate the next payment date and amount for an expense"""
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d").date()
         today = date.today()
-        
+
         if end_date:
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
             if today > end:
                 return None, None
-        
+
         if frequency == 'one_time':
             if today <= start:
                 return start_date, amount
             else:
                 return None, None
-        
-        # Calculate next occurrence
+
+        if frequency != 'weekly' and frequency not in _MONTH_STEPS:
+            return None, None
+        index = 0
         current = start
         while current <= today:
-            if frequency == 'weekly':
-                current += timedelta(weeks=1)
-            elif frequency == 'monthly':
-                if current.month == 12:
-                    current = current.replace(year=current.year + 1, month=1)
-                else:
-                    current = current.replace(month=current.month + 1)
-            elif frequency == 'quarterly':
-                month = current.month + 3
-                year = current.year
-                if month > 12:
-                    month -= 12
-                    year += 1
-                current = current.replace(year=year, month=month)
-            elif frequency == 'biannually':
-                month = current.month + 6
-                year = current.year
-                if month > 12:
-                    month -= 12
-                    year += 1
-                current = current.replace(year=year, month=month)
-            elif frequency == 'annually':
-                current = current.replace(year=current.year + 1)
-        
+            index += 1
+            current = _occurrence(start, frequency, index)
+
         return current.strftime("%Y-%m-%d"), amount
-        
-    except Exception as e:
+
+    except Exception:
         return None, None
 
 def calculate_annual_cost(amount: float, frequency: str) -> float:
@@ -878,25 +892,19 @@ def generate_expense_allocations(expense_id: str, expense: ExpenseCreate) -> Lis
         end_date = datetime.strptime(expense.end_date, "%Y-%m-%d").date()
     else:
         # Default to 2 years from start if no end date
-        end_date = start_date.replace(year=start_date.year + 2)
+        end_date = add_months(start_date, 24)
     
     if expense.frequency == 'one_time':
         period = start_date.strftime("%Y-%m")
         if expense.expense_allocation == 'amortized' and expense.amortization_months:
             # Spread over multiple months
             monthly_amount = expense.amount / expense.amortization_months
-            current_date = start_date
-            for _ in range(expense.amortization_months):
+            for month_index in range(expense.amortization_months):
                 allocations.append({
-                    'period': current_date.strftime("%Y-%m"),
+                    'period': add_months(start_date, month_index).strftime("%Y-%m"),
                     'amount': monthly_amount,
                     'type': 'amortized'
                 })
-                # Move to next month
-                if current_date.month == 12:
-                    current_date = current_date.replace(year=current_date.year + 1, month=1)
-                else:
-                    current_date = current_date.replace(month=current_date.month + 1)
         else:
             # All at once
             allocations.append({
@@ -906,6 +914,9 @@ def generate_expense_allocations(expense_id: str, expense: ExpenseCreate) -> Lis
             })
     else:
         # Recurring expense
+        if expense.frequency != 'weekly' and expense.frequency not in _MONTH_STEPS:
+            return allocations
+        occurrence = 0
         current_date = start_date
         while current_date <= end_date:
             if expense.expense_allocation == 'amortized' and expense.amortization_months:
@@ -914,18 +925,12 @@ def generate_expense_allocations(expense_id: str, expense: ExpenseCreate) -> Lis
                                         (end_date.year - current_date.year) * 12 + end_date.month - current_date.month + 1)
                 monthly_amount = expense.amount / periods_to_amortize
                 
-                amortize_date = current_date
-                for _ in range(periods_to_amortize):
+                for month_index in range(periods_to_amortize):
                     allocations.append({
-                        'period': amortize_date.strftime("%Y-%m"),
+                        'period': add_months(current_date, month_index).strftime("%Y-%m"),
                         'amount': monthly_amount,
                         'type': 'amortized'
                     })
-                    # Move to next month for amortization
-                    if amortize_date.month == 12:
-                        amortize_date = amortize_date.replace(year=amortize_date.year + 1, month=1)
-                    else:
-                        amortize_date = amortize_date.replace(month=amortize_date.month + 1)
             else:
                 # Immediate allocation
                 allocations.append({
@@ -934,29 +939,8 @@ def generate_expense_allocations(expense_id: str, expense: ExpenseCreate) -> Lis
                     'type': 'scheduled'
                 })
             
-            # Move to next payment date
-            if expense.frequency == 'weekly':
-                current_date += timedelta(weeks=1)
-            elif expense.frequency == 'monthly':
-                if current_date.month == 12:
-                    current_date = current_date.replace(year=current_date.year + 1, month=1)
-                else:
-                    current_date = current_date.replace(month=current_date.month + 1)
-            elif expense.frequency == 'quarterly':
-                month = current_date.month + 3
-                year = current_date.year
-                if month > 12:
-                    month -= 12
-                    year += 1
-                current_date = current_date.replace(year=year, month=month)
-            elif expense.frequency == 'biannually':
-                month = current_date.month + 6
-                year = current_date.year
-                if month > 12:
-                    month -= 12
-                    year += 1
-                current_date = current_date.replace(year=year, month=month)
-            elif expense.frequency == 'annually':
-                current_date = current_date.replace(year=current_date.year + 1)
+            # Move to next payment date (counted from the start date)
+            occurrence += 1
+            current_date = _occurrence(start_date, expense.frequency, occurrence)
     
     return allocations

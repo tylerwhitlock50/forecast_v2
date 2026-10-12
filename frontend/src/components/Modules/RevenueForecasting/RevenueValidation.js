@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { useForecast } from '../../../context/ForecastContext';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import Papa from 'papaparse';
 import { toast } from 'react-hot-toast';
+import { useForecast } from '../../../context/ForecastContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
@@ -8,443 +10,232 @@ import api from '../../../lib/apiClient';
 import CustomerModal from '../CustomerManagement/CustomerModal';
 import ProductModal from '../ProductManagement/ProductModal';
 
+const blank = (v) => v === null || v === undefined || String(v).trim() === '';
+
+const IssueCard = ({ title, tone = 'amber', help, children, count }) => (
+  <Card>
+    <CardHeader className="pb-2">
+      <CardTitle className={`flex items-center gap-2 text-base ${tone === 'red' ? 'text-red-700' : 'text-gray-900'}`}>
+        {title}
+        <Badge variant="secondary">{count}</Badge>
+      </CardTitle>
+      {help && <p className="text-sm text-gray-600">{help}</p>}
+    </CardHeader>
+    <CardContent className="space-y-2">{children}</CardContent>
+  </Card>
+);
+
+const Row = ({ title, subtitle, badges, action }) => (
+  <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+    <div className="min-w-0">
+      <div className="truncate text-sm font-medium text-gray-900">{title}</div>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+        {subtitle}
+        {badges}
+      </div>
+    </div>
+    {action}
+  </div>
+);
+
+/**
+ * Checks that matter for the sales forecast: customers without a type
+ * (customer-type prices and discounts cannot apply), products without a
+ * list price, BOM or routing (no fallback price, no COGS), sales rows that
+ * point at missing records, and unreadable periods.
+ */
 const RevenueValidation = ({ data }) => {
   const { actions } = useForecast();
   const [validationData, setValidationData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showCustomerModal, setShowCustomerModal] = useState(false);
-  const [showProductModal, setShowProductModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
   const [editingProduct, setEditingProduct] = useState(null);
 
-  useEffect(() => {
-    fetchValidationData();
-  }, []);
-
-  const fetchValidationData = async () => {
+  const fetchValidationData = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const response = await api.get('/data/validation/issues');
-      if (response.status === 'success') {
-        setValidationData(response.data);
-      }
+      const response = await api.get('/data/validation/issues', { suppressErrorToast: true });
+      setValidationData(response?.data || {});
     } catch (error) {
-      console.error('Error fetching validation data:', error);
-      toast.error('Failed to load validation data');
+      toast.error('Could not load the data checks');
+      setValidationData({});
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleEditCustomer = (customer) => {
-    setEditingCustomer(customer);
-    setShowCustomerModal(true);
-  };
+  useEffect(() => { fetchValidationData(); }, [fetchValidationData]);
 
-  const handleEditProduct = (product) => {
-    setEditingProduct(product);
-    setShowProductModal(true);
+  const checks = useMemo(() => {
+    const customers = data.customers || [];
+    const products = data.products || [];
+    return {
+      untypedCustomers: customers.filter(c => blank(c.customer_type)),
+      unpricedProducts: products.filter(p => !(Number(p.base_price) > 0)),
+      uncostedProducts: products.filter(p => blank(p.bom) || blank(p.router)),
+      orphanedSales: validationData?.orphaned_sales || [],
+      invalidPeriods: validationData?.invalid_periods || [],
+    };
+  }, [data.customers, data.products, validationData]);
+
+  const total = checks.untypedCustomers.length + checks.unpricedProducts.length + checks.uncostedProducts.length
+    + checks.orphanedSales.length + checks.invalidPeriods.length;
+
+  const refreshAll = async () => {
+    await Promise.all([fetchValidationData(), actions.fetchAllData()]);
   };
 
   const handleSaveCustomer = async (customerData) => {
-    try {
-      if (editingCustomer) {
-        await actions.updateCustomer(editingCustomer.customer_id, customerData);
-      } else {
-        await actions.createCustomer(customerData);
-      }
-      setShowCustomerModal(false);
-      setEditingCustomer(null);
-      await fetchValidationData();
-      await actions.fetchAllData();
-    } catch (error) {
-      console.error('Error saving customer:', error);
-      throw error;
-    }
+    await actions.updateCustomer(editingCustomer.customer_id, customerData);
+    setEditingCustomer(null);
+    await refreshAll();
   };
 
   const handleSaveProduct = async (productData) => {
-    try {
-      if (editingProduct) {
-        await actions.updateProduct(editingProduct.unit_id, productData);
-      } else {
-        await actions.createProduct(productData);
-      }
-      setShowProductModal(false);
-      setEditingProduct(null);
-      await fetchValidationData();
-      await actions.fetchAllData();
-    } catch (error) {
-      console.error('Error saving product:', error);
-      throw error;
-    }
-  };
-
-  const handleFillMissingFields = async (type) => {
-    try {
-      if (type === 'customers') {
-        const incomplete = validationData?.incomplete_customers || [];
-        for (const customer of incomplete) {
-          await actions.updateCustomer(customer.customer_id, {
-            customer_type: customer.customer_type || 'Unknown',
-            region: customer.region || 'Unknown'
-          });
-        }
-        toast.success(`Updated ${incomplete.length} customers with default values`);
-      } else if (type === 'products') {
-        const incomplete = validationData?.incomplete_products || [];
-        for (const product of incomplete) {
-          await actions.updateProduct(product.unit_id, {
-            base_price: product.base_price || 0,
-            unit_description: product.unit_description || 'No description'
-          });
-        }
-        toast.success(`Updated ${incomplete.length} products with default values`);
-      }
-      await fetchValidationData();
-      await actions.fetchAllData();
-    } catch (error) {
-      console.error('Error filling missing fields:', error);
-      toast.error('Failed to fill missing fields');
-    }
+    await actions.updateProduct(editingProduct.unit_id, productData);
+    setEditingProduct(null);
+    await refreshAll();
   };
 
   const handleExportIssues = () => {
-    if (!validationData) return;
-
-    const issues = [];
-    
-    // Add incomplete customers
-    (validationData.incomplete_customers || []).forEach(customer => {
-      issues.push({
-        type: 'Incomplete Customer',
-        id: customer.customer_id,
-        name: customer.customer_name,
-        issue: `Missing: ${!customer.customer_type ? 'customer_type' : ''} ${!customer.region ? 'region' : ''}`.trim()
-      });
-    });
-
-    // Add incomplete products
-    (validationData.incomplete_products || []).forEach(product => {
-      issues.push({
-        type: 'Incomplete Product',
-        id: product.unit_id,
-        name: product.unit_name,
-        issue: `Missing: ${!product.base_price || product.base_price === 0 ? 'base_price' : ''} ${!product.unit_description ? 'unit_description' : ''}`.trim()
-      });
-    });
-
-    // Add orphaned sales
-    (validationData.orphaned_sales || []).forEach(sale => {
-      issues.push({
-        type: 'Orphaned Sale',
-        id: sale.sale_id,
-        customer_id: sale.customer_id,
-        product_id: sale.unit_id,
-        issue: 'Referenced customer or product does not exist'
-      });
-    });
-
-    // Add invalid periods
-    (validationData.invalid_periods || []).forEach(sale => {
-      issues.push({
-        type: 'Invalid Period',
-        id: sale.sale_id,
-        period: sale.period,
-        issue: 'Period format is invalid (expected YYYY-MM, YYYY-QX, or YYYY-WXX)'
-      });
-    });
-
-    // Convert to CSV
-    if (issues.length === 0) {
-      toast.info('No issues to export');
+    const rows = [
+      ...checks.untypedCustomers.map(c => ({ check: 'Customer without a type', id: c.customer_id, name: c.customer_name, detail: '' })),
+      ...checks.unpricedProducts.map(p => ({ check: 'Product without a list price', id: p.unit_id, name: p.unit_name, detail: '' })),
+      ...checks.uncostedProducts.map(p => ({
+        check: 'Product without BOM or routing',
+        id: p.unit_id,
+        name: p.unit_name,
+        detail: [blank(p.bom) && 'no BOM', blank(p.router) && 'no routing'].filter(Boolean).join(', '),
+      })),
+      ...checks.orphanedSales.map(s => ({ check: 'Sales row for a missing customer or product', id: s.sale_id, name: `${s.customer_id || ''} / ${s.unit_id || ''}`, detail: s.period || '' })),
+      ...checks.invalidPeriods.map(s => ({ check: 'Unreadable period', id: s.sale_id, name: '', detail: s.period || '' })),
+    ];
+    if (rows.length === 0) {
+      toast('Nothing to export: no issues found.', { icon: 'ℹ️' });
       return;
     }
-
-    const headers = Object.keys(issues[0]);
-    const csv = [
-      headers.join(','),
-      ...issues.map(issue => headers.map(header => issue[header] || '').join(','))
-    ].join('\n');
-
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
+    const csv = Papa.unparse(rows, { columns: ['check', 'id', 'name', 'detail'] });
+    const url = URL.createObjectURL(new Blob([`﻿${csv}\n`], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `validation_issues_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `sales-data-checks_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${issues.length} issues`);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast.success(`Exported ${rows.length} issue${rows.length === 1 ? '' : 's'}`);
   };
 
-  if (loading) {
+  if (loading && !validationData) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
+      <div className="flex h-48 items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-orange-600" />
       </div>
     );
   }
 
-  const summary = validationData?.summary || {};
-  const totalIssues = summary.total_issues || 0;
+  const editButton = (onClick) => <Button size="sm" variant="outline" onClick={onClick}>Edit</Button>;
 
   return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-sm font-medium text-gray-600">Incomplete Customers</div>
-            <div className="text-2xl font-bold text-orange-600 mt-2">
-              {summary.incomplete_customers_count || 0}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-sm font-medium text-gray-600">Incomplete Products</div>
-            <div className="text-2xl font-bold text-orange-600 mt-2">
-              {summary.incomplete_products_count || 0}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-sm font-medium text-gray-600">Orphaned Sales</div>
-            <div className="text-2xl font-bold text-red-600 mt-2">
-              {summary.orphaned_sales_count || 0}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-sm font-medium text-gray-600">Invalid Periods</div>
-            <div className="text-2xl font-bold text-red-600 mt-2">
-              {summary.invalid_periods_count || 0}
-            </div>
-          </CardContent>
-        </Card>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-gray-600">
+          {total === 0 ? 'No problems found in customers, products or sales rows.' : `${total} item${total === 1 ? '' : 's'} need attention before the forecast prices and costs out fully.`}
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportIssues} disabled={total === 0}>Export list</Button>
+          <Button variant="outline" size="sm" onClick={refreshAll}>Check again</Button>
+        </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="flex items-center gap-3">
-        <Button
-          onClick={() => handleFillMissingFields('customers')}
-          disabled={!summary.incomplete_customers_count}
-          variant="outline"
+      {checks.untypedCustomers.length > 0 && (
+        <IssueCard
+          title="Customers without a customer type"
+          count={checks.untypedCustomers.length}
+          help="Customer-type prices and discounts (Dealer, Distributor…) cannot apply to these customers."
         >
-          Fill Missing Customer Fields
-        </Button>
-        <Button
-          onClick={() => handleFillMissingFields('products')}
-          disabled={!summary.incomplete_products_count}
-          variant="outline"
-        >
-          Fill Missing Product Fields
-        </Button>
-        <Button
-          onClick={handleExportIssues}
-          disabled={totalIssues === 0}
-          variant="outline"
-        >
-          Export Issues
-        </Button>
-        <Button
-          onClick={fetchValidationData}
-          variant="outline"
-        >
-          Refresh
-        </Button>
-      </div>
-
-      {/* Incomplete Customers */}
-      {validationData?.incomplete_customers?.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Incomplete Customers ({validationData.incomplete_customers.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {validationData.incomplete_customers.map((customer, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50"
-                >
-                  <div className="flex-1">
-                    <div className="font-medium text-gray-900">{customer.customer_name}</div>
-                    <div className="text-sm text-gray-500">ID: {customer.customer_id}</div>
-                    <div className="flex gap-2 mt-2">
-                      {!customer.customer_type && (
-                        <Badge variant="outline" className="bg-yellow-50 text-yellow-700">
-                          Missing Type
-                        </Badge>
-                      )}
-                      {!customer.region && (
-                        <Badge variant="outline" className="bg-yellow-50 text-yellow-700">
-                          Missing Region
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleEditCustomer(customer)}
-                  >
-                    Edit
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+          {checks.untypedCustomers.map(c => (
+            <Row key={c.customer_id} title={c.customer_name || c.customer_id} subtitle={<span>ID {c.customer_id}</span>} action={editButton(() => setEditingCustomer(c))} />
+          ))}
+        </IssueCard>
       )}
 
-      {/* Incomplete Products */}
-      {validationData?.incomplete_products?.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Incomplete Products ({validationData.incomplete_products.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {validationData.incomplete_products.map((product, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50"
-                >
-                  <div className="flex-1">
-                    <div className="font-medium text-gray-900">{product.unit_name}</div>
-                    <div className="text-sm text-gray-500">ID: {product.unit_id}</div>
-                    <div className="flex gap-2 mt-2">
-                      {(!product.base_price || product.base_price === 0) && (
-                        <Badge variant="outline" className="bg-yellow-50 text-yellow-700">
-                          Missing Price
-                        </Badge>
-                      )}
-                      {!product.unit_description && (
-                        <Badge variant="outline" className="bg-yellow-50 text-yellow-700">
-                          Missing Description
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleEditProduct(product)}
-                  >
-                    Edit
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {checks.unpricedProducts.length > 0 && (
+        <IssueCard
+          title="Products without a list price"
+          count={checks.unpricedProducts.length}
+          help="Sales rows without a price fall back to the list price; with none they import at $0 only when you allow it."
+        >
+          {checks.unpricedProducts.map(p => (
+            <Row key={p.unit_id} title={p.unit_name || p.unit_id} subtitle={<span>ID {p.unit_id}</span>} action={editButton(() => setEditingProduct(p))} />
+          ))}
+        </IssueCard>
       )}
 
-      {/* Orphaned Sales */}
-      {validationData?.orphaned_sales?.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-red-600">
-              Orphaned Sales ({validationData.orphaned_sales.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-sm text-gray-600 mb-4">
-              These sales reference customers or products that no longer exist.
-            </div>
-            <div className="space-y-2">
-              {validationData.orphaned_sales.map((sale, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 border border-red-200 rounded-lg bg-red-50"
-                >
-                  <div className="text-sm">
-                    <span className="font-medium">Sale ID:</span> {sale.sale_id}
-                  </div>
-                  <div className="text-sm">
-                    <span className="font-medium">Customer:</span> {sale.customer_id || 'N/A'}
-                  </div>
-                  <div className="text-sm">
-                    <span className="font-medium">Product:</span> {sale.unit_id || 'N/A'}
-                  </div>
-                  <div className="text-sm">
-                    <span className="font-medium">Period:</span> {sale.period || 'N/A'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {checks.uncostedProducts.length > 0 && (
+        <IssueCard
+          title="Products without a BOM or routing"
+          count={checks.uncostedProducts.length}
+          help={<>These products have no material or labor cost, so COGS is understated. <Link className="font-medium text-orange-700 hover:underline" to="/import">Import BOMs and routings</Link>, then link them here.</>}
+        >
+          {checks.uncostedProducts.map(p => (
+            <Row
+              key={p.unit_id}
+              title={p.unit_name || p.unit_id}
+              subtitle={<span>ID {p.unit_id}</span>}
+              badges={<>
+                {blank(p.bom) && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">No BOM</Badge>}
+                {blank(p.router) && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">No routing</Badge>}
+              </>}
+              action={editButton(() => setEditingProduct(p))}
+            />
+          ))}
+        </IssueCard>
       )}
 
-      {/* Invalid Periods */}
-      {validationData?.invalid_periods?.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-red-600">
-              Invalid Periods ({validationData.invalid_periods.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-sm text-gray-600 mb-4">
-              These sales have invalid period formats. Expected: YYYY-MM, YYYY-QX, or YYYY-WXX
-            </div>
-            <div className="space-y-2">
-              {validationData.invalid_periods.map((sale, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 border border-red-200 rounded-lg bg-red-50"
-                >
-                  <div className="text-sm">
-                    <span className="font-medium">Sale ID:</span> {sale.sale_id}
-                  </div>
-                  <div className="text-sm">
-                    <span className="font-medium">Period:</span> {sale.period}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {checks.orphanedSales.length > 0 && (
+        <IssueCard
+          tone="red"
+          title="Sales rows for a missing customer or product"
+          count={checks.orphanedSales.length}
+          help="Add the customer or product back, or delete these rows."
+        >
+          {checks.orphanedSales.slice(0, 50).map((s, i) => (
+            <Row key={s.sale_id || i} title={`${s.customer_id || '—'} · ${s.unit_id || '—'}`} subtitle={<span>{s.period || ''} · {s.sale_id}</span>} />
+          ))}
+          {checks.orphanedSales.length > 50 && <p className="text-xs text-gray-500">…and {checks.orphanedSales.length - 50} more (Export list for all).</p>}
+        </IssueCard>
       )}
 
-      {/* No Issues */}
-      {totalIssues === 0 && (
+      {checks.invalidPeriods.length > 0 && (
+        <IssueCard tone="red" title="Unreadable periods" count={checks.invalidPeriods.length} help="Periods must be months (YYYY-MM).">
+          {checks.invalidPeriods.slice(0, 50).map((s, i) => (
+            <Row key={s.sale_id || i} title={String(s.period)} subtitle={<span>{s.sale_id}</span>} />
+          ))}
+        </IssueCard>
+      )}
+
+      {total === 0 && (
         <Card>
           <CardContent className="p-8 text-center">
-            <div className="text-green-600 text-4xl mb-4">✓</div>
-            <div className="text-xl font-semibold text-gray-900 mb-2">All Good!</div>
-            <div className="text-gray-600">No validation issues found.</div>
+            <div className="mb-2 text-3xl text-green-600">✓</div>
+            <div className="text-base font-semibold text-gray-900">All checks pass</div>
           </CardContent>
         </Card>
       )}
 
-      {/* Modals */}
       <CustomerModal
-        isOpen={showCustomerModal}
-        onClose={() => {
-          setShowCustomerModal(false);
-          setEditingCustomer(null);
-        }}
+        isOpen={Boolean(editingCustomer)}
+        onClose={() => setEditingCustomer(null)}
         onSave={handleSaveCustomer}
         customer={editingCustomer}
         existingCustomers={data.customers || []}
       />
-
       <ProductModal
-        isOpen={showProductModal}
-        onClose={() => {
-          setShowProductModal(false);
-          setEditingProduct(null);
-        }}
+        isOpen={Boolean(editingProduct)}
+        onClose={() => setEditingProduct(null)}
         onSave={handleSaveProduct}
         product={editingProduct}
-        bomData={data.bom || []}
-        routerData={data.routing || []}
-        actions={actions}
       />
     </div>
   );

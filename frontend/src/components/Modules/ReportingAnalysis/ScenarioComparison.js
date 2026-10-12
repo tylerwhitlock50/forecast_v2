@@ -4,21 +4,42 @@ import { useForecast } from '../../../context/ForecastContext';
 import ScenarioPicker from './components/ScenarioPicker';
 import ReportingControls from './components/ReportingControls';
 import { useScenarioComparison } from './hooks/useScenarioComparison';
+import { useReportWindow } from './hooks/useReportWindow';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { formatAccounting, formatPeriod } from './utils/formatters';
 
-const METRICS = [
-  { key: 'revenue', label: 'Revenue', direction: 'income' },
+// `optional` lines show only when the comparison API returns them.
+export const METRICS = [
+  { key: 'gross_sales', label: 'Gross sales', direction: 'income', optional: true },
+  { key: 'total_sales_deductions', label: 'Sales deductions', direction: 'expense', optional: true },
+  { key: 'revenue', label: 'Net sales', direction: 'income' },
   { key: 'cogs', label: 'Cost of goods sold', direction: 'expense' },
   { key: 'gross_profit', label: 'Gross profit', direction: 'income', bold: true },
+  { key: 'commissions', label: 'Sales commissions', direction: 'expense' },
   { key: 'payroll', label: 'Payroll', direction: 'expense' },
   { key: 'expenses', label: 'Other operating expense', direction: 'expense' },
   { key: 'operating_income', label: 'Operating income', direction: 'income', bold: true },
+  { key: 'interest_expense', label: 'Interest expense', direction: 'expense', optional: true },
+  { key: 'pre_tax_income', label: 'Pre-tax income', direction: 'income', bold: true, optional: true },
+  { key: 'income_tax', label: 'Income tax', direction: 'expense', optional: true },
   { key: 'net_income', label: 'Net income', direction: 'income', bold: true },
   { key: 'closing_cash', label: 'Closing cash', direction: 'income', bold: true },
 ];
+
+const num = (v) => (typeof v === 'number' ? v : 0);
+
+/**
+ * Fill lines the comparison API may not send yet. Operating income is gross
+ * profit less commissions, payroll and other operating expense (admin +
+ * operating + depreciation), so commissions are the remainder when absent.
+ */
+export const withDerivedLines = (row) => {
+  if (!row || row.commissions !== undefined) return row;
+  const commissions = num(row.gross_profit) - num(row.payroll) - num(row.expenses) - num(row.operating_income);
+  return { ...row, commissions: Math.abs(commissions) < 0.005 ? 0 : Math.round(commissions * 100) / 100 };
+};
 
 const deltaClass = (delta, direction) => {
   if (delta === null || delta === undefined || Math.abs(delta) < 0.5) return 'text-gray-400';
@@ -38,10 +59,13 @@ const pct = (delta, base) => {
 const ScenarioComparison = () => {
   const { scenarios, activeScenario } = useForecast();
   const [selected, setSelected] = useState([]);
-  const [customWindow, setCustomWindow] = useState(null); // null = union of sales months
-  const { data, window: serverWindow, loading, error, fetchComparison } = useScenarioComparison();
+  const { data, loading, error, fetchComparison } = useScenarioComparison();
 
   const list = useMemo(() => Object.values(scenarios || {}), [scenarios]);
+  // One shared window for every column: the selected scenarios' sales months
+  // widened to whole calendar years, until the user picks one by hand.
+  const selectedScenarios = useMemo(() => selected.map(id => (scenarios || {})[id]).filter(Boolean), [selected, scenarios]);
+  const { period: activeWindow, setPeriod: setCustomWindow, resetPeriod, isManual, defaultWindow } = useReportWindow(selectedScenarios);
 
   // Default: the base scenario plus the active one (or the first two).
   useEffect(() => {
@@ -58,21 +82,20 @@ const ScenarioComparison = () => {
   }, [list, activeScenario, selected.length]);
 
   useEffect(() => {
-    fetchComparison(selected, customWindow);
-  }, [selected, customWindow, fetchComparison]);
+    fetchComparison(selected, activeWindow);
+  }, [selected, activeWindow, fetchComparison]);
 
   const rows = useMemo(() => {
     // Base column: the flagged base if selected, else the first selected.
-    const ordered = selected.map(id => data.find(r => r.forecast_id === id)).filter(Boolean);
+    const ordered = selected.map(id => data.find(r => r.forecast_id === id)).filter(Boolean).map(withDerivedLines);
     const baseIndex = Math.max(0, ordered.findIndex(r => r.is_base));
     if (baseIndex > 0) ordered.unshift(ordered.splice(baseIndex, 1)[0]);
     return ordered;
   }, [data, selected]);
   const baseRow = rows[0] || null;
-  const activeWindow = customWindow || (serverWindow ? { start: serverWindow.start_period, end: serverWindow.end_period } : null);
 
   return (
-    <div className="space-y-6">
+    <div className="container mx-auto space-y-6 px-6 py-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Compare scenarios</h1>
@@ -93,21 +116,20 @@ const ScenarioComparison = () => {
           <div>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-lg font-medium">Window</h3>
-              {customWindow ? (
-                <Button size="sm" variant="outline" onClick={() => setCustomWindow(null)}>Use full sales window</Button>
+              {isManual ? (
+                <Button size="sm" variant="outline" onClick={resetPeriod}>Use the scenarios' window</Button>
               ) : (
-                <Button size="sm" variant="outline" onClick={() => setCustomWindow(activeWindow || { start: `${new Date().getFullYear()}-01`, end: `${new Date().getFullYear()}-12` })}>
+                <Button size="sm" variant="outline" onClick={() => setCustomWindow(activeWindow)}>
                   Choose a window
                 </Button>
               )}
             </div>
-            {customWindow ? (
-              <ReportingControls period={customWindow} onPeriodChange={setCustomWindow} />
+            {isManual ? (
+              <ReportingControls period={activeWindow} onPeriodChange={setCustomWindow} defaultWindow={defaultWindow} />
             ) : (
               <p className="text-sm text-gray-600">
-                {activeWindow
-                  ? <>Union of the selected scenarios' sales months: <span className="font-medium">{formatPeriod(activeWindow.start)} – {formatPeriod(activeWindow.end)}</span>. A branch that was extended by a few months is still compared like for like.</>
-                  : 'Pick scenarios to see their shared window.'}
+                <span className="font-medium">{formatPeriod(activeWindow.start)} – {formatPeriod(activeWindow.end)}</span>: the selected scenarios' sales months
+                widened to whole calendar years, the same default as the Statements screen. Every column uses this window, so a branch extended by a few months is still compared like for like.
               </p>
             )}
           </div>
@@ -147,7 +169,7 @@ const ScenarioComparison = () => {
               )}
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {METRICS.map(m => (
+              {METRICS.filter(m => !m.optional || rows.some(r => r[m.key] !== undefined)).map(m => (
                 <tr key={m.key} className={m.bold ? 'font-semibold' : ''}>
                   <td className="whitespace-nowrap px-4 py-2 text-gray-800">{m.label}</td>
                   <td className="px-4 py-2 text-right">{formatAccounting(baseRow?.[m.key])}</td>

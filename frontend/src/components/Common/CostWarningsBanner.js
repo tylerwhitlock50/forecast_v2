@@ -1,23 +1,16 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../lib/apiClient';
 import { useForecast } from '../../context/ForecastContext';
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { COST_WARNING_LABELS, COST_WARNING_ACTIONS } from '../Modules/ReportingAnalysis/utils/costWarnings';
 
-const WARNING_LABELS = {
-  missing_bom: 'No BOM assigned',
-  missing_router: 'No routing assigned',
-  router_missing_machine: 'Routing references an unknown machine',
-  router_missing_labor_rate: 'Routing references an unknown labor rate',
-};
+export { COST_WARNING_LABELS, COST_WARNING_ACTIONS };
 
-const ACTION_HINTS = {
-  missing_bom: { path: '/bom', label: 'Open BOM Management' },
-  missing_router: { path: '/routing', label: 'Open Work Routing' },
-  router_missing_machine: { path: '/machines', label: 'Open Machine Management' },
-  router_missing_labor_rate: { path: '/labor-rates', label: 'Open Labor Rates' },
-};
+const WARNING_LABELS = COST_WARNING_LABELS;
+const ACTION_HINTS = COST_WARNING_ACTIONS;
 
 const CostWarningsBanner = () => {
   const { activeScenario } = useForecast();
@@ -77,16 +70,19 @@ const CostWarningsBanner = () => {
                     <span className="font-medium">{p.product_name}</span>
                     <span className="text-muted-foreground"> ({p.product_id})</span>
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {p.warnings.map((code) => (
-                        <Badge
-                          key={code}
-                          variant="outline"
-                          className="border-amber-400 text-amber-900"
-                          title={ACTION_HINTS[code]?.label}
-                        >
-                          {WARNING_LABELS[code] || code}
-                        </Badge>
-                      ))}
+                      {p.warnings.map((code) => {
+                        const hint = ACTION_HINTS[code];
+                        const badge = (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-400 text-amber-900 hover:bg-amber-100"
+                            title={hint?.label}
+                          >
+                            {WARNING_LABELS[code] || code}
+                          </Badge>
+                        );
+                        return hint ? <Link key={code} to={hint.path}>{badge}</Link> : <span key={code}>{badge}</span>;
+                      })}
                     </div>
                   </li>
                 ))}

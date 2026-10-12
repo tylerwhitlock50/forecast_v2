@@ -55,9 +55,11 @@
   background-color: #f8fafc; /* Light gray background like the screenshots */
 }
 
+/* No z-index here: a z-index would make .main-content a stacking context
+   below the fixed nav (z-index 40), trapping every modal overlay of the
+   page under the sidebar. Overlays (z-50 and up) must cover the nav. */
 .main-content {
   position: relative;
-  z-index: 1;
   background-color: #f8fafc;
 }
 
@@ -91,7 +93,9 @@
   display: flex;
   min-height: 100vh;
   position: relative;
-  overflow-x: hidden;
+  /* clip (not hidden): hidden would make this a scroll container, and the
+     sticky scenario bar would stick to it instead of the viewport. */
+  overflow-x: clip;
   background-color: #f8fafc;
 }
 
@@ -101,9 +105,14 @@
   margin-left: 320px; /* w-80 = 320px when expanded */
   transition: margin-left 0.3s ease;
   min-height: 100vh;
+  min-width: 0;
   position: relative;
   background-color: #f8fafc;
-  overflow-x: auto;
+  /* Wide pages scroll inside their own root (see "> *" below); the content
+     column itself must not be a scroll container, or the sticky scenario
+     bar would not stick to the viewport. */
+  overflow: visible;
+  overflow-x: clip;
   padding: 24px;
 }
 
@@ -182,6 +191,21 @@
 .app-layout .main-content > * {
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* The scenario bar spans the whole content column, edge to edge (it cancels
+   the column's padding with negative margins) and sticks to the top of the
+   viewport. */
+.app-layout .main-content > .scenario-bar {
+  max-width: none;
+  overflow: visible;
+  margin: -24px -24px 24px;
+}
+
+@media (max-width: 1024px) {
+  .app-layout .main-content > .scenario-bar {
+    margin: -16px -16px 16px;
+  }
 }
 
 /* Card styling improvements */

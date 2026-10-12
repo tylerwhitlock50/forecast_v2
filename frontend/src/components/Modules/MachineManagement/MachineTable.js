@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatCapacityHours } from './machineHelpers';
 
 
 const MachineTable = ({
@@ -22,12 +23,7 @@ const MachineTable = ({
 
   const formatCurrency = (value) => {
     if (value === null || value === undefined) return '-';
-    return `$${Number(value).toFixed(2)}`;
-  };
-
-  const formatNumber = (value) => {
-    if (value === null || value === undefined) return '-';
-    return Number(value).toLocaleString();
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value));
   };
 
   const columns = [
@@ -36,7 +32,7 @@ const MachineTable = ({
     { key: 'machine_description', label: 'Description', sortable: true, width: '250px' },
     { key: 'machine_rate', label: 'Rate ($/hr)', sortable: true, width: '120px' },
     { key: 'labor_type', label: 'Labor Type', sortable: true, width: '150px' },
-    { key: 'available_minutes_per_month', label: 'Available (min/month)', sortable: true, width: '150px' },
+    { key: 'available_minutes_per_month', label: 'Capacity (h / month)', sortable: true, width: '150px' },
     { key: 'actions', label: 'Actions', sortable: false, width: '120px' }
   ];
 
@@ -114,7 +110,7 @@ const MachineTable = ({
                   </span>
                 </td>
                 <td className="available-minutes">
-                  <span className="minutes-text">{formatNumber(machine.available_minutes_per_month)}</span>
+                  <span className="minutes-text">{formatCapacityHours(machine.available_minutes_per_month) ?? '-'}</span>
                 </td>
                 <td className="actions-cell">
                   <div className="action-buttons">

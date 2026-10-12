@@ -8,12 +8,14 @@ only handles HTTP concerns and persistence of the planning inputs.
 import csv
 import io
 import logging
+import math
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from db.database import db_manager
 from db.models import (
@@ -34,6 +36,20 @@ from services.financial_statements import (
     statements_to_rows,
     validate_period,
 )
+from services.operations_forecast import (
+    DEFAULT_HOURS_PER_FTE,
+    build_cogs_forecast,
+    build_labor_forecast,
+    sales_detail_report,
+)
+from services.workbook_export import (
+    XLSX_MEDIA_TYPE,
+    sales_detail_columns,
+    statement_lines,
+    scenario_names,
+    workbook_bytes,
+    workbook_filename,
+)
 
 router = APIRouter(prefix="/reporting", tags=["reporting"])
 logger = logging.getLogger(__name__)
@@ -52,6 +68,14 @@ def _parse_forecast_ids(forecast_ids: List[str]) -> List[str]:
 def _check_window(start_period: str, end_period: str) -> None:
     try:
         period_range(start_period, end_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _check_period(period: str) -> str:
+    """A YYYY-MM period filter, or 422 ('Jan 2027', '2027-1' and '2027-Q1' are not months)."""
+    try:
+        return validate_period(str(period).strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -120,18 +144,22 @@ async def export_financial_statements(
         for row in statements_to_rows(statements):
             writer.writerow([row["statement"], row["period"], row["line_item"], row["amount"]])
     else:
+        # One block per statement: a human label, the line key, one column
+        # per period and (except the balance sheet) the window total. Lines
+        # come from the engine's rows, so new statement lines appear here
+        # without changes.
         periods = statements["periods"]
         for key, label in (("income_statement", "Income Statement"),
                            ("cash_flow", "Cash Flow"),
                            ("balance_sheet", "Balance Sheet")):
             rows = statements[key]["by_period"]
-            writer.writerow([label] + periods + (["Total"] if key != "balance_sheet" else []))
-            line_keys = [k for k in rows[0].keys() if k != "period"] if rows else []
+            has_total = key != "balance_sheet"
+            writer.writerow([label, "line_item"] + periods + (["Total"] if has_total else []))
             totals = statements[key].get("totals", {})
-            for line in line_keys:
+            for line, line_label in statement_lines(statements, key):
                 values = [r.get(line, "") for r in rows]
-                extra = [totals.get(line, "")] if key != "balance_sheet" else []
-                writer.writerow([line] + values + extra)
+                extra = [totals.get(line, "")] if has_total else []
+                writer.writerow([line_label, line] + values + extra)
             writer.writerow([])
 
     filename = f"financial_statements_{start_period}_{end_period}.csv"
@@ -140,6 +168,170 @@ async def export_financial_statements(
         iter([buffer.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# COGS / labor forecasts, sales detail and the Excel workbook
+# ---------------------------------------------------------------------------
+
+async def _build_report(label: str, builder, *args, **kwargs):
+    """
+    Run a report builder on a fresh connection in a worker thread (a large
+    forecast takes seconds and must not block the event loop).
+    ValueError -> 422, anything else -> 500.
+    """
+    return await run_in_threadpool(_run_builder, label, builder, *args, **kwargs)
+
+
+def _run_builder(label: str, builder, *args, **kwargs):
+    conn = db_manager.get_connection()
+    try:
+        return builder(conn.cursor(), *args, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error building %s", label)
+        raise HTTPException(status_code=500, detail=f"Error building {label}: {exc}")
+    finally:
+        db_manager.close_connection(conn)
+
+
+def _check_hours_per_fte(hours_per_fte: float) -> float:
+    if hours_per_fte is None or not math.isfinite(hours_per_fte) or hours_per_fte <= 0:
+        raise HTTPException(status_code=422, detail="hours_per_fte must be a number greater than zero")
+    return float(hours_per_fte)
+
+
+@router.get("/cogs-forecast", response_model=ForecastResponse)
+async def get_cogs_forecast(
+    forecast_ids: List[str] = Query(..., description="Forecast IDs (repeat or comma-separate)"),
+    start_period: str = Query(..., description="Start period (YYYY-MM)"),
+    end_period: str = Query(..., description="End period (YYYY-MM)"),
+):
+    """
+    Gross sales -> sales deductions -> net sales -> COGS -> gross profit by
+    month (ties to the income statement), plus contribution margin by
+    product, customer, customer type and product type, and unit costs.
+    """
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    report = await _build_report("COGS forecast", build_cogs_forecast, ids, start_period, end_period)
+    return ForecastResponse(
+        status="success",
+        data=report,
+        message=f"COGS forecast for {len(report['periods'])} period(s), {report.get('line_count', 0)} sales line(s)",
+    )
+
+
+@router.get("/labor-forecast", response_model=ForecastResponse)
+async def get_labor_forecast(
+    forecast_ids: List[str] = Query(..., description="Forecast IDs (repeat or comma-separate)"),
+    start_period: str = Query(..., description="Start period (YYYY-MM)"),
+    end_period: str = Query(..., description="End period (YYYY-MM)"),
+    hours_per_fte: float = Query(DEFAULT_HOURS_PER_FTE, description="Paid hours per FTE per month (40 x 52 / 12 = 173.33)"),
+):
+    """Direct labor hours, cost and FTEs by labor type by month, machine hours vs capacity, labor by product."""
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    hours = _check_hours_per_fte(hours_per_fte)
+    report = await _build_report("labor forecast", build_labor_forecast, ids, start_period, end_period, hours_per_fte=hours)
+    return ForecastResponse(
+        status="success",
+        data=report,
+        message=f"Labor forecast for {len(report['periods'])} period(s)",
+    )
+
+
+@router.get("/sales-detail", response_model=ForecastResponse)
+async def get_sales_detail(
+    forecast_ids: List[str] = Query(..., description="Forecast IDs (repeat or comma-separate)"),
+    start_period: str = Query(..., description="Start period (YYYY-MM)"),
+    end_period: str = Query(..., description="End period (YYYY-MM)"),
+    limit: int = Query(1000, ge=1, le=20000, description="Rows to return (max 20000)"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+    period: Optional[str] = Query(None, description="Only this month (YYYY-MM, inside the window)"),
+    customer_id: Optional[str] = Query(None, description="Only this customer"),
+    customer_type: Optional[str] = Query(None, description="Only this customer type (case-insensitive)"),
+    unit_id: Optional[str] = Query(None, description="Only this product"),
+    unit_type: Optional[str] = Query(None, description="Only this product type (case-insensitive)"),
+):
+    """
+    Every sales line in the window with its deductions, net sales, product
+    COGS, contribution margin, labor / machine hours and the deduction rules
+    applied, optionally filtered (``period`` must be a YYYY-MM month inside
+    the window, else 422).
+
+    Every money amount of a row is rounded to the cent and the row
+    cross-foots (unit_price keeps 4 decimals, so quantity x unit_price =
+    gross_sales). Totals cover every matching row, not just the page:
+
+    * ``totals``: sums of the rows as shown (= SUM of the column in Excel);
+    * ``report_totals``: sums of the unrounded lines; without filters they
+      equal the income statement and the COGS forecast for the window;
+    * ``rounding``: ``report_totals - totals`` (per-line cent rounding).
+    """
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    filters = {"period": period, "customer_id": customer_id, "customer_type": customer_type,
+               "unit_id": unit_id, "unit_type": unit_type}
+    if period is not None and period.strip():
+        filters["period"] = _check_period(period)
+    report = await _build_report("sales detail", sales_detail_report, ids, start_period, end_period, filters=filters)
+    rows = report["rows"]
+    page = rows[offset:offset + limit]
+    data = {
+        "forecast_ids": ids,
+        "start_period": start_period,
+        "end_period": end_period,
+        "total_count": len(rows),
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "has_more": offset + len(page) < len(rows),
+        "totals": report["totals"],
+        "report_totals": report["report_totals"],
+        "rounding": report["rounding"],
+        "columns": [{"key": k, "label": label} for k, label, _kind in sales_detail_columns(rows)],
+        "rows": page,
+    }
+    if report["filters"]:
+        data["filters"] = report["filters"]
+    return ForecastResponse(
+        status="success",
+        data=data,
+        message=f"Returned {len(page)} of {len(rows)} sales line(s)",
+    )
+
+
+@router.get("/workbook")
+async def download_workbook(
+    forecast_ids: List[str] = Query(..., description="Forecast IDs (repeat or comma-separate)"),
+    start_period: str = Query(..., description="Start period (YYYY-MM)"),
+    end_period: str = Query(..., description="End period (YYYY-MM)"),
+    hours_per_fte: float = Query(DEFAULT_HOURS_PER_FTE, description="Paid hours per FTE per month"),
+):
+    """
+    Excel workbook (.xlsx) of the forecast: Read Me (how every number is
+    computed, warnings), gross margin bridge, income statement, by product /
+    customer / customer type, labor, machine hours, unit costs, sales detail,
+    deduction rules, price list, cash flow and balance sheet.
+    """
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    hours = _check_hours_per_fte(hours_per_fte)
+    content = await _build_report("forecast workbook", workbook_bytes, ids, start_period, end_period, hours_per_fte=hours)
+    names = await _build_report("workbook file name", scenario_names, ids)
+    filename = workbook_filename(ids, start_period, end_period, names)
+    return StreamingResponse(
+        iter([content]),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+        },
     )
 
 
@@ -294,7 +486,7 @@ async def delete_actuals(
     if actual_id:
         clauses.append("actual_id = ?"); params.append(actual_id)
     if period:
-        clauses.append("period = ?"); params.append(validate_period(period))
+        clauses.append("period = ?"); params.append(_check_period(period))
     if line_item:
         clauses.append("line_item = ?"); params.append(line_item)
     conn = db_manager.get_connection()
@@ -337,6 +529,13 @@ async def save_assumptions(forecast_id: str = Query(...), payload: FinancialAssu
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
     data = payload.dict()
+    # Optional newer fields: leaving them out keeps the stored value, so an
+    # older client that does not know the field cannot reset it.
+    for optional_key in ("excise_payable_days",):
+        if data.get(optional_key) is None:
+            data.pop(optional_key, None)
+        elif float(data[optional_key]) < 0:
+            raise HTTPException(status_code=422, detail=f"{optional_key} must be zero or more")
     columns = list(data.keys())
     conn = db_manager.get_connection()
     try:

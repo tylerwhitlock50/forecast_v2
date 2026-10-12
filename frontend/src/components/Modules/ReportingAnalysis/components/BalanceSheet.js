@@ -16,6 +16,7 @@ export const BALANCE_SHEET_ROWS = [
   { key: 'total_assets', label: 'Total assets', kind: 'total' },
   { key: 'liabilities_header', label: 'Liabilities', kind: 'header' },
   { key: 'accounts_payable', label: 'Accounts payable', kind: 'line', indent: 1 },
+  { key: 'excise_tax_payable', label: 'Excise tax payable', kind: 'line', indent: 1, help: 'Federal excise tax collected in the selling price and not yet paid to the government (Assumptions → excise tax payable days).' },
   { key: 'other_liabilities', label: 'Other liabilities', kind: 'line', indent: 1 },
   { key: 'total_current_liabilities', label: 'Total current liabilities', kind: 'subtotal' },
   { key: 'debt', label: 'Debt', kind: 'line', indent: 1 },
@@ -39,20 +40,22 @@ export const normalizeOpening = (opening) => {
   const ar = num(opening.accounts_receivable);
   const inv = num(opening.inventory);
   const ap = num(opening.accounts_payable);
+  const excise = num(opening.excise_tax_payable);
   const other = num(opening.other_liabilities);
   const equity = opening.equity !== undefined ? num(opening.equity) : num(opening.total_equity);
   const totalAssets = opening.total_assets !== undefined ? num(opening.total_assets) : cash + ar + inv + num(opening.fixed_assets_net);
-  const totalLiab = opening.total_liabilities !== undefined ? num(opening.total_liabilities) : ap + other + num(opening.debt);
+  const totalLiab = opening.total_liabilities !== undefined ? num(opening.total_liabilities) : ap + excise + other + num(opening.debt);
   return {
     ...opening,
+    excise_tax_payable: excise,
     total_current_assets: opening.total_current_assets ?? cash + ar + inv,
-    total_current_liabilities: opening.total_current_liabilities ?? ap + other,
+    total_current_liabilities: opening.total_current_liabilities ?? ap + excise + other,
     opening_equity: opening.opening_equity ?? equity,
     retained_earnings: opening.retained_earnings ?? 0,
     total_equity: opening.total_equity ?? equity,
     total_liabilities_and_equity: opening.total_liabilities_and_equity ?? totalLiab + equity,
     balance_check: opening.balance_check ?? totalAssets - totalLiab - equity,
-    working_capital: opening.working_capital ?? (cash + ar + inv) - (ap + other)
+    working_capital: opening.working_capital ?? (cash + ar + inv) - (ap + excise + other)
   };
 };
 

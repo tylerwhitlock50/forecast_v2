@@ -1,239 +1,124 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight, Check } from 'lucide-react';
 import { useForecast } from '../../../context/ForecastContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
+import { goToImport } from '../../Common/importLink';
+import useSetupProgress from '../DataImport/useSetupProgress';
 
 /**
- * GettingStartedCard
+ * The setup path for a sales forecast that costs out: the Import data
+ * page's steps, in the same order and with the same counts as that page and
+ * the sidebar's "Get started" badge (DataImport/importSteps.js
+ * setupProgress). Each step links to its import step. A scenario is needed
+ * before the sales forecast; without one the card offers to create it.
  *
- * Renders a numbered-steps guided onboarding card for the Revenue page
- * when the user has no scenarios / customers / products / forecast lines yet.
- *
- * The card derives its "done" state directly from the ForecastContext, so
- * steps auto-advance as the user completes each action.
- *
- * When all steps are complete OR the user dismisses, the card collapses into
- * a thin strip that can reopen it. The dismissed state is persisted in
- * localStorage under `revenue_gettingStartedDismissed`.
+ * Hidden once every step has data, or when dismissed (remembered per browser).
  */
 const DISMISS_KEY = 'revenue_gettingStartedDismissed';
 
-const StepIcon = ({ done, index }) => (
-  <div
-    className={
-      'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-semibold ' +
-      (done
-        ? 'bg-green-100 border-green-300 text-green-700'
-        : 'bg-orange-50 border-orange-200 text-orange-700')
-    }
-  >
-    {done ? (
-      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-        <path
-          fillRule="evenodd"
-          d="M16.704 5.29a1 1 0 010 1.42l-7.5 7.5a1 1 0 01-1.42 0l-3.5-3.5a1 1 0 111.42-1.42L8.5 12.08l6.79-6.79a1 1 0 011.414 0z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ) : (
-      <span>{index}</span>
-    )}
-  </div>
-);
+const readDismissed = () => {
+  try { return localStorage.getItem(DISMISS_KEY) === 'true'; } catch { return false; }
+};
 
-const GettingStartedCard = ({
-  onCreateScenario,
-  onAddCustomers,
-  onAddProducts,
-  onAddForecastLine,
-}) => {
-  const { data, scenarios } = useForecast();
+const GettingStartedCard = ({ onCreateScenario, forceShow = false }) => {
+  const { scenarios } = useForecast();
   const navigate = useNavigate();
-
-  const [dismissed, setDismissed] = React.useState(() => {
-    try {
-      return localStorage.getItem(DISMISS_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-  const [expanded, setExpanded] = React.useState(true);
-
-  const persistDismiss = (value) => {
-    try {
-      if (value) {
-        localStorage.setItem(DISMISS_KEY, 'true');
-      } else {
-        localStorage.removeItem(DISMISS_KEY);
-      }
-    } catch {
-      // localStorage may be unavailable — ignore
-    }
-  };
+  const [dismissed, setDismissed] = React.useState(readDismissed);
+  const progress = useSetupProgress();
 
   const scenarioCount = scenarios ? Object.keys(scenarios).length : 0;
-  const customerCount = Array.isArray(data?.customers) ? data.customers.length : 0;
-  const productCount = Array.isArray(data?.products) ? data.products.length : 0;
-  const forecastCount = Array.isArray(data?.sales_forecast) ? data.sales_forecast.length : 0;
+  const allDone = progress.done === progress.total;
 
-  const steps = [
-    {
-      label: 'Create a scenario',
-      description: 'Scenarios group your forecast assumptions.',
-      done: scenarioCount > 0,
-      action: {
-        label: 'Create scenario',
-        onClick: () => onCreateScenario && onCreateScenario(),
-      },
-    },
-    {
-      label: 'Add customers',
-      description: 'Import a customer list or create them one-by-one.',
-      done: customerCount > 0,
-      action: {
-        label: 'Add customers',
-        onClick: () =>
-          onAddCustomers ? onAddCustomers() : navigate('/customers'),
-      },
-    },
-    {
-      label: 'Add products',
-      description: 'Define the products or services you sell.',
-      done: productCount > 0,
-      action: {
-        label: 'Add products',
-        onClick: () =>
-          onAddProducts ? onAddProducts() : navigate('/products'),
-      },
-    },
-    {
-      label: 'Add your first forecast line',
-      description: 'Pair a customer with a product to start forecasting.',
-      done: forecastCount > 0,
-      action: {
-        label: 'Add forecast line',
-        onClick: () => onAddForecastLine && onAddForecastLine(),
-        // disabled until steps 1-3 are complete
-        disabledWhen: () => !(scenarioCount > 0 && customerCount > 0 && productCount > 0),
-      },
-    },
-  ];
+  if ((dismissed && !forceShow) || (allDone && !forceShow)) return null;
 
-  const allDone = steps.every((s) => s.done);
-
-  // If user has dismissed the card entirely, render nothing.
-  if (dismissed) {
-    return null;
-  }
-
-  // Collapsed strip: shown when everything is done and the user hasn't reopened.
-  if ((allDone || !expanded) && !dismissed) {
-    return (
-      <div className="mb-4 flex items-center justify-between rounded-md border bg-green-50 px-4 py-2 text-sm text-green-800">
-        <div className="flex items-center gap-2">
-          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path
-              fillRule="evenodd"
-              d="M16.704 5.29a1 1 0 010 1.42l-7.5 7.5a1 1 0 01-1.42 0l-3.5-3.5a1 1 0 111.42-1.42L8.5 12.08l6.79-6.79a1 1 0 011.414 0z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <span>{allDone ? 'Getting started: complete' : 'Getting started guide hidden'}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
-            Show getting-started guide
-          </Button>
-          {allDone && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setDismissed(true);
-                persistDismiss(true);
-              }}
-            >
-              Dismiss
-            </Button>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const dismiss = () => {
+    setDismissed(true);
+    try { localStorage.setItem(DISMISS_KEY, 'true'); } catch { /* storage unavailable */ }
+  };
 
   return (
-    <Card className="mb-6 border-orange-200">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle className="text-lg">Start here</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Follow these steps to set up your first revenue forecast.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
-              Hide
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setDismissed(true);
-                persistDismiss(true);
-              }}
-            >
-              Dismiss
-            </Button>
-          </div>
+    <Card className="mb-6 border-orange-200 p-5" data-testid="getting-started">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Set up a forecast that costs out</h2>
+          <p className="mt-0.5 text-sm text-gray-600">
+            Load data in this order on the <Link to="/import" className="font-medium text-orange-700 hover:underline">Import data</Link> page. Each step uses the ones above it.
+          </p>
         </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <ol className="space-y-3">
-          {steps.map((step, idx) => {
-            const index = idx + 1;
-            const disabled = step.action.disabledWhen ? step.action.disabledWhen() : false;
-            return (
-              <li
-                key={step.label}
-                className={
-                  'flex items-center justify-between gap-4 rounded-md border p-3 ' +
-                  (step.done ? 'border-green-200 bg-green-50/50' : 'border-gray-200 bg-white')
-                }
+        <div className="flex items-center gap-3">
+          <div className="w-44" aria-label="Setup progress">
+            <div className="text-right text-xs tabular-nums text-gray-500">{progress.done} of {progress.total} steps have data</div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-200">
+              <div className="h-full rounded-full bg-orange-500" style={{ width: `${(progress.done / progress.total) * 100}%` }} />
+            </div>
+          </div>
+          {!forceShow && <Button size="sm" variant="ghost" onClick={dismiss}>Dismiss</Button>}
+        </div>
+      </div>
+
+      {scenarioCount === 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span>Create a scenario first (for example “Budget 2027”): the sales forecast in step {progress.total} is imported into it.</span>
+          {onCreateScenario && (
+            <button
+              type="button"
+              onClick={onCreateScenario}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-orange-700 hover:bg-orange-100"
+            >
+              Create a scenario
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      <ol className="mt-4 grid gap-2 md:grid-cols-2">
+        {progress.steps.map((step) => (
+          <li
+            key={step.kind}
+            data-step={step.kind}
+            className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 ${step.done ? 'border-green-200 bg-green-50/40' : 'border-gray-200 bg-white'}`}
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold ${step.done ? 'bg-green-100 text-green-700' : 'border border-gray-300 text-gray-600'}`}
+                title={step.done ? 'Has data' : undefined}
               >
-                <div className="flex items-start gap-3">
-                  <StepIcon done={step.done} index={index} />
-                  <div>
-                    <div
-                      className={
-                        'text-sm font-medium ' +
-                        (step.done ? 'text-green-800 line-through decoration-green-400' : 'text-gray-900')
-                      }
-                    >
-                      {step.label}
-                    </div>
-                    <div className="text-xs text-muted-foreground">{step.description}</div>
-                  </div>
+                {step.done ? <Check className="h-3.5 w-3.5" /> : step.number}
+              </span>
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-gray-900">
+                  {step.done && <span className="mr-1 text-gray-400">{step.number}.</span>}
+                  {step.title}
                 </div>
-                <Button
-                  size="sm"
-                  variant={step.done ? 'outline' : 'default'}
-                  disabled={disabled}
-                  onClick={step.action.onClick}
-                  className={
-                    !step.done && !disabled
-                      ? 'bg-orange-600 text-white hover:bg-orange-700'
-                      : ''
-                  }
+                <div
+                  className={`truncate text-xs ${step.warning ? 'text-amber-700' : 'text-gray-500'}`}
+                  title={step.warning || step.label || step.hint}
                 >
-                  {step.done ? 'Revisit' : step.action.label}
-                </Button>
-              </li>
-            );
-          })}
-        </ol>
-      </CardContent>
+                  {step.done ? [step.label, step.warning].filter(Boolean).join(' · ') : step.hint}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => goToImport(navigate, step.kind)}
+              className="inline-flex flex-shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-orange-700 hover:bg-orange-50"
+            >
+              Import
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </li>
+        ))}
+      </ol>
+
+      <div className="mt-3 flex justify-end">
+        <Link to="/reporting/cogs-labor" className="inline-flex items-center gap-1 text-sm font-medium text-orange-700 hover:underline">
+          Then review COGS and labor
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
     </Card>
   );
 };
