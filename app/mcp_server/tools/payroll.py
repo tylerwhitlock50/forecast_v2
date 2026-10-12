@@ -1,4 +1,5 @@
-"""Payroll tools: employees, burden configuration and the payroll forecast."""
+"""Payroll tools: employees (with labor class), burden configuration, the payroll
+forecast and the statement-vs-pay-dates bridge."""
 from __future__ import annotations
 
 from typing import Annotated, Any, Dict, Optional, Tuple
@@ -11,16 +12,32 @@ from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, mcp, require
 EMPLOYEE_FIELDS = (
     "employee_name", "department", "weekly_hours", "hourly_rate", "rate_type", "labor_type",
     "start_date", "end_date", "next_review_date", "expected_raise", "benefits_eligible",
-    "allocations", "forecast_id",
+    "allocations", "forecast_id", "labor_class",
 )
+LABOR_CLASSES = ("direct", "indirect", "admin")
 
 RATE_HELP = ("Pay rate. rate_type 'hourly': the hourly wage (annual gross = rate x weekly_hours x 52). "
              "rate_type 'salary': the ANNUAL salary, e.g. 85000 (a salary value under 1,000 is read as an "
              "hourly equivalent and multiplied by 2,080 hours).")
 ALLOCATION_HELP = ("Business-unit split in PERCENT summing to 100, e.g. {\"Manufacturing\": 70, \"Admin\": 30}. "
                    "Fractions that sum to 1 ({\"Manufacturing\": 0.7, ...}) are converted to percent.")
+LABOR_CLASS_HELP = ("Where this employee's pay goes on the statements. 'direct' (builds product): COGS; the routing "
+                    "standard stays as Direct labor and a Direct labor variance line adds direct payroll - standard, "
+                    "so production workers are not counted twice. 'indirect' (factory support: supervisors, "
+                    "maintenance, material handling): COGS as Indirect labor. 'admin' or empty (not classified): "
+                    "Payroll in operating expenses.")
 MAX_HOURLY_RATE = 500.0
 SALARY_THRESHOLD = 1000.0
+
+
+def _labor_class(value: Any) -> Optional[str]:
+    """direct / indirect / admin (case-insensitive), or None for blank; anything else is an error."""
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip().lower()
+    if text not in LABOR_CLASSES:
+        raise ToolError(f"labor_class must be direct, indirect or admin (or empty for not classified); got {value!r}")
+    return text
 
 
 def _allocations(value: Optional[Dict[str, Any]]) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
@@ -69,14 +86,17 @@ async def list_employees(
     department: Optional[str] = None,
     status: Annotated[Optional[str], Field(description="active or inactive")] = None,
     business_unit: Annotated[Optional[str], Field(description="Filter by business-unit allocation key")] = None,
+    labor_class: Annotated[Optional[str], Field(description="direct, indirect, admin, or unclassified (no class)")] = None,
     limit: Annotated[int, Field(description="Employees per page", ge=1, le=2000)] = 50,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> Dict[str, Any]:
-    """List employees with pay, dates, raises and business-unit allocations
+    """List employees with pay, dates, raises, labor class (direct /
+    indirect / admin / null = not classified) and business-unit allocations
     (percent). Paged: total_count covers every matching employee; filter by
-    department / status / business_unit or page with offset."""
+    department / status / business_unit / labor_class or page with offset."""
     body = await call("GET", "/payroll/employees", params={
         "forecast_id": forecast_id, "department": department, "status": status, "business_unit": business_unit,
+        "labor_class": labor_class,
     })
     employees = body.get("employees")
     if isinstance(employees, list):
@@ -108,14 +128,16 @@ async def create_employee(
     benefits_eligible: bool = True,
     allocations: Annotated[Optional[Dict[str, float]], Field(description=ALLOCATION_HELP)] = None,
     forecast_id: Annotated[Optional[str], Field(description="Scenario the hire belongs to; omit for company-wide")] = None,
+    labor_class: Annotated[Optional[str], Field(description=LABOR_CLASS_HELP)] = None,
 ) -> Dict[str, Any]:
     """Add an employee (a planned hire, when start_date is in the future).
     Payroll is prorated per calendar month from start_date to end_date and
     loaded with the EMPLOYER burden from the payroll config (social
     security, medicare, unemployment, workers comp, plus benefits when
     benefits_eligible); income-tax withholding is not an employer cost.
-    Note: production staff whose time is already costed through the
-    routings' labor minutes would be counted twice if also added here."""
+    Set labor_class: 'direct' for production workers (their pay replaces
+    the routing standard in COGS, never counted twice), 'indirect' for
+    factory support, 'admin' for everyone else."""
     if rate_type not in ("hourly", "salary"):
         raise ToolError("rate_type must be hourly or salary")
     warning = _check_rate(rate_type, hourly_rate)
@@ -125,7 +147,7 @@ async def create_employee(
         "weekly_hours": weekly_hours, "hourly_rate": hourly_rate, "rate_type": rate_type, "labor_type": labor_type,
         "start_date": start_date, "end_date": end_date, "next_review_date": next_review_date,
         "expected_raise": expected_raise, "benefits_eligible": benefits_eligible,
-        "allocations": allocations, "forecast_id": forecast_id,
+        "allocations": allocations, "forecast_id": forecast_id, "labor_class": _labor_class(labor_class),
     })
     result = await call("POST", "/payroll/employees", json=body)
     notes = [n for n in (warning, note) if n]
@@ -139,11 +161,13 @@ async def update_employee(
     employee_id: str,
     updates: Annotated[Dict[str, Any], Field(description=(
         f"Fields to change; any of {', '.join(EMPLOYEE_FIELDS)}. hourly_rate follows rate_type: an hourly wage, "
-        f"or the annual salary for rate_type 'salary'. allocations are percent summing to 100."))],
+        f"or the annual salary for rate_type 'salary'. allocations are percent summing to 100. labor_class: "
+        f"direct, indirect, admin or null (not classified)."))],
 ) -> Dict[str, Any]:
-    """Update an employee: pay, hours, dates, raise, allocations or scenario.
-    Only the fields given change (e.g. {\"end_date\": \"2026-09-30\"} to plan
-    a departure, {\"hourly_rate\": 32} for a raise now)."""
+    """Update an employee: pay, hours, dates, raise, allocations, scenario or
+    labor class. Only the fields given change (e.g. {\"end_date\":
+    \"2026-09-30\"} to plan a departure, {\"hourly_rate\": 32} for a raise now,
+    {\"labor_class\": \"direct\"} for a production worker)."""
     employee_id = require(employee_id, "employee_id")
     unknown = [k for k in updates if k not in EMPLOYEE_FIELDS]
     if unknown:
@@ -159,6 +183,8 @@ async def update_employee(
         merged["expected_raise"] = 0.0
     if merged.get("rate_type") is None:
         merged["rate_type"] = "hourly"
+    if "labor_class" in updates:
+        merged["labor_class"] = _labor_class(updates.get("labor_class"))
     notes = []
     if "hourly_rate" in updates or "rate_type" in updates:
         warning = _check_rate(merged.get("rate_type"), merged.get("hourly_rate"))
@@ -231,14 +257,16 @@ async def payroll_forecast(
     start_period: Annotated[Optional[str], Field(description="YYYY-MM; with end_period gives the monthly view used by the statements")] = None,
     end_period: Annotated[Optional[str], Field(description="YYYY-MM")] = None,
     include_raises: bool = True,
-    periods: Annotated[int, Field(description="Pay-run mode only: number of pay periods to project when no month window is given", ge=1, le=260)] = 26,
+    periods: Annotated[Optional[int], Field(description="Pay-run mode only: number of pay runs to project when no month window is given; default one year of runs for the configured pay frequency (12 monthly, 24 semimonthly, 26 biweekly, 52 weekly)", ge=1, le=260)] = None,
     start_date: Annotated[Optional[str], Field(description="Pay-run mode only: first pay date on/after this YYYY-MM-DD (default today)")] = None,
     include_employees: Annotated[bool, Field(description="Per-employee rows on every run / month (large); default totals only")] = False,
 ) -> Dict[str, Any]:
     """Payroll cost projection. With a start / end month it returns the
-    monthly, prorated, employer-burdened payroll by department and business
-    unit (the same numbers the statements use); without one it projects the
-    next N pay runs. Defaults to the base scenario and totals only."""
+    monthly, prorated, employer-burdened payroll by department, business
+    unit and labor class (the same numbers the statements use); without one
+    it projects the next pay runs (one year of them by default). Defaults
+    to the base scenario and totals only. For accrued (statement) vs paid
+    (pay dates) by month use forecast_payroll_statement_bridge."""
     return await call("GET", "/payroll/forecast", params={
         "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
         "include_raises": include_raises, "periods": periods, "start_date": start_date,
@@ -259,3 +287,28 @@ async def payroll_summary(
         "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
         "include_employees": include_employees,
     })
+
+
+@mcp.tool(name="forecast_payroll_statement_bridge", annotations=READ)
+async def payroll_statement_bridge(
+    start_period: Annotated[Optional[str], Field(description="First month, YYYY-MM; omit both for the scenario's sales years (else this year)")] = None,
+    end_period: Annotated[Optional[str], Field(description="Last month, YYYY-MM")] = None,
+    forecast_id: Annotated[Optional[str], Field(description="Scenario (company-wide employees are always included); omit for the base scenario")] = None,
+    include_raises: bool = True,
+    include_pay_dates: Annotated[bool, Field(description="List every pay date per month")] = False,
+) -> Dict[str, Any]:
+    """Statement payroll vs payroll cash, by month. The statements accrue
+    payroll evenly by calendar month and treat it as paid in the month;
+    cash goes out on the configured pay dates (a month can have three
+    biweekly Fridays). Per month: accrued, paid, pay_runs, difference
+    (accrued - paid), cumulative_difference and accrued_payroll_balance
+    (opening_accrued_payroll + cumulative difference: the accrued payroll a
+    balance sheet would carry at month end), each split by labor class."""
+    body = await call("GET", "/payroll/statement-bridge", params={
+        "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
+        "include_raises": include_raises,
+    })
+    if not include_pay_dates:
+        for row in body.get("by_period") or []:
+            row.pop("pay_dates", None)
+    return body

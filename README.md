@@ -21,6 +21,12 @@ docker-compose up --build
 - API: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
+The app has no login, so both ports are published on `127.0.0.1` only: the UI, the API and the MCP
+endpoint answer on this machine and nowhere else. To reach it from other machines on a **trusted**
+network, start it with `FORECAST_BIND=0.0.0.0 docker-compose up` (or put `FORECAST_BIND=0.0.0.0` in a
+`.env` file next to `docker-compose.yml`); for Claude Code / Codex on another machine also set
+`MCP_ALLOWED_HOSTS` (for example `MCP_ALLOWED_HOSTS=192.168.1.20:*`), see `docker-compose.yml`.
+
 The database is `data/forecast.db` on the host (`./data` is mounted at `/data`), so it survives
 `docker-compose down`, `down -v` and rebuilds. See [Snapshots and starting clean](#snapshots-and-starting-clean).
 
@@ -171,6 +177,34 @@ Typical workflow: start clean, import BOMs / routings / products / customers and
 `POST /database/save {"name": "after-import"}`, run the MCP bulk changes, and `POST /database/load
 {"filename": "after-import.db"}` if something goes wrong.
 
+## Approvals and change history
+
+**Approve & lock a budget.** On the Scenarios page, *Approve & lock* (or `POST
+/forecast/scenario/{id}/approve {"approved_by": "Dana, CFO", "note": "Board approved"}`, MCP
+`forecast_approve_scenario`) freezes a scenario as a baseline: it stores the statement totals over the
+scenario's sales window, saves the Excel workbook to `data/exports/approved/` and a database snapshot
+`approved_<id>_<YYYYMMDD_HHMMSS>.db` to `data/saved_databases/`, and locks the scenario. While it is
+locked, every change to its own rows (sales, scenario expenses, payroll, capex, assumptions, prices,
+deduction rules), renaming it and deleting it are refused with HTTP 409 ("Scenario '2027 Budget' is
+approved and locked: branch it to make changes, or unlock it with a reason"). Branch it to work on a new
+version; *Unlock* (`POST /forecast/scenario/{id}/unlock {"actor", "reason"}`, reason required) reopens it
+and keeps the reason in its approval history (`GET /forecast/scenario/{id}/approvals`).
+
+Company-wide inputs (BOMs, routings, rates, company-wide prices, rules, payroll and expenses) are shared,
+so they can still move an approved scenario's numbers. The Scenarios page (and `GET /forecast/scenarios`,
+field `drift`) flags an approved scenario whose current totals differ from the approved ones by more than
+$0.50, line by line.
+
+**Change history.** Every write through the API (web UI, MCP tools, scripts) is recorded with when, which
+client (`web`, `mcp`, `api`), who (the `X-Forecast-User` header, or the approver / actor in the request),
+what (method, path, the API's own summary, a short excerpt of the request that never includes file
+contents), the scenario and the HTTP status, refused writes included. See it on the **History** page
+(Scenarios > Change history) or `GET /audit/log?forecast_id=&client=&path_contains=&since=&until=`
+(MCP `forecast_audit_log`). Start clean keeps the history. The same page runs **legacy data checks**
+(`GET /audit/legacy-checks`, MCP `forecast_legacy_checks`): scenarios without an opening period, loans
+with drifted payment dates, non-monthly sales periods, BOM versions without lines, sold products without
+a BOM or routing, employees without a labor class. They only report; nothing is changed automatically.
+
 ## Testing
 
 ```bash
@@ -185,8 +219,10 @@ Test config is in `pytest.ini`. Markers: `unit`, `integration`, `slow`.
 
 | Service    | Port | Purpose                |
 |------------|------|------------------------|
-| `fastapi`  | 8000 | API backend            |
+| `fastapi`  | 8000 | API backend and MCP endpoint (`/mcp`) |
 | `frontend` | 3000 | React UI               |
+
+Both are published on `127.0.0.1` unless `FORECAST_BIND` says otherwise (see [Run with Docker](#run-with-docker)).
 
 ## Troubleshooting
 

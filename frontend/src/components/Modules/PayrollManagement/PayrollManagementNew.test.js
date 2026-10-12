@@ -19,7 +19,7 @@ const mockPayroll = [
   { employee_id: 'S1', employee_name: 'Plant Manager', department: 'Admin', weekly_hours: 40, hourly_rate: 120000,
     rate_type: 'salary', labor_type: 'Mgmt', start_date: '2026-01-01', end_date: null, next_review_date: '2027-01-01',
     expected_raise: 0, benefits_eligible: 1, allocations: '{"Customer-Centric Brands": 0.7, "Other Projects": 0.3}',
-    forecast_id: 'F1' },
+    forecast_id: 'F1', labor_class: 'admin' },
   { employee_id: 'H1', employee_name: 'Operator', department: 'Production', weekly_hours: 40, hourly_rate: 30,
     rate_type: 'hourly', labor_type: 'Ops', start_date: '2026-01-01', end_date: null, next_review_date: '2027-01-01',
     expected_raise: 0, benefits_eligible: 1, allocations: '{"OEM Work": 100}', forecast_id: null }
@@ -29,7 +29,7 @@ jest.mock('../../../context/ForecastContext', () => ({
     data: { payroll: mockPayroll },
     actions: { updateEmployee: mockUpdateEmployee, createEmployee: jest.fn(), deleteEmployee: jest.fn() },
     activeScenario: 'F1',
-    scenarios: { F1: { name: 'Budget' } }
+    scenarios: { F1: { name: 'Budget', start_period: '2027-01', end_period: '2027-12' } }
   })
 }));
 
@@ -54,7 +54,13 @@ const responses = {
       { business_unit: 'Internal Operations', fte_allocation: 0, total_annual_cost: 0, employee_count: 0 }
     ]
   } } },
-  '/payroll/forecast': { data: { forecast: [] } }
+  '/payroll/forecast': { data: { forecast: [], periods: 26, runs_per_year: 26 } },
+  '/payroll/statement-bridge': { data: {
+    pay_frequency: 'biweekly', runs_per_year: 26, start_period: '2027-01', end_period: '2027-01',
+    opening_accrued_payroll: 0, closing_accrued_payroll: 0,
+    by_period: [{ period: '2027-01', accrued: 20482, paid: 20482, pay_runs: 2, difference: 0, accrued_payroll_balance: 0 }],
+    totals: { accrued: 20482, paid: 20482, pay_runs: 2, difference: 0 }
+  } }
 };
 
 beforeEach(() => {
@@ -91,5 +97,29 @@ describe('PayrollManagement screen', () => {
     expect(id).toBe('S1');
     expect(payload.allocations).toEqual({ 'Customer-Centric Brands': 70, 'Other Projects': 30 });
     expect(payload).not.toHaveProperty('annual_cost');
+  });
+});
+
+describe('PayrollManagement labor classes and forecast tab', () => {
+  it('shows each employee\'s labor class, flags the unclassified ones and filters by class', async () => {
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    const badges = screen.getAllByTestId('labor-class-badge').map(b => b.textContent);
+    expect(badges.sort()).toEqual(['Admin', 'Not classified']);
+    expect(screen.getByTestId('unclassified-note')).toHaveTextContent('1 employee has no labor class');
+    fireEvent.click(screen.getByText('Show them'));
+    expect(screen.getByLabelText('Labor class:')).toHaveValue('unclassified');
+    expect(screen.queryByText('Plant Manager')).not.toBeInTheDocument();
+    expect(screen.getByText('Operator')).toBeInTheDocument();
+  });
+
+  it('asks for one year of runs by default (no periods) and loads the budget-year bridge', async () => {
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    fireEvent.click(screen.getByText('Forecast'));
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/payroll/forecast?forecast_id=F1', expect.anything()));
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(
+      '/payroll/statement-bridge?start_period=2027-01&end_period=2027-12&forecast_id=F1', expect.anything()));
+    expect(await screen.findByTestId('payroll-bridge-table')).toHaveTextContent('$20,482');
   });
 });

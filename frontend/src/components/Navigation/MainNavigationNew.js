@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useForecast } from '../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
@@ -19,7 +19,8 @@ const navigationModules = {
   "Scenarios": {
     icon: "🗂️",
     routes: {
-      "Manage Scenarios": "/scenarios"
+      "Manage Scenarios": "/scenarios",
+      "Change History": "/history"
     }
   },
   "Revenue Planning": {
@@ -69,6 +70,15 @@ const navigationModules = {
   }
 };
 
+/** Grey pill shown instead of a status badge while the first data load runs. */
+const BadgeSkeleton = ({ className = '' }) => (
+  <span
+    className={cn("inline-block h-[18px] w-14 flex-shrink-0 animate-pulse rounded-full bg-gray-200", className)}
+    aria-hidden="true"
+    data-testid="nav-badge-skeleton"
+  />
+);
+
 // The section that holds a screen ('/products/RF-100' belongs to Product Setup).
 const sectionFor = (pathname) => {
   const entries = Object.entries(navigationModules);
@@ -81,8 +91,39 @@ const sectionFor = (pathname) => {
   return prefix ? prefix[0] : null;
 };
 
+// Same breakpoint as App.css: at or below it the content column has no left
+// margin, so the sidebar floats over the page instead of sitting beside it.
+const SMALL_SCREEN = '(max-width: 1024px)';
+
+const useSmallScreen = () => {
+  const query = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia(SMALL_SCREEN).matches;
+  const [small, setSmall] = useState(query);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const media = window.matchMedia(SMALL_SCREEN);
+    const update = () => setSmall(media.matches);
+    if (media.addEventListener) media.addEventListener('change', update);
+    else media.addListener(update);
+    return () => {
+      if (media.removeEventListener) media.removeEventListener('change', update);
+      else media.removeListener(update);
+    };
+  }, []);
+  return small;
+};
+
 const MainNavigation = ({ isCollapsed, onToggle }) => {
   const navigate = useNavigate();
+  // Phones and narrow windows: the sidebar is a drawer behind a menu button,
+  // closed at first and after picking a screen, so it never covers the page.
+  const smallScreen = useSmallScreen();
+  const autoClosed = useRef(false);
+  useEffect(() => {
+    if (autoClosed.current) return;
+    autoClosed.current = true;
+    if (smallScreen && !isCollapsed) onToggle();
+  }, [smallScreen, isCollapsed, onToggle]);
   const location = useLocation();
   // Only the section that holds the current screen is open, so every
   // section (down to Reporting & Analysis) fits without scrolling.
@@ -92,7 +133,10 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   });
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
-  const { data, actions, scenarios, lastUpdated } = useForecast();
+  const { data, actions, scenarios, lastUpdated, error } = useForecast();
+  // Nothing has loaded yet: badges would read "None yet" / "To do" for data
+  // that is simply not loaded yet, so show placeholders instead.
+  const firstLoad = !lastUpdated && !error;
   // The same steps and counts as the Import data page and the Sales Forecast
   // checklist; the path refreshes the price / deduction rule counts.
   const setup = useSetupProgress(location.pathname);
@@ -105,6 +149,11 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
 
   // Ensure data is always an object with expected properties
   const safeData = data || {};
+
+  const go = (route) => {
+    navigate(route);
+    if (smallScreen && !isCollapsed) onToggle();
+  };
 
   const toggleModule = (moduleName) => {
     setExpandedModules(prev => ({
@@ -130,10 +179,15 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
     switch (moduleName) {
       case 'Get Started':
         return { done: setup.done, total: setup.total };
-      case 'Scenarios':
-        return scenarioList.length
-          ? { label: `${scenarioList.length} scenario${scenarioList.length === 1 ? '' : 's'}`, tone: 'neutral' }
-          : { label: 'None yet', tone: 'empty' };
+      case 'Scenarios': {
+        if (!scenarioList.length) return { label: 'None yet', tone: 'empty' };
+        const approved = scenarioList.filter(s => s.locked).length;
+        return {
+          label: `${scenarioList.length} scenario${scenarioList.length === 1 ? '' : 's'}`,
+          title: approved ? `${approved} approved and locked` : undefined,
+          tone: 'neutral',
+        };
+      }
       case 'Revenue Planning':
         return checks([has('customers'), has('products'), has('prices'), has('sales')]);
       case 'Manufacturing Setup':
@@ -221,6 +275,23 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
     }
   };
 
+  if (smallScreen && isCollapsed) {
+    // Only the menu button; the page underneath stays fully visible.
+    return (
+      <nav
+        className="fixed left-0 top-0 z-40 p-2"
+        style={{ height: 'auto', width: 'auto', background: 'transparent', borderRight: 'none', boxShadow: 'none' }}
+        data-testid="nav-menu-button"
+      >
+        <Button variant="outline" size="sm" onClick={onToggle} className="h-9 w-9 bg-white p-0 shadow-sm" aria-label="Open navigation">
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </Button>
+      </nav>
+    );
+  }
+
   return (
     <nav className={cn(
       "fixed left-0 top-0 h-full bg-background border-r border-border flex flex-col transition-all duration-300 ease-in-out z-40",
@@ -270,7 +341,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
                 <button
                   key={moduleName}
                   type="button"
-                  onClick={() => navigate(route)}
+                  onClick={() => go(route)}
                   title={isCollapsed ? `${moduleName}: ${routeName}` : `${setup.done} of ${setup.total} import steps have data`}
                   className={cn(
                     "mb-1.5 flex w-full items-center rounded-lg border px-2.5 py-2 text-left transition-colors",
@@ -286,7 +357,8 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
                       <div className="text-xs text-gray-600">Import your data</div>
                     </div>
                   )}
-                  {!isCollapsed && status && (
+                  {!isCollapsed && firstLoad && <BadgeSkeleton className="ml-2" />}
+                  {!isCollapsed && !firstLoad && status && (
                     <span className={cn("ml-2 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_TONES[status.tone])}>
                       {status.label}
                     </span>
@@ -305,14 +377,15 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
                   )}
                   title={isCollapsed ? moduleName : undefined}
                   aria-expanded={single ? undefined : Boolean(isExpanded)}
-                  onClick={() => (single ? navigate(single[1]) : toggleModule(moduleName))}
+                  onClick={() => (single ? go(single[1]) : toggleModule(moduleName))}
                 >
                   <div className="flex w-full items-center gap-2">
                     <span className="mr-0.5 w-6 flex-shrink-0 text-center text-lg">{module.icon}</span>
                     {!isCollapsed && (
                       <>
                         <span className="min-w-0 flex-1 truncate text-sm font-medium">{moduleName}</span>
-                        {status && (
+                        {firstLoad && status && <BadgeSkeleton />}
+                        {!firstLoad && status && (
                           <span title={status.title} className={cn("flex-shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_TONES[status.tone])}>
                             {status.label}
                           </span>
@@ -343,7 +416,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
                         variant={isRouteActive(route) ? "secondary" : "ghost"}
                         size="sm"
                         className="h-8 w-full justify-start px-2.5 text-sm"
-                        onClick={() => navigate(route)}
+                        onClick={() => go(route)}
                       >
                         {routeName}
                       </Button>
@@ -385,15 +458,19 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         <div className="flex items-center justify-between gap-2 px-4 py-2 border-t border-border bg-muted/30 text-xs">
           <span className="flex items-center gap-1.5 text-muted-foreground">
             Errors:
-            <Badge
-              variant={(safeData.validation?.errors || []).length > 0 ? 'destructive' : 'success'}
-              className="text-xs"
-            >
-              {(safeData.validation?.errors || []).length}
-            </Badge>
+            {firstLoad ? (
+              <BadgeSkeleton className="w-6" />
+            ) : (
+              <Badge
+                variant={(safeData.validation?.errors || []).length > 0 ? 'destructive' : 'success'}
+                className="text-xs"
+              >
+                {(safeData.validation?.errors || []).length}
+              </Badge>
+            )}
           </span>
           <span className="text-muted-foreground">
-            Updated {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'never'}
+            {firstLoad ? 'Loading…' : `Updated ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'never'}`}
           </span>
         </div>
       )}

@@ -290,15 +290,17 @@ return the API's confirmation.
 | Build / import | `list_import_templates` (columns, aliases, example CSV), `preview_file` (a file's sheets, header, first rows, matching template; or a folder listing), `import_records` (customers, units / products, machines, labor_rates), `import_routings`, `import_boms`, `import_prices`, `import_deductions` (rows or `file_path`, `dry_run`, `mode`) |
 | Prices & deductions | `list_prices` (paged, 100 rules), `upsert_prices`, `delete_price`, `resolve_price`, **`apply_price_list`** (re-price a scenario's sales rows, `dry_run`), `list_deduction_rules`, `upsert_deduction_rules` (create without `rule_id`, or update the active rule with the same scope; partial update with `rule_id`), `delete_deduction_rule`, `simulate_deductions`, `deduction_preview` |
 | Operating forecasts | **`cogs_forecast`** (`group_by` summary / product / customer / customer_type / product_type / unit_costs, `include_periods`, `top_n`), **`labor_forecast`** (hours / cost / FTE by labor type by month, machine hours vs capacity, `hours_per_fte`, `include_machines`, `include_products`), `sales_detail` (every line, paged, `columns`, filters), **`export_workbook`** (Excel into `<data folder>/exports/`) |
-| Scenarios | `list_scenarios`, `get_scenario`, `create_scenario`, `update_scenario` (rename, notes, mark base), `branch_scenario` (copies sales, the scenario's own expenses / payroll / capex / price rules / deduction rules and assumptions, with multipliers / period extension), `delete_scenario` (cascades the same tables; `deleted` counts each), `compare_scenarios` (an unknown id is an error) |
+| Scenarios | `list_scenarios` (with `status`, `locked` and, for an approved scenario, `drift`), `get_scenario`, `create_scenario`, `update_scenario` (rename, notes, mark base), `branch_scenario` (copies sales, the scenario's own expenses / payroll / capex / price rules / deduction rules and assumptions, with multipliers / period extension; branching a locked scenario gives an editable draft), `delete_scenario` (cascades the same tables; `deleted` counts each), `compare_scenarios` (an unknown id is an error) |
+| Approvals & history | `approve_scenario` (only when the user asks; stores totals, saves the workbook and an `approved_<id>_<ts>.db` snapshot, then locks: writes to the scenario's rows answer 409), `unlock_scenario` (reason required), `list_approvals`, `audit_log` (who changed what, when; `since`, `forecast_id`, `client`, `path_contains`; dry runs and previews are not recorded), `legacy_checks` (read-only: missing opening period, drifted loan dates, non-monthly sales periods, empty BOM versions, sold products without BOM / routing, employees without a labor class) |
 | Sales forecast | `list_sales`, `upsert_sales`, `delete_sale`, `import_sales` (price optional: resolved from the price list; `dry_run`, `year`, `mode`), `revenue_summary` (`group_by` period / customer / unit / customer_unit / customer_type / product_type; `product` and `unit_type` are accepted aliases), **`adjust_sales`** (bulk price / volume change by months, customers, products) |
 | Master data | `create_record`, `update_record`, `delete_record` (customers, units, bom, bom_definitions, router_definitions, router_operations, machines, labor_rates, expense_categories, ...), `import_customers`, `import_products` |
 | Costing | `product_cost_summary` (`top_n` 50 by net sales, `unit_id`), `unit_cost_preview`, `cost_breakdown` (`top_n` 50), `materials_usage` (`top_n` 50 by spend, `material_contains`, `bom_id`, `include_products`), `machine_utilization`, `labor_utilization`, `list_bom` (100 lines), **`adjust_material_costs`** (bulk BOM repricing by material name) |
-| Payroll | `list_employees` (paged, 50), `get_employee`, `create_employee`, `update_employee`, `delete_employee`, `get_payroll_config`, `update_payroll_config`, `payroll_forecast`, `payroll_summary` |
+| Payroll | `list_employees` (paged, 50), `get_employee`, `create_employee`, `update_employee`, `delete_employee` (`labor_class` direct / indirect / admin), `get_payroll_config`, `update_payroll_config`, `payroll_forecast`, `payroll_summary`, `payroll_statement_bridge` (pay accrued by month vs paid on pay dates, implied accrued payroll) |
 | Expenses | `list_expense_categories`, `create_expense_category`, `list_expenses` (paged, 50), `create_expense`, `update_expense`, `delete_expense`, `expense_forecast`, `expense_summary` |
-| Loans | `list_loans`, `create_loan`, `update_loan`, `delete_loan`, `loan_schedule` (paged, 120 payments, `start_period` / `end_period`), `loan_summary`, `loan_cash_flow` |
-| Reporting | `financial_statements`, `variance`, `actual_line_items`, `list_actuals`, `upsert_actuals`, `delete_actuals`, `get_assumptions`, `update_assumptions`, `list_capex`, `create_capex`, `update_capex`, `delete_capex` |
-| Safety | `save_database`, `list_saved_databases`, `load_database`, `revert_to_last_save`, `data_quality` |
+| Loans | `list_loans`, `create_loan`, `update_loan` (paid / recorded installments are never changed; `preview` first), `delete_loan`, `loan_schedule` (paged, 120 payments, `start_period` / `end_period`), `loan_summary`, `loan_cash_flow`, `loan_schedule_audit` (read-only: legacy 30.44-day dates, gaps, broken balances), `repair_loan_schedule` (dry run unless `dry_run=false`) |
+| Reporting | `financial_statements`, `variance`, `get_assumptions`, `update_assumptions`, `list_capex`, `create_capex`, `update_capex`, `delete_capex` |
+| Actuals | `actual_line_items`, `list_actuals`, `upsert_actuals`, `import_actuals` (CSV / XLSX; atomic unless `allow_partial`; duplicates refused unless `combine_duplicates`; `control_total`; `dry_run` first), `delete_actuals`, `list_actuals_batches`, `undo_actuals_batch` (deletes rows the batch added, restores the amounts it overwrote; dry run by default), `actuals_periods`, `close_actuals_period`, `reopen_actuals_period` (reason required) |
+| Safety | `save_database`, `list_saved_databases`, `load_database`, `revert_to_last_save`, `start_clean` (only when asked; snapshots first), `data_quality` |
 
 ### Reports at a glance
 
@@ -310,9 +312,12 @@ return the API's confirmation.
   groups show contribution margin before factory overhead, largest first, `top_n` of them
   with the rest summed in `others`.
 * `forecast_labor_forecast`: `periods` plus arrays per labor type (`hours`, `cost`, `fte`),
-  per machine (`hours`, `utilization_pct`, `over_capacity_periods`). Labor cost equals the
-  income statement's direct labor; `payroll_note` warns when production workers are also in
-  payroll (counted twice).
+  per machine (`hours`, `utilization_pct`, `over_capacity_periods`). Labor cost is the routing
+  standard (the income statement's standard direct labor). `standard_vs_payroll` sets it against
+  employees classed Direct: standard vs paid hours, `utilization_pct`, and `labor_variance`
+  (direct payroll - standard, booked in COGS, so nobody is counted twice). `payroll_note` splits
+  payroll into direct, indirect (COGS) and admin (operating expense) and lists unclassified
+  employees (treated as admin until classed).
 * `forecast_sales_detail`: 50 rows per page by default; `totals` cover every matching row.
 * `forecast_export_workbook`: sheets Read Me, Gross Margin, Income Statement, By Product, By
   Customer, By Customer Type, Labor Forecast, Machine Hours, Unit Costs, Sales Detail,

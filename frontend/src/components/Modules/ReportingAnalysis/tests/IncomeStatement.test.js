@@ -125,6 +125,36 @@ describe('IncomeStatement rows', () => {
   });
 });
 
+describe('IncomeStatement labor lines', () => {
+  const withLabor = {
+    by_period: [
+      month('2027-01', { cogs_labor: 3000, labor_variance: 1333.33, indirect_labor: 5000, payroll: 9000 }),
+      month('2027-02', { cogs_labor: 6000, labor_variance: -1666.67, indirect_labor: 5000, payroll: 9000 })
+    ],
+    totals: { ...data.totals, cogs_labor: 9000, labor_variance: -333.34, indirect_labor: 10000, payroll: 18000 }
+  };
+
+  it('lists the routing standard, the payroll variance and indirect labor inside COGS', () => {
+    const keys = INCOME_STATEMENT_ROWS.map(r => r.key);
+    expect(keys.indexOf('cogs_labor')).toBeLessThan(keys.indexOf('labor_variance'));
+    expect(keys.indexOf('labor_variance')).toBeLessThan(keys.indexOf('total_cogs'));
+    expect(keys.indexOf('indirect_labor')).toBeLessThan(keys.indexOf('total_cogs'));
+    expect(keys.indexOf('payroll')).toBeGreaterThan(keys.indexOf('opex_header'));
+    const help = Object.fromEntries(INCOME_STATEMENT_ROWS.map(r => [r.key, r.help]));
+    expect(help.labor_variance).toMatch(/classed Direct/);
+    expect(help.indirect_labor).toMatch(/classed Indirect/);
+    expect(help.payroll).toMatch(/Admin or not classified/);
+  });
+
+  it('shows the new lines with a negative variance in parentheses', () => {
+    renderIS({ data: withLabor });
+    expect(cells('Direct labor (standard)').map(c => c.textContent)).toEqual(['3,000', '6,000', '9,000']);
+    expect(cells('Direct labor variance (payroll vs standard)').map(c => c.textContent)).toEqual(['1,333', '(1,667)', '(333)']);
+    expect(cells('Indirect labor (factory)').map(c => c.textContent)).toEqual(['5,000', '5,000', '10,000']);
+    expect(cells('Payroll').map(c => c.textContent)).toEqual(['9,000', '9,000', '18,000']);
+  });
+});
+
 describe('detailFigures', () => {
   it('treats revenue as net sales and falls back when gross is missing (older API)', () => {
     expect(detailFigures({ revenue: 100, cogs: 40, quantity: 2 })).toEqual({ units: 2, gross: 100, deductions: 0, net: 100, cogs: 40, gp: 60, gpPct: 60 });

@@ -91,7 +91,8 @@ SHEET_DESCRIPTIONS: Dict[str, str] = {
     "By Customer": "The same breakdown per customer.",
     "By Customer Type": "The same breakdown per customer type (channel).",
     "Labor Forecast": "Direct labor hours, cost and FTEs by labor type by month (routing labor minutes x units), "
-                      "plus labor hours by product.",
+                      "the routing standard against the pay of employees classed Direct (paid hours, utilization, "
+                      "variance), plus labor hours by product.",
     "Machine Hours": "Machine hours required against available capacity, utilization and machine cost by month.",
     "Unit Costs": "Per-unit material, labor and machine cost of each product sold, from its BOM and routing, "
                   "with data-quality warnings.",
@@ -118,8 +119,10 @@ INCOME_STATEMENT_LABELS: Dict[str, str] = {
     "revenue": "Net sales",
     "units_sold": "Units sold",
     "cogs_materials": "Materials",
-    "cogs_labor": "Direct labor",
+    "cogs_labor": "Direct labor (standard)",
+    "labor_variance": "Direct labor variance (payroll vs standard)",
     "cogs_manufacturing": "Machine / manufacturing",
+    "indirect_labor": "Indirect labor (factory)",
     "factory_overhead": "Factory overhead",
     "other_cogs": "Other COGS",
     "total_cogs": "Total COGS",
@@ -202,8 +205,8 @@ _BOLD_LINES: Dict[str, frozenset] = {
 }
 _INDENT_LINES: Dict[str, frozenset] = {
     "income_statement": frozenset({"terms_allowance", "chargebacks", "other_allowances", "excise_tax",
-                                   "cogs_materials", "cogs_labor", "cogs_manufacturing", "factory_overhead",
-                                   "other_cogs", "commissions", "payroll", "admin_expense", "operating_expense",
+                                   "cogs_materials", "cogs_labor", "labor_variance", "cogs_manufacturing",
+                                   "indirect_labor", "factory_overhead", "other_cogs", "commissions", "payroll", "admin_expense", "operating_expense",
                                    "depreciation", "gross_margin_pct", "operating_margin_pct", "net_margin_pct"}),
     "cash_flow": frozenset({"depreciation", "change_in_accounts_receivable", "change_in_inventory",
                             "change_in_accounts_payable", "change_in_excise_tax_payable", "capex", "loan_proceeds",
@@ -684,8 +687,8 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Net sales", "Gross sales - terms allowance - chargebacks allowance - other discounts & allowances - "
                       "excise tax (FET). Sales commissions are not deducted from net sales."),
         ("Product COGS", "Per-unit cost from each product's BOM and routing, times units sold. Materials = sum of "
-                         "BOM line quantity x unit price; direct labor = routing labor minutes / 60 x labor rate; "
-                         "machine = routing machine minutes / 60 x machine rate."),
+                         "BOM line quantity x unit price; direct labor (standard) = routing labor minutes / 60 x "
+                         "labor rate; machine = routing machine minutes / 60 x machine rate."),
         ("Factory overhead and other COGS", "Period costs from operating expense allocations (categories typed "
                                             "factory overhead or COGS). They are in Total COGS and gross profit on "
                                             "the Gross Margin and Income Statement sheets, but not in the "
@@ -693,9 +696,19 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Contribution margin vs gross profit", "Contribution margin = net sales - product COGS (before overhead). "
                                                 "Gross profit = net sales - total COGS (product COGS + factory "
                                                 "overhead + other COGS). Margin percentages are on net sales."),
+        ("Labor classes", "Each employee in Payroll has a labor class that decides where their pay goes. Direct "
+                          "(builds product): in COGS. Direct labor (standard) stays routing labor minutes x labor "
+                          "rates x units sold, and in every month with direct payroll a Direct labor variance line "
+                          "adds direct payroll - standard, so total direct labor equals the pay of employees classed "
+                          "Direct and nobody is counted twice. Indirect (factory support: supervisors, maintenance, "
+                          "material handling): in COGS as Indirect labor (factory). Admin, or not classified: "
+                          "Payroll in operating expenses. When no employee is classed Direct, direct labor is the "
+                          "routing standard alone. Inventory is always valued at the standard product cost."),
         ("Labor hours and FTEs", f"Labor hours = routing labor minutes per unit x units sold / 60, by labor type. "
                                  f"FTEs = hours / {hpf:,.2f} paid hours per FTE per month (40 h x 52 weeks / 12 = "
-                                 f"173.33 by default). Labor cost equals Direct labor on the Income Statement."),
+                                 f"173.33 by default). Labor cost equals Direct labor (standard) on the Income "
+                                 f"Statement. Paid hours = weekly hours x 52 / 12 of employees classed Direct; "
+                                 f"utilization = standard hours / paid hours."),
         ("Machine utilization", "Machine hours required / available hours per month (the machine's available "
                                 "minutes per month / 60). Above 100% means more machine time than capacity."),
         ("Payroll vs direct labor", str((labor.get("payroll_note") or {}).get("message") or "")),
@@ -757,11 +770,13 @@ _GROSS_MARGIN_LINES: List[Tuple[str, str, str, bool, int]] = [
     ("total_sales_deductions", "Total sales deductions", "money0", True, 0),
     ("net_sales", "Net sales", "money0", True, 0),
     ("materials", "Materials", "money0", False, 1),
-    ("labor", "Direct labor", "money0", False, 1),
+    ("labor", "Direct labor (standard)", "money0", False, 1),
     ("machine", "Machine", "money0", False, 1),
     ("product_cogs", "Product COGS (BOM + routing)", "money0", True, 0),
     ("contribution_margin", "Contribution margin (before overhead)", "money0", True, 0),
     ("contribution_margin_pct", "Contribution margin %", "pct", False, 1),
+    ("labor_variance", "Direct labor variance (payroll vs standard)", "money0", False, 1),
+    ("indirect_labor", "Indirect labor (factory)", "money0", False, 1),
     ("factory_overhead", "Factory overhead", "money0", False, 1),
     ("other_cogs", "Other COGS", "money0", False, 1),
     ("total_cogs", "Total COGS", "money0", True, 0),
@@ -788,8 +803,9 @@ def _sheet_gross_margin(ws, data: Dict[str, Any]) -> None:
             w.style_row(r, len(periods) + 2)
         w.row += 1
     w.blank()
-    w.note("Contribution margin = net sales - product COGS. Gross profit also deducts factory overhead and other "
-           "COGS (period costs). Commissions are an operating expense below gross profit.")
+    w.note("Contribution margin = net sales - product COGS. Gross profit also deducts the direct labor variance, "
+           "indirect labor, factory overhead and other COGS (period costs). Commissions are an operating expense "
+           "below gross profit.")
     w.finish(freeze="B2")
 
 
@@ -949,12 +965,34 @@ def _sheet_labor(ws, data: Dict[str, Any]) -> None:
 
     if types:
         w.note(f"Peak month: {totals.get('peak_fte', 0):,.2f} FTEs. Average: {totals.get('avg_fte', 0):,.2f} FTEs.")
+        w.blank()
+
+    # Standard (routings) vs the pay of employees classed Direct, by month.
+    comparison = labor.get("standard_vs_payroll") or {}
+    by_month = {r["period"]: r for r in comparison.get("by_period") or []}
+    comp_totals = comparison.get("totals") or {}
+    w.section("Standard vs payroll (employees classed Direct)")
+    for key, label, kind in (
+        ("standard_hours", "Standard hours (routings)", "hours"),
+        ("paid_hours", "Paid hours (Direct employees)", "hours"),
+        ("utilization_pct", "Utilization (standard / paid hours)", "pct"),
+        ("standard_cost", "Direct labor (standard)", "money"),
+        ("direct_payroll_cost", "Direct payroll", "money"),
+        ("labor_variance", "Direct labor variance (payroll vs standard)", "money"),
+        ("indirect_payroll_cost", "Indirect labor (factory)", "money"),
+    ):
+        r = w.row
+        w.cell(r, 1, label, indent=1)
+        for j, p in enumerate(periods, start=3):
+            value = by_month.get(p, {}).get(key)
+            w.cell(r, j, _pct(value) if kind == "pct" else value, kind)
+        total = comp_totals.get(key)
+        w.cell(r, ncols, _pct(total) if kind == "pct" else total, kind)
+        w.row += 1
     note = labor.get("payroll_note") or {}
-    w.cell(w.row, 1, "Direct labor cost (routings)", bold=True)
-    w.cell(w.row, 2, note.get("direct_labor_cost"), "money")
-    w.row += 1
-    w.cell(w.row, 1, "Payroll cost (operating expense)", bold=True)
-    w.cell(w.row, 2, note.get("payroll_cost"), "money")
+    r = w.row
+    w.cell(r, 1, "Payroll in opex (admin, not classified)", indent=1)
+    w.cell(r, ncols, note.get("admin_payroll_cost"), "money")
     w.row += 1
     if note.get("message"):
         w.note(str(note["message"]))

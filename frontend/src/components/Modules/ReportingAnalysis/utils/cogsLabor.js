@@ -1,7 +1,7 @@
 // Pure helpers for the COGS & Labor Forecast screen: table rows, sorting,
 // monthly matrices and the CSV of whatever table is on screen.
 import { formatPeriod } from './formatters';
-import { DEDUCTION_HELP } from './lineHelp';
+import { DEDUCTION_HELP, LABOR_HELP } from './lineHelp';
 
 // ---------------------------------------------------------------------------
 // Gross margin bridge (GET /reporting/cogs-forecast -> summary)
@@ -18,8 +18,10 @@ export const BRIDGE_ROWS = [
   { key: 'units', label: 'Units sold', kind: 'line', indent: 1, format: 'number' },
   { key: 'cogs_header', label: 'Cost of goods sold', kind: 'header' },
   { key: 'materials', label: 'Materials', kind: 'line', indent: 1, help: 'BOM material cost per unit × units sold.' },
-  { key: 'labor', label: 'Direct labor', kind: 'line', indent: 1, help: 'Routing labor minutes × labor rates × units sold.' },
+  { key: 'labor', label: 'Direct labor (standard)', kind: 'line', indent: 1, help: LABOR_HELP.cogs_labor },
+  { key: 'labor_variance', label: 'Direct labor variance (payroll vs standard)', kind: 'line', indent: 1, help: LABOR_HELP.labor_variance },
   { key: 'machine', label: 'Machine / manufacturing', kind: 'line', indent: 1, help: 'Routing machine minutes × machine rates × units sold.' },
+  { key: 'indirect_labor', label: 'Indirect labor (factory)', kind: 'line', indent: 1, help: LABOR_HELP.indirect_labor },
   { key: 'factory_overhead', label: 'Factory overhead', kind: 'line', indent: 1, help: 'Expenses categorised as factory overhead (a period cost, not per unit).' },
   { key: 'other_cogs', label: 'Other COGS', kind: 'line', indent: 1 },
   { key: 'total_cogs', label: 'Total COGS', kind: 'subtotal' },
@@ -260,6 +262,40 @@ export const laborMatrix = (labor, metric = 'hours') => {
     peak: isFte ? n(labor?.totals?.peak_fte) : null
   };
   return { periods, rows, totalsRow, totalLabel: isFte ? 'Average' : 'Total' };
+};
+
+/**
+ * Standard (routings) vs payroll (employees classed Direct) by month, from
+ * GET /reporting/labor-forecast -> standard_vs_payroll. One row per measure,
+ * a value per month plus the window total (utilization = standard hours /
+ * paid hours, recomputed for the total, never summed).
+ */
+export const LABOR_COMPARISON_ROWS = [
+  { key: 'standard_hours', label: 'Standard hours (routings)', format: 'number' },
+  { key: 'paid_hours', label: 'Paid hours (Direct employees)', format: 'number' },
+  { key: 'utilization_pct', label: 'Utilization', format: 'pct', help: 'Standard hours ÷ paid hours of employees classed Direct.' },
+  { key: 'standard_cost', label: 'Direct labor (standard)', format: 'money' },
+  { key: 'direct_payroll_cost', label: 'Direct payroll', format: 'money' },
+  { key: 'labor_variance', label: 'Direct labor variance', format: 'money', help: 'Direct payroll − standard: the variance line on the income statement.' },
+  { key: 'indirect_payroll_cost', label: 'Indirect labor (factory)', format: 'money' }
+];
+
+export const laborComparison = (labor) => {
+  const block = labor?.standard_vs_payroll;
+  if (!block || !Array.isArray(block.by_period)) return null;
+  const periods = labor?.periods || block.by_period.map(r => r.period);
+  const byPeriod = Object.fromEntries(block.by_period.map(r => [r.period, r]));
+  const totals = block.totals || {};
+  const rows = LABOR_COMPARISON_ROWS.map(def => ({
+    ...def,
+    values: Object.fromEntries(periods.map(p => {
+      const v = byPeriod[p]?.[def.key];
+      return [p, typeof v === 'number' ? v : (def.format === 'pct' ? null : 0)];
+    })),
+    total: typeof totals[def.key] === 'number' ? totals[def.key] : (def.format === 'pct' ? null : 0)
+  }));
+  const hasPayroll = n(totals.direct_payroll_cost) > 0 || n(totals.indirect_payroll_cost) > 0;
+  return { periods, rows, hasPayroll, hasDirect: n(totals.direct_payroll_cost) > 0 };
 };
 
 export const laborCsvRows = (labor, metric) => {

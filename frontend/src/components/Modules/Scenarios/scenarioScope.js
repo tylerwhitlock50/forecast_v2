@@ -34,7 +34,7 @@ export const SCOPE_KINDS = {
 };
 
 const ROUTE_SCOPES = [
-  { test: (p) => p.startsWith('/scenarios'), kind: null },
+  { test: (p) => p.startsWith('/scenarios') || p.startsWith('/history'), kind: null },
   { test: (p) => p.startsWith('/sales-forecast'), kind: 'scenario' },
   { test: (p) => p.startsWith('/pricing') || p.startsWith('/import'), kind: 'mixed' },
   { test: (p) => p.startsWith('/payroll') || p.startsWith('/expenses'), kind: 'mixed' },

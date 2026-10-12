@@ -85,7 +85,15 @@ def _scenario_summary(cursor, forecast_id: str) -> Dict[str, Any]:
     return counts
 
 
-def _scenario_row(cursor, forecast_id: str) -> Optional[Dict[str, Any]]:
+def _scenario_row(cursor, forecast_id: str, with_drift: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    One scenario: its forecast row, counts and governance fields (``status``
+    draft / approved, ``locked``, ``approved_by``, ``approved_at``,
+    ``approval_note``; with ``with_drift`` also ``drift`` for an approved
+    scenario: current statement totals vs the approved ones).
+    """
+    from services.governance import governance_fields
+
     cursor.execute("SELECT * FROM forecast WHERE forecast_id = ?", (forecast_id,))
     row = cursor.fetchone()
     if not row:
@@ -93,7 +101,18 @@ def _scenario_row(cursor, forecast_id: str) -> Optional[Dict[str, Any]]:
     record = dict(zip([d[0] for d in cursor.description], row))
     record["is_base"] = bool(record.get("is_base"))
     record.update(_scenario_summary(cursor, forecast_id))
+    governance_fields(record, cursor, with_drift=with_drift)
     return record
+
+
+def _refuse_if_locked(cursor, forecast_id: str, action: str) -> None:
+    """409 when the scenario is approved and locked (``action``: what was refused, for the message)."""
+    from services.governance import locked_message
+
+    cursor.execute("SELECT name, locked FROM forecast WHERE forecast_id = ?", (forecast_id,))
+    row = cursor.fetchone()
+    if row and row[1]:
+        raise HTTPException(status_code=409, detail=f"{locked_message(row[0])} ({action} refused.)")
 
 
 def _add_months(period: str, months: int) -> str:
@@ -160,7 +179,16 @@ def _ensure_base(cursor) -> Optional[str]:
 
 @router.get("/scenarios", response_model=ForecastResponse)
 async def get_forecast_scenarios():
-    """All scenarios with row counts, sales window and whether assumptions are set."""
+    """
+    All scenarios with row counts, sales window, whether assumptions are
+    set, and governance: ``status`` (draft / approved), ``locked``,
+    ``approved_by``, ``approved_at``, ``approval_note`` and, for an approved
+    scenario, ``drift`` = {changed, items: [{line, label, approved, current,
+    delta}], approved_at, start_period, end_period}: its current statement
+    totals vs the totals stored at approval (shared company-wide inputs can
+    still move a locked scenario). ``items`` lists the lines that moved by
+    more than $0.50. One statements run per approved scenario.
+    """
     try:
         from db.database import db_manager
 
@@ -169,7 +197,7 @@ async def get_forecast_scenarios():
         try:
             cursor.execute("SELECT forecast_id FROM forecast ORDER BY is_base DESC, name")
             ids = [row[0] for row in cursor.fetchall()]
-            scenarios = [_scenario_row(cursor, fid) for fid in ids]
+            scenarios = [_scenario_row(cursor, fid, with_drift=True) for fid in ids]
         finally:
             db_manager.close_connection(conn)
 
@@ -184,12 +212,12 @@ async def get_forecast_scenarios():
 
 @router.get("/scenario/{forecast_id}", response_model=ForecastResponse)
 async def get_forecast_scenario(forecast_id: str):
-    """One scenario with its counts."""
+    """One scenario with its counts and governance fields (drift included, see GET /forecast/scenarios)."""
     from db.database import db_manager
 
     conn = db_manager.get_connection()
     try:
-        record = _scenario_row(conn.cursor(), forecast_id)
+        record = _scenario_row(conn.cursor(), forecast_id, with_drift=True)
     finally:
         db_manager.close_connection(conn)
     if not record:
@@ -248,16 +276,21 @@ async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, An
     """
     Rename, edit description / notes, or mark as the base scenario. A new
     name another scenario already has (trimmed, case-insensitive) is refused
-    with 409 naming that scenario's id.
+    with 409 naming that scenario's id. An approved (locked) scenario keeps
+    its name, description and notes: changing them is refused with 409
+    (sending the stored values is fine); marking it as the base is allowed.
+    Status and lock change only through approve / unlock.
     """
     from db.database import db_manager
 
     conn = db_manager.get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ?", (forecast_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT name, description, notes, locked FROM forecast WHERE forecast_id = ?", (forecast_id,))
+        current = cursor.fetchone()
+        if not current:
             raise HTTPException(status_code=404, detail="Forecast scenario not found")
+        stored = {"name": current[0], "description": current[1], "notes": current[2]}
 
         updates, params = [], []
         for field in ("name", "description", "notes"):
@@ -268,6 +301,9 @@ async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, An
                         raise HTTPException(status_code=422, detail="name cannot be empty")
                     value = str(value).strip()
                     _refuse_taken_name(cursor, value, exclude_id=forecast_id)
+                if current[3] and (value or '') != (stored[field] or ''):
+                    _refuse_if_locked(cursor, forecast_id, {"name": "Renaming", "description": "Editing the description",
+                                                            "notes": "Editing the notes"}[field])
                 updates.append(f"{field} = ?")
                 params.append(value)
         if updates:
@@ -315,6 +351,9 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
     An explicit ``name`` another scenario already has (trimmed,
     case-insensitive) is refused with 409 naming that scenario's id; without
     a name the copy is called '<name> Copy' ('<name> Copy 2', ... when taken).
+
+    Branching an approved (locked) scenario is the way to change it: the
+    copy is always an editable draft (status 'draft', not locked).
     """
     try:
         from db.database import db_manager
@@ -365,7 +404,8 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
             notes = body.get('notes') or original_notes
 
             cursor.execute(
-                "INSERT INTO forecast (forecast_id, name, description, notes, is_base) VALUES (?, ?, ?, ?, 0)",
+                "INSERT INTO forecast (forecast_id, name, description, notes, is_base, status, locked) "
+                "VALUES (?, ?, ?, ?, 0, 'draft', 0)",
                 (new_forecast_id, name, description, notes),
             )
 
@@ -445,17 +485,17 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
             # --- Payroll -----------------------------------------------------------
             copied_employees = 0
             if copy_payroll:
-                cursor.execute(
-                    """SELECT employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type, start_date, end_date,
-                              next_review_date, expected_raise, benefits_eligible, allocations
-                       FROM payroll WHERE forecast_id = ?""",
-                    (forecast_id,),
-                )
+                payroll_columns = ["employee_name", "department", "weekly_hours", "hourly_rate", "rate_type", "labor_type",
+                                   "start_date", "end_date", "next_review_date", "expected_raise", "benefits_eligible",
+                                   "allocations"]
+                cursor.execute("PRAGMA table_info(payroll)")
+                if "labor_class" in {r[1] for r in cursor.fetchall()}:
+                    payroll_columns.append("labor_class")      # direct / indirect / admin travels with the employee
+                cursor.execute(f"SELECT {', '.join(payroll_columns)} FROM payroll WHERE forecast_id = ?", (forecast_id,))
+                insert_columns = ["employee_id", *payroll_columns, "forecast_id"]
                 for p in cursor.fetchall():
                     cursor.execute(
-                        """INSERT INTO payroll (employee_id, employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type,
-                                                start_date, end_date, next_review_date, expected_raise, benefits_eligible, allocations, forecast_id)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        f"INSERT INTO payroll ({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})",
                         (f"EMP-{uuid.uuid4().hex[:10].upper()}", *p, new_forecast_id),
                     )
                     copied_employees += 1
@@ -556,7 +596,12 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
 
 @router.delete("/scenario/{forecast_id}", response_model=ForecastResponse)
 async def delete_forecast_scenario(forecast_id: str):
-    """Delete a scenario and every row that belongs only to it (company-wide NULL rows are untouched)."""
+    """
+    Delete a scenario and every row that belongs only to it (company-wide
+    NULL rows are untouched), including its approval history rows (the
+    change history, approval snapshots and workbooks are kept). An approved
+    (locked) scenario cannot be deleted: 409, unlock it with a reason first.
+    """
     try:
         from db.database import db_manager
 
@@ -566,6 +611,7 @@ async def delete_forecast_scenario(forecast_id: str):
             record = _scenario_row(cursor, forecast_id)
             if not record:
                 raise HTTPException(status_code=404, detail="Forecast scenario not found")
+            _refuse_if_locked(cursor, forecast_id, "Deleting it")
 
             cursor.execute(
                 "DELETE FROM expense_allocations WHERE expense_id IN (SELECT expense_id FROM expenses WHERE forecast_id = ?)",
@@ -573,6 +619,10 @@ async def delete_forecast_scenario(forecast_id: str):
             )
             for table in SCENARIO_TABLES:
                 cursor.execute(f"DELETE FROM {table} WHERE forecast_id = ?", (forecast_id,))
+            try:
+                cursor.execute("DELETE FROM scenario_approvals WHERE forecast_id = ?", (forecast_id,))
+            except sqlite3.OperationalError:   # database not yet migrated
+                pass
             cursor.execute("DELETE FROM forecast WHERE forecast_id = ?", (forecast_id,))
             # Deleting the base promotes another scenario so one base always remains.
             promoted = _ensure_base(cursor)
@@ -603,6 +653,137 @@ async def delete_forecast_scenario(forecast_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting forecast scenario: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Approval: approve & lock a baseline, unlock with a reason, history
+# (logic in services.governance; the lock itself is enforced by SQLite
+# triggers and mapped to HTTP 409 by api.governance_routes)
+# ---------------------------------------------------------------------------
+
+def _governance_http(exc) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.message)
+
+
+def _scenario_record(forecast_id: str) -> Optional[Dict[str, Any]]:
+    from db.database import db_manager
+
+    conn = db_manager.get_connection()
+    try:
+        return _scenario_row(conn.cursor(), forecast_id)
+    finally:
+        db_manager.close_connection(conn)
+
+
+@router.post("/scenario/{forecast_id}/approve", response_model=ForecastResponse)
+async def approve_forecast_scenario(forecast_id: str, body: Optional[Dict[str, Any]] = None):
+    """
+    Approve and lock a scenario as a baseline. Body: ``{approved_by
+    (required), note}``.
+
+    Stores the statement totals over the scenario's sales window (gross
+    sales, net sales, total COGS, gross profit, operating income, net
+    income, closing cash), saves the Excel workbook for that window to
+    ``<data_dir>/exports/approved/`` and a database snapshot
+    ``approved_<id>_<YYYYMMDD_HHMMSS>.db`` in saved_databases, then sets
+    ``status='approved'``, ``locked=1``. While locked, every change to the
+    scenario's own rows (sales, expenses, payroll, capex, assumptions,
+    prices, deduction rules) and its deletion is refused with 409; branch it
+    to make changes. 409 when already locked, 422 without an approver or
+    without monthly sales. ``data.approval`` = {approval_id, action,
+    actor, note, created_at, snapshot_filename, workbook_filename, totals,
+    start_period, end_period, snapshot_available, workbook_available}.
+    """
+    from services.governance import GovernanceError, approve_scenario
+    from fastapi.concurrency import run_in_threadpool
+
+    body = body or {}
+    try:
+        approval = await run_in_threadpool(approve_scenario, forecast_id, body.get("approved_by"), body.get("note"))
+    except GovernanceError as exc:
+        raise _governance_http(exc)
+    record = _scenario_record(forecast_id) or {"forecast_id": forecast_id}
+    record["approval"] = approval
+    return ForecastResponse(
+        status="success",
+        data=record,
+        message=(f"Approved and locked scenario '{record.get('name', forecast_id)}' ({forecast_id}) for "
+                 f"{approval.get('start_period')} to {approval.get('end_period')}, approved by {approval.get('actor')}. "
+                 f"Saved snapshot {approval.get('snapshot_filename')} and workbook {approval.get('workbook_filename')}."),
+    )
+
+
+@router.post("/scenario/{forecast_id}/unlock", response_model=ForecastResponse)
+async def unlock_forecast_scenario(forecast_id: str, body: Optional[Dict[str, Any]] = None):
+    """
+    Unlock an approved scenario so it can be edited again. Body: ``{actor,
+    reason (required)}``. Sets ``locked=0`` and ``status='draft'`` and adds
+    an 'unlock' entry (actor, reason) to the approval history; the approval
+    snapshot and workbook are kept. 409 when the scenario is not locked.
+    """
+    from services.governance import GovernanceError, unlock_scenario
+
+    body = body or {}
+    try:
+        entry = unlock_scenario(forecast_id, body.get("actor"), body.get("reason"))
+    except GovernanceError as exc:
+        raise _governance_http(exc)
+    record = _scenario_record(forecast_id) or {"forecast_id": forecast_id}
+    record["unlock"] = entry
+    who = f" by {entry['actor']}" if entry.get("actor") else ""
+    return ForecastResponse(
+        status="success",
+        data=record,
+        message=f"Unlocked scenario '{record.get('name', forecast_id)}' ({forecast_id}){who}: {entry.get('note')}",
+    )
+
+
+@router.get("/scenario/{forecast_id}/approvals", response_model=ForecastResponse)
+async def get_forecast_scenario_approvals(forecast_id: str):
+    """
+    Approval history of a scenario, newest first: approvals (with the
+    stored totals, window, snapshot and workbook file names and whether
+    those files still exist) and unlocks (with the actor and reason).
+    """
+    from services.governance import GovernanceError, list_approvals
+
+    try:
+        approvals = list_approvals(forecast_id)
+    except GovernanceError as exc:
+        raise _governance_http(exc)
+    return ForecastResponse(
+        status="success",
+        data={"forecast_id": forecast_id, "approvals": approvals},
+        message=f"{len(approvals)} approval history entr{'y' if len(approvals) == 1 else 'ies'}",
+    )
+
+
+@router.get("/approvals", response_model=ForecastResponse)
+async def get_all_scenario_approvals(limit: int = Query(200, ge=1, le=1000)):
+    """Approval history of every scenario, newest first (each entry names its scenario)."""
+    from services.governance import list_approvals
+
+    approvals = list_approvals(None, limit)
+    return ForecastResponse(
+        status="success",
+        data={"approvals": approvals},
+        message=f"{len(approvals)} approval history entr{'y' if len(approvals) == 1 else 'ies'}",
+    )
+
+
+@router.get("/scenario/{forecast_id}/approvals/{approval_id}/workbook")
+async def download_approval_workbook(forecast_id: str, approval_id: str):
+    """The Excel workbook saved when the scenario was approved (.xlsx download)."""
+    import os
+    from fastapi.responses import FileResponse
+    from services.governance import GovernanceError, approval_workbook
+
+    try:
+        path = approval_workbook(forecast_id, approval_id)
+    except GovernanceError as exc:
+        raise _governance_http(exc)
+    return FileResponse(path, filename=os.path.basename(path),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @router.get("/comparison", response_model=ForecastResponse)

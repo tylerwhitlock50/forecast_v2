@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { parseLocalDate, toDateOnly, formatDateOnly } from '../../../lib/dates';
+import { defaultWindowForScenario } from '../../../lib/scenarioWindow';
 import { useForecast } from '../../../context/ForecastContext';
 import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
@@ -26,8 +27,16 @@ import {
   mergeBusinessUnits,
   serverForecastToView,
   runsPerYearFor,
-  formatRate
+  formatRate,
+  normalizeLaborClass,
+  laborClassLabel,
+  laborClassHelp,
+  payRunQuery,
+  bridgeToView,
+  LABOR_CLASS_OPTIONS
 } from './payrollView';
+
+const LABOR_CLASS_BADGE = { direct: 'info', indirect: 'secondary', admin: 'outline' };
 
 const serverConfigToForm = (cfg) => ({
   federalTaxRate: Number(cfg.federal_tax_rate ?? 0.22),
@@ -60,11 +69,18 @@ const PayrollManagement = () => {
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [showAllocationModal, setShowAllocationModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [forecastHorizon, setForecastHorizon] = useState(26); // 26 pay periods = 1 year
+  // null = one year of pay runs for the configured frequency (the API's default).
+  const [forecastHorizon, setForecastHorizon] = useState(null);
+  const [forecastMeta, setForecastMeta] = useState({ periods: null, runsPerYear: null });
+  // Statement vs pay dates: null window = the scenario's budget year(s).
+  const [bridgeWindow, setBridgeWindow] = useState(null);
+  const [bridge, setBridge] = useState(null);
+  const [bridgeLoading, setBridgeLoading] = useState(false);
   const [filters, setFilters] = useState({
     department: '',
     status: 'active',
-    scope: ''
+    scope: '',
+    laborClass: ''
   });
 
   // Configuration state for taxes and benefits
@@ -104,11 +120,12 @@ const PayrollManagement = () => {
     if (activeTab !== 'forecast' && activeTab !== 'reports') return undefined;
     let cancelled = false;
     setForecastLoading(true);
-    const query = `periods=${forecastHorizon}${activeScenario ? `&forecast_id=${encodeURIComponent(activeScenario)}` : ''}`;
-    api.get(`/payroll/forecast?${query}`, { suppressErrorToast: true })
+    const query = payRunQuery(forecastHorizon, activeScenario);
+    api.get(`/payroll/forecast${query ? `?${query}` : ''}`, { suppressErrorToast: true })
       .then((res) => {
         if (cancelled) return;
         setPayrollForecast(serverForecastToView(res?.data?.forecast || []));
+        setForecastMeta({ periods: res?.data?.periods || null, runsPerYear: res?.data?.runs_per_year || null });
       })
       .catch(() => {
         if (!cancelled) {
@@ -119,6 +136,29 @@ const PayrollManagement = () => {
       .finally(() => { if (!cancelled) setForecastLoading(false); });
     return () => { cancelled = true; };
   }, [activeTab, forecastHorizon, activeScenario, config, data?.payroll]);
+
+  // Statement payroll (accrued evenly by month) vs cash paid on pay dates.
+  const scenarioRecord = activeScenario ? scenarios?.[activeScenario] : null;
+  const defaultBridgeWindow = useMemo(
+    () => (scenarioRecord ? defaultWindowForScenario(scenarioRecord) : null),
+    [scenarioRecord]
+  );
+  const effectiveBridgeWindow = bridgeWindow || defaultBridgeWindow;
+  const bridgeStart = effectiveBridgeWindow?.start;
+  const bridgeEnd = effectiveBridgeWindow?.end;
+  useEffect(() => {
+    if (activeTab !== 'forecast') return undefined;
+    let cancelled = false;
+    setBridgeLoading(true);
+    const params = [];
+    if (bridgeStart && bridgeEnd) params.push(`start_period=${bridgeStart}`, `end_period=${bridgeEnd}`);
+    if (activeScenario) params.push(`forecast_id=${encodeURIComponent(activeScenario)}`);
+    api.get(`/payroll/statement-bridge${params.length ? `?${params.join('&')}` : ''}`, { suppressErrorToast: true })
+      .then((res) => { if (!cancelled) setBridge(bridgeToView(res?.data)); })
+      .catch(() => { if (!cancelled) setBridge(null); })
+      .finally(() => { if (!cancelled) setBridgeLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, bridgeStart, bridgeEnd, activeScenario, config, data?.payroll]);
 
   // Costs: refetched whenever the roster, the scenario or the rates change.
   useEffect(() => {
@@ -170,6 +210,7 @@ const PayrollManagement = () => {
       return {
         ...emp,
         department: emp.department || emp.labor_type,
+        labor_class: normalizeLaborClass(emp.labor_class),
         rate_type: emp.rate_type || 'hourly',
         next_review_date: emp.next_review_date || getNextReviewDate(emp.start_date),
         expected_raise: emp.expected_raise || 0,
@@ -198,9 +239,17 @@ const PayrollManagement = () => {
       if (filters.status && emp.status !== filters.status) return false;
       if (filters.scope === 'company' && emp.forecast_id) return false;
       if (filters.scope === 'scenario' && !emp.forecast_id) return false;
+      if (filters.laborClass && (emp.labor_class || 'unclassified') !== filters.laborClass) return false;
       return true;
     });
   }, [employees, filters]);
+
+  // Active employees with no labor class: their pay counts as Admin, so a
+  // production worker among them would also be in the routing standard.
+  const unclassifiedActive = useMemo(
+    () => employees.filter(emp => emp.status === 'active' && !emp.labor_class),
+    [employees]
+  );
 
   // Get unique departments
   const departments = useMemo(() => {
@@ -221,7 +270,8 @@ const PayrollManagement = () => {
       expected_raise: 0,
       benefits_eligible: true,
       allocations: { 'Customer-Centric Brands': 100 },
-      forecast_id: activeScenario || null
+      forecast_id: activeScenario || null,
+      labor_class: ''
     });
     setShowEmployeeModal(true);
   };
@@ -303,9 +353,9 @@ const PayrollManagement = () => {
       key: 'employee_name',
       title: 'Employee Name',
       render: (value, row) => (
-        <div className="space-y-1">
-          <div className="font-semibold">{value}</div>
-          <div className="text-sm text-muted-foreground">ID: {row.employee_id}</div>
+        <div className="space-y-0.5">
+          <div className="font-semibold whitespace-nowrap">{value}</div>
+          <div className="max-w-[11rem] truncate text-xs text-muted-foreground" title={`ID: ${row.employee_id}`}>ID: {row.employee_id}</div>
         </div>
       )
     },
@@ -321,27 +371,42 @@ const PayrollManagement = () => {
           'Admin': 'secondary',
           'Unassigned': 'default'
         };
-        return <Badge variant={variants[dept] || 'default'}>{dept}</Badge>;
+        return <Badge variant={variants[dept] || 'default'} className="whitespace-nowrap">{dept}</Badge>;
       }
+    },
+    {
+      key: 'labor_class',
+      title: 'Labor class',
+      render: (value) => (
+        <Badge
+          variant={LABOR_CLASS_BADGE[value] || 'warning'}
+          title={laborClassHelp(value)}
+          className="whitespace-nowrap"
+          data-testid="labor-class-badge"
+        >
+          {laborClassLabel(value)}
+        </Badge>
+      )
     },
     {
       key: 'forecast_id',
       title: 'Scope',
       render: (value) => (
         value
-          ? <Badge variant="warning" title={`Only in scenario ${value}`}>{value === activeScenario ? 'This scenario' : value}</Badge>
-          : <Badge variant="secondary" title="Included in every scenario">Company-wide</Badge>
+          ? <Badge variant="warning" className="whitespace-nowrap" title={`Only in scenario ${value}`}>{value === activeScenario ? 'This scenario' : value}</Badge>
+          : <Badge variant="secondary" className="whitespace-nowrap" title="Included in every scenario">Company-wide</Badge>
       )
     },
     {
       key: 'rate_type',
-      title: 'Rate Type',
+      title: 'Pay',
       render: (value, row) => (
         <div className="space-y-1">
           <Badge variant={value === 'salary' ? 'success' : 'info'}>
             {value === 'salary' ? 'Salary' : 'Hourly'}
           </Badge>
-          <div className="text-sm">{formatRate(row, formatCurrency)}</div>
+          <div className="text-sm whitespace-nowrap">{formatRate(row, formatCurrency)}</div>
+          <div className="text-xs text-muted-foreground whitespace-nowrap">{row.weekly_hours || 40} h/week</div>
           {row.rate_basis === 'legacy_hourly_equivalent' && (
             <Badge variant="warning" className="text-xs" title="Salaries under 1,000 are read as an hourly rate x 2,080. Edit the employee and enter the annual salary.">
               Check salary
@@ -363,14 +428,9 @@ const PayrollManagement = () => {
       )
     },
     {
-      key: 'weekly_hours',
-      title: 'Hours/Week',
-      render: (value) => `${value || 40}h`
-    },
-    {
       key: 'start_date',
       title: 'Start Date',
-      render: (value) => formatDate(value)
+      render: (value) => <span className="whitespace-nowrap">{formatDate(value)}</span>
     },
     {
       key: 'next_review_date',
@@ -388,8 +448,8 @@ const PayrollManagement = () => {
         
         return (
           <div className="space-y-1">
-            <div>{formatDate(value)}</div>
-            <Badge variant={variant} className="text-xs">
+            <div className="whitespace-nowrap">{formatDate(value)}</div>
+            <Badge variant={variant} className="text-xs whitespace-nowrap">
               {daysUntil < 0 ? 'Overdue' : `${daysUntil} days`}
             </Badge>
           </div>
@@ -482,6 +542,21 @@ const PayrollManagement = () => {
         </div>
         
         <div className="flex items-center gap-2">
+          <Label htmlFor="payroll-labor-class-filter" className="whitespace-nowrap">Labor class:</Label>
+          <Select
+            id="payroll-labor-class-filter"
+            value={filters.laborClass}
+            onChange={(e) => setFilters(prev => ({ ...prev, laborClass: e.target.value }))}
+          >
+            <SelectOption value="">All classes</SelectOption>
+            {LABOR_CLASS_OPTIONS.map(option => (
+              <SelectOption key={option.value} value={option.value}>{option.label}</SelectOption>
+            ))}
+            <SelectOption value="unclassified">Not classified</SelectOption>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
           <Label>Status:</Label>
           <Select value={filters.status} onChange={(e) => setFilters(prev => ({ ...prev, status: e.target.value }))}>
             <SelectOption value="">All Status</SelectOption>
@@ -501,6 +576,27 @@ const PayrollManagement = () => {
         </TabsList>
 
         <TabsContent value="employees" className="space-y-6">
+          {unclassifiedActive.length > 0 && (
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              data-testid="unclassified-note"
+            >
+              <p>
+                {unclassifiedActive.length === 1 ? '1 employee has' : `${unclassifiedActive.length} employees have`} no labor class,
+                so their pay is counted as Admin (operating expenses). Class production workers <strong>Direct</strong> and
+                factory support <strong>Indirect</strong> so the income statement does not count anyone twice.
+              </p>
+              {filters.laborClass !== 'unclassified' && (
+                <button
+                  type="button"
+                  className="rounded-md border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                  onClick={() => setFilters(prev => ({ ...prev, laborClass: 'unclassified', status: 'active' }))}
+                >
+                  Show them
+                </button>
+              )}
+            </div>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>All Employees ({filteredEmployees.length})</CardTitle>
@@ -523,10 +619,14 @@ const PayrollManagement = () => {
           )}
           <PayrollForecast
             forecast={payrollForecast}
-            forecastHorizon={forecastHorizon}
+            forecastHorizon={forecastHorizon ?? forecastMeta.periods ?? (forecastMeta.runsPerYear || runsPerYear)}
             onHorizonChange={setForecastHorizon}
-            runsPerYear={runsPerYear}
+            runsPerYear={forecastMeta.runsPerYear || runsPerYear}
             payFrequency={config.payFrequency}
+            bridge={bridge}
+            bridgeLoading={bridgeLoading}
+            bridgeWindow={effectiveBridgeWindow || (bridge ? { start: bridge.start, end: bridge.end } : null)}
+            onBridgeWindowChange={setBridgeWindow}
           />
         </TabsContent>
 
@@ -597,6 +697,8 @@ const PayrollManagement = () => {
           onSave={async (newConfig) => {
             try {
               await api.post('/payroll/config', formConfigToServer(newConfig));
+              // A new pay frequency means a new year of runs: drop a hand-picked horizon.
+              if (newConfig.payFrequency !== config.payFrequency) setForecastHorizon(null);
               setConfig(newConfig);
               setShowConfigModal(false);
               actions.fetchAllData?.(activeScenario);

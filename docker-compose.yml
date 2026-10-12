@@ -1,9 +1,15 @@
+# Exposure: both ports are published on 127.0.0.1 only, so the app (which has
+# no login) and its MCP endpoint are reachable from this machine alone. To use
+# it from other machines on a TRUSTED network, start it with
+#   FORECAST_BIND=0.0.0.0 docker-compose up
+# (or put FORECAST_BIND=0.0.0.0 in a .env file next to this file), and for
+# Claude Code / Codex on another machine also set MCP_ALLOWED_HOSTS below.
 services:
   fastapi:
     build: ./app
     container_name: forecast-api
     ports:
-      - "8000:8000"
+      - "${FORECAST_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - ./data:/data
       - ./app:/app
@@ -32,7 +38,7 @@ services:
     build: ./frontend
     container_name: forecast-frontend
     ports:
-      - "3000:3000"
+      - "${FORECAST_BIND:-127.0.0.1}:3000:3000"
     depends_on:
       - fastapi
     networks:

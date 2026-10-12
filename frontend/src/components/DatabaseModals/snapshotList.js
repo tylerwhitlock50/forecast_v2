@@ -24,6 +24,11 @@ export const SNAPSHOT_GROUPS = [
     title: 'Safety copies made before loading',
     help: 'Your data as it was just before another database was loaded over it.',
   },
+  {
+    key: 'approvals',
+    title: 'Copies made when a scenario was approved',
+    help: 'The whole database as it was at the moment of each approval.',
+  },
 ];
 
 // File-name prefixes the server uses for the copies it makes on its own.
@@ -34,11 +39,12 @@ const lower = (value) => String(value ?? '').toLowerCase();
 
 const fileOf = (item) => lower(item?.filename || item?.name);
 
-/** 'saves' | 'autosaves' | 'start_clean' | 'before_load' for one /database/list item. */
+/** 'saves' | 'autosaves' | 'start_clean' | 'before_load' | 'approvals' for one /database/list item. */
 export const snapshotGroup = (item) => {
   // Whatever the server says about why the copy was made, most specific first.
   const said = [item?.kind, item?.reason, item?.made_before, item?.trigger].map(lower).filter(Boolean).join(' ');
   if (said) {
+    if (/approv/.test(said)) return 'approvals';
     if (/start.?clean|reset|clear/.test(said)) return 'start_clean';
     if (/load|revert|reload|restore|switch/.test(said)) return 'before_load';
     if (/auto/.test(said)) return 'autosaves';
@@ -46,6 +52,7 @@ export const snapshotGroup = (item) => {
   }
   const file = fileOf(item);
   const type = lower(item?.type);
+  if (file.startsWith('approved_')) return 'approvals';
   if (START_CLEAN_PREFIXES.some((p) => file.startsWith(p))) return 'start_clean';
   if (BEFORE_LOAD_PREFIXES.some((p) => file.startsWith(p))) return 'before_load';
   if (type === 'autosave' || file.startsWith('autosave_')) return 'autosaves';

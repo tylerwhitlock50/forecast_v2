@@ -163,8 +163,12 @@ async def labor_forecast(
     cost and FTEs (hours / hours_per_fte) by labor type by month, as arrays
     aligned with 'periods'; machine hours, utilization % of monthly capacity
     and over-capacity months; optional labor per product. Labor cost equals
-    the income statement's direct labor (cogs_labor); payroll_note compares
-    it with payroll (production workers in both are counted twice)."""
+    the income statement's standard direct labor (cogs_labor).
+    standard_vs_payroll compares it with employees classed Direct in payroll
+    (standard vs paid hours, utilization %, labor variance = direct payroll -
+    standard cost, booked in COGS); payroll_note splits payroll into direct,
+    indirect (factory overhead in COGS) and admin (operating expense) and
+    lists unclassified employees."""
     ids = clean_ids(forecast_ids, "forecast_ids")
     start, end, sales_window = await scenario_window(ids, start_period, end_period)
     body = await call("GET", "/reporting/labor-forecast", params=_query(ids, start, end, hours_per_fte=hours_per_fte))
@@ -205,7 +209,19 @@ async def labor_forecast(
         if omitted:
             result["by_product_omitted"] = omitted
     note = body.get("payroll_note") or {}
-    result["payroll_note"] = {k: note.get(k) for k in ("direct_labor_cost", "payroll_cost", "message")}
+    result["payroll_note"] = drop_empty({k: note.get(k) for k in (
+        "direct_labor_cost", "payroll_cost", "direct_payroll_cost", "indirect_payroll_cost", "admin_payroll_cost",
+        "labor_variance", "unclassified_employees", "message")})
+    svp = body.get("standard_vs_payroll") or {}
+    if svp:
+        rows = {r.get("period"): r for r in svp.get("by_period") or []}
+        result["standard_vs_payroll"] = {
+            "totals": svp.get("totals"),
+            "direct_employee_count": svp.get("direct_employee_count"),
+            **{m: series(rows, m) for m in ("standard_hours", "paid_hours", "utilization_pct", "standard_cost",
+                                            "direct_payroll_cost", "labor_variance")},
+            "basis": svp.get("basis"),
+        }
     warnings = compact_warnings(body.get("warnings"))
     if warnings:
         result["warnings"] = warnings

@@ -52,6 +52,16 @@ Conventions
 * Payroll burden is employer cost only (social security, medicare,
   unemployment, workers comp, benefits); income tax withheld from employees
   is not added. Salaried employees store their annual salary.
+* Labor classes (payroll.labor_class) decide where pay lands, automatically:
+    admin or not classified -> operating expense 'payroll';
+    indirect                -> COGS 'indirect_labor' (factory support staff);
+    direct                  -> COGS. 'cogs_labor' stays the routing standard
+                               and, in every month with direct payroll,
+                               'labor_variance' = direct payroll - standard,
+                               so total direct labor = direct payroll and no
+                               production worker is counted twice.
+  With no employee classed direct the statement is the routing standard only,
+  as before. Inventory (DIO) is always valued on product COGS at standard.
 """
 from __future__ import annotations
 
@@ -120,7 +130,9 @@ VARIANCE_LINE_ITEMS: Dict[str, Dict[str, str]] = {
     "revenue":            {"label": "Net Sales",               "direction": "income",  "statement": "income"},
     "cogs_materials":     {"label": "COGS - Materials",        "direction": "expense", "statement": "income"},
     "cogs_labor":         {"label": "COGS - Direct Labor",     "direction": "expense", "statement": "income"},
+    "labor_variance":     {"label": "COGS - Direct Labor Variance", "direction": "expense", "statement": "income"},
     "cogs_manufacturing": {"label": "COGS - Machine / Mfg",    "direction": "expense", "statement": "income"},
+    "indirect_labor":     {"label": "COGS - Indirect Labor",   "direction": "expense", "statement": "income"},
     "factory_overhead":   {"label": "COGS - Factory Overhead", "direction": "expense", "statement": "income"},
     "other_cogs":         {"label": "COGS - Other",            "direction": "expense", "statement": "income"},
     "total_cogs":         {"label": "Total COGS",              "direction": "expense", "statement": "income"},
@@ -637,13 +649,61 @@ def allocation_shares(allocations: Any) -> Tuple[Dict[str, float], float]:
     return {unit: v / 100 for unit, v in pct.items() if v > 0}, 1 - total / 100
 
 
+#: Where an employee's pay lands on the statements (payroll.labor_class).
+#: NULL / blank = not classified, treated like 'admin'.
+LABOR_CLASSES: Tuple[str, ...] = ("direct", "indirect", "admin")
+#: Keys of payroll_by_period()['by_labor_class'] (the three classes plus 'unclassified').
+LABOR_CLASS_KEYS: Tuple[str, ...] = LABOR_CLASSES + ("unclassified",)
+LABOR_CLASS_LABELS: Dict[str, str] = {
+    "direct": "Direct",
+    "indirect": "Indirect (factory)",
+    "admin": "Admin",
+    "unclassified": "Not classified",
+}
+_LABOR_CLASS_ALIASES: Dict[str, str] = {
+    "direct": "direct", "direct labor": "direct", "direct labour": "direct", "dl": "direct",
+    "indirect": "indirect", "indirect labor": "indirect", "indirect labour": "indirect", "il": "indirect",
+    "admin": "admin", "administrative": "admin", "administration": "admin", "g&a": "admin", "sg&a": "admin",
+}
+LABOR_CLASS_ERROR = "labor_class must be direct, indirect or admin (or empty for not classified)"
+
+
+def normalize_labor_class(value: Any, strict: bool = True) -> Optional[str]:
+    """
+    'Direct' / ' indirect ' / 'ADMIN' / 'direct labor' -> 'direct' / 'indirect' /
+    'admin'; None or blank -> None (not classified). Anything else raises
+    ValueError (strict) or reads as not classified (strict=False, for stored data).
+    """
+    if value is None:
+        return None
+    text = " ".join(str(value).strip().lower().replace("_", " ").split())
+    if not text:
+        return None
+    if text in _LABOR_CLASS_ALIASES:
+        return _LABOR_CLASS_ALIASES[text]
+    if strict:
+        raise ValueError(f"{LABOR_CLASS_ERROR}; got {value!r}")
+    return None
+
+
+def _payroll_columns(cursor) -> set:
+    try:
+        cursor.execute("PRAGMA table_info(payroll)")
+        return {row[1] for row in cursor.fetchall()}
+    except Exception:
+        return set()
+
+
 def load_employees(cursor, forecast_ids: Sequence[str]) -> List[Dict[str, Any]]:
     scope, params = _scope_clause("forecast_id", forecast_ids, include_null=True)
+    # Databases from before labor classes have no labor_class column until
+    # initialize_schema migrates them; read them as not classified.
+    labor_class = "labor_class" if "labor_class" in _payroll_columns(cursor) else "NULL AS labor_class"
     cursor.execute(
         f"""
         SELECT employee_id, employee_name, department, weekly_hours, hourly_rate,
                rate_type, labor_type, start_date, end_date, next_review_date,
-               expected_raise, benefits_eligible, allocations, forecast_id
+               expected_raise, benefits_eligible, allocations, forecast_id, {labor_class}
         FROM payroll
         WHERE {scope}
         ORDER BY employee_name
@@ -658,27 +718,49 @@ def load_employees(cursor, forecast_ids: Sequence[str]) -> List[Dict[str, Any]]:
             emp["allocations"] = json.loads(emp["allocations"]) if emp.get("allocations") else {}
         except (json.JSONDecodeError, TypeError):
             emp["allocations"] = {}
+        emp["labor_class"] = normalize_labor_class(emp.get("labor_class"), strict=False)
         employees.append(emp)
     return employees
+
+
+def weekly_paid_hours(emp: Dict[str, Any]) -> float:
+    """Scheduled paid hours a week: weekly_hours, or 40 for a salaried employee with none recorded."""
+    hours = float(emp.get("weekly_hours") or 0)
+    if hours <= 0 and (emp.get("rate_type") or "hourly") == "salary":
+        hours = 40.0
+    return hours
 
 
 def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
                       include_raises: bool = True,
                       config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Fully burdened payroll cost per calendar month, prorated for hires/terms."""
+    """
+    Fully burdened payroll cost per calendar month, prorated for hires/terms.
+
+    Besides the totals it returns, per labor class (LABOR_CLASS_KEYS):
+    ``by_labor_class`` (cost per month) and ``paid_hours_by_class`` (weekly
+    hours x 52 / 12 per month, prorated like the cost), plus
+    ``unclassified_employees``: employees with no labor class and pay in
+    the periods.
+    """
     config = config or load_payroll_config(cursor)
     employees = load_employees(cursor, forecast_ids)
     totals = _zero_by_period(periods)
     gross = _zero_by_period(periods)
     by_department: Dict[str, Dict[str, float]] = {}
     by_business_unit: Dict[str, Dict[str, float]] = {}
+    by_labor_class = {key: _zero_by_period(periods) for key in LABOR_CLASS_KEYS}
+    paid_hours_by_class = {key: _zero_by_period(periods) for key in LABOR_CLASS_KEYS}
     headcount = _zero_by_period(periods)
     employee_rows: List[Dict[str, Any]] = []
+    unclassified: List[Dict[str, Any]] = []
 
     for emp in employees:
         start = _parse_date(emp.get("start_date"))
         end = _parse_date(emp.get("end_date"))
         multiplier = _burden_multiplier(config, bool(emp.get("benefits_eligible", 1)))
+        labor_class = emp.get("labor_class") or "unclassified"
+        monthly_hours = weekly_paid_hours(emp) * 52 / 12
         emp_by_period: Dict[str, float] = {}
         for period in periods:
             fraction = _active_fraction(period, start, end)
@@ -692,6 +774,8 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
             totals[period] += cost
             gross[period] += monthly_gross
             headcount[period] += fraction
+            by_labor_class[labor_class][period] += cost
+            paid_hours_by_class[labor_class][period] += monthly_hours * fraction
             dept = emp.get("department") or "Unassigned"
             by_department.setdefault(dept, _zero_by_period(periods))[period] += cost
             allocations = emp.get("allocations") or {}
@@ -701,14 +785,19 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
                     by_business_unit.setdefault(unit, _zero_by_period(periods))[period] += cost * share
                 if unallocated > 1e-9:
                     by_business_unit.setdefault("Unallocated", _zero_by_period(periods))[period] += cost * unallocated
+        total = sum(emp_by_period.values())
         employee_rows.append({
             "employee_id": emp.get("employee_id"),
             "employee_name": emp.get("employee_name"),
             "department": emp.get("department"),
             "forecast_id": emp.get("forecast_id"),
+            "labor_class": emp.get("labor_class"),
             "by_period": emp_by_period,
-            "total": sum(emp_by_period.values()),
+            "total": total,
         })
+        if labor_class == "unclassified" and total > 0:
+            unclassified.append({"employee_id": emp.get("employee_id"), "employee_name": emp.get("employee_name"),
+                                 "department": emp.get("department")})
 
     return {
         "total": totals,
@@ -716,9 +805,69 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
         "headcount": headcount,
         "by_department": by_department,
         "by_business_unit": by_business_unit,
+        "by_labor_class": by_labor_class,
+        "paid_hours_by_class": paid_hours_by_class,
+        "unclassified_employees": unclassified,
         "employees": employee_rows,
         "config": config,
     }
+
+
+def labor_lines_by_period(payroll: Dict[str, Any], standard_labor: Dict[str, float],
+                          periods: Sequence[str]) -> Dict[str, Dict[str, float]]:
+    """
+    Statement lines from payroll by labor class and the routing standard
+    direct labor of each month (see the module docstring):
+
+      payroll        = admin + not classified pay (operating expense)
+      indirect_labor = indirect pay (COGS)
+      direct_payroll = direct pay (memo)
+      labor_variance = direct pay - routing standard, in months with direct
+                       pay; 0 otherwise (the standard stands alone)
+    """
+    by_class = payroll["by_labor_class"]
+    out: Dict[str, Dict[str, float]] = {k: {} for k in ("payroll", "indirect_labor", "direct_payroll", "labor_variance")}
+    for p in periods:
+        direct = by_class["direct"].get(p, 0.0)
+        out["payroll"][p] = by_class["admin"].get(p, 0.0) + by_class["unclassified"].get(p, 0.0)
+        out["indirect_labor"][p] = by_class["indirect"].get(p, 0.0)
+        out["direct_payroll"][p] = direct
+        out["labor_variance"][p] = (direct - float(standard_labor.get(p, 0.0))) if direct > 0 else 0.0
+    return out
+
+
+def _names(employees: Sequence[Dict[str, Any]], limit: int = 6) -> str:
+    names = [str(e.get("employee_name") or e.get("employee_id")) for e in employees]
+    if len(names) > limit:
+        return ", ".join(names[:limit]) + f" and {len(names) - limit} more"
+    return ", ".join(names)
+
+
+def describe_labor_policy(standard: float, direct_payroll: float, variance: float, indirect: float,
+                          admin: float, unclassified: Sequence[Dict[str, Any]]) -> str:
+    """Plain-spoken explanation of where payroll landed, for notes and the Read Me."""
+    money = lambda v: f"${v:,.0f}"  # noqa: E731
+    if direct_payroll > 0:
+        if variance >= 0:
+            adjust = f"plus a direct labor variance of {money(variance)} (payroll above standard)"
+        else:
+            adjust = f"less a direct labor variance of {money(-variance)} (payroll below standard)"
+        parts = [f"Direct labor in COGS is the routing standard ({money(standard)}) {adjust}, so it equals the pay "
+                 f"of employees classed Direct ({money(direct_payroll)}); nobody is counted twice."]
+    else:
+        parts = [f"Direct labor in COGS is the routing standard ({money(standard)}): routing minutes x labor rates. "
+                 f"No employee is classed Direct, so payroll does not replace it."]
+    if indirect > 0:
+        parts.append(f"Indirect (factory) employees ({money(indirect)}) are in COGS as Indirect labor.")
+    parts.append(f"Admin and unclassified employees ({money(admin)}) are Payroll in operating expenses.")
+    if unclassified:
+        if direct_payroll > 0:
+            parts.append(f"Not classified (treated as Admin): {_names(unclassified)}. "
+                         f"Class any production worker among them Direct.")
+        else:
+            parts.append(f"Not classified (treated as Admin): {_names(unclassified)}. If any of them build product, "
+                         f"class them Direct; otherwise their pay is in Payroll and in the routing standard too.")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -1049,6 +1198,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     sales = revenue_and_cogs_by_period(cursor, forecast_ids, all_periods, detail_periods=periods,
                                        sales_lines=sales_lines)
     payroll = payroll_by_period(cursor, forecast_ids, all_periods, include_raises=include_raises)
+    labor_lines = labor_lines_by_period(payroll, sales["labor"], all_periods)
     expenses = expenses_by_period(cursor, forecast_ids, all_periods, detail_periods=periods)
     loans = loans_by_period(cursor, all_periods)
     capex = capex_by_period(cursor, forecast_ids, all_periods, assumptions)
@@ -1088,6 +1238,43 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
                        f"any sales row in {periods[0]}..{periods[-1]}, so net sales equal gross sales. Check the "
                        f"customers, customer types, products, product types and months the rules are scoped to "
                        f"under Pricing & Deductions.",
+        })
+
+    # Labor policy for the window: what landed where, and who is not classified.
+    window_unclassified = [
+        e for e in (
+            {"employee_id": row["employee_id"], "employee_name": row["employee_name"], "department": row["department"],
+             "window_cost": sum(row["by_period"].get(p, 0.0) for p in periods)}
+            for row in payroll["employees"] if not row.get("labor_class")
+        ) if e["window_cost"] > 0
+    ]
+    window_standard = sum(sales["labor"][p] for p in periods)
+    labor_policy = {
+        "direct_payroll_in_cogs": any(labor_lines["direct_payroll"][p] > 0 for p in periods),
+        "standard_direct_labor": window_standard,
+        "direct_payroll": sum(labor_lines["direct_payroll"][p] for p in periods),
+        "labor_variance": sum(labor_lines["labor_variance"][p] for p in periods),
+        "indirect_labor": sum(labor_lines["indirect_labor"][p] for p in periods),
+        "admin_payroll": sum(labor_lines["payroll"][p] for p in periods),
+        "unclassified_employees": [{k: e[k] for k in ("employee_id", "employee_name", "department")}
+                                   for e in window_unclassified],
+    }
+    labor_policy["message"] = describe_labor_policy(
+        labor_policy["standard_direct_labor"], labor_policy["direct_payroll"], labor_policy["labor_variance"],
+        labor_policy["indirect_labor"], labor_policy["admin_payroll"], labor_policy["unclassified_employees"])
+    if window_unclassified and window_standard > 0:
+        count = len(window_unclassified)
+        warnings.append({
+            "code": "unclassified_payroll",
+            "level": "info",
+            "message": (
+                f"{count} employee{'s have' if count != 1 else ' has'} no labor class, so "
+                f"{'their' if count != 1 else 'the'} pay is in Payroll (operating expenses): "
+                f"{_names(window_unclassified)}. Direct labor in COGS comes from the routings, so a production "
+                f"worker left unclassified is counted twice. Under Payroll, class production workers Direct, "
+                f"factory support Indirect and everyone else Admin."
+            ),
+            "employees": labor_policy["unclassified_employees"],
         })
 
     tax_rate = float(assumptions.get("income_tax_rate") or 0)
@@ -1177,10 +1364,15 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         manufacturing = sales["manufacturing"][period]
         factory_overhead = expenses["factory_overhead"][period]
         other_cogs = expenses["other_cogs"][period]
-        total_cogs = materials + labor + manufacturing + factory_overhead + other_cogs
+        # Labor classes: direct pay replaces the routing standard through the
+        # variance line, indirect pay is a factory cost, the rest is opex.
+        labor_variance = labor_lines["labor_variance"][period]
+        indirect_labor = labor_lines["indirect_labor"][period]
+        total_cogs = (materials + labor + labor_variance + manufacturing + indirect_labor
+                      + factory_overhead + other_cogs)
         gross_profit = revenue - total_cogs
 
-        payroll_cost = payroll["total"][period]
+        payroll_cost = labor_lines["payroll"][period]
         admin = expenses["admin"][period]
         operating = expenses["operating"][period]
         dep = capex["depreciation"][period]
@@ -1211,7 +1403,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "units_sold": sales["quantity"][period],
             "cogs_materials": materials,
             "cogs_labor": labor,
+            "labor_variance": labor_variance,
             "cogs_manufacturing": manufacturing,
+            "indirect_labor": indirect_labor,
             "factory_overhead": factory_overhead,
             "other_cogs": other_cogs,
             "total_cogs": total_cogs,
@@ -1416,6 +1610,8 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "payroll_by_department": _round_dict({d: _slice(v, periods) for d, v in payroll["by_department"].items()}),
             "payroll_by_business_unit": _round_dict({u: _slice(v, periods) for u, v in payroll["by_business_unit"].items()}),
             "payroll_headcount": _round_dict(_slice(payroll["headcount"], periods)),
+            "payroll_by_labor_class": _round_dict({k: _slice(v, periods) for k, v in payroll["by_labor_class"].items()}),
+            "labor_policy": _round_dict(labor_policy),
             "payroll_employees": [_round_dict(e) for e in employee_rows],
             "loans": _round_dict({
                 lid: {

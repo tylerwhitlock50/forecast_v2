@@ -27,6 +27,7 @@ import ScenariosPage from './components/Modules/Scenarios/ScenariosPage';
 import DataImportPage from './components/Modules/DataImport/DataImportPage';
 import PricingPage from './components/Modules/Pricing/PricingPage';
 import CogsLaborForecast from './components/Modules/ReportingAnalysis/CogsLaborForecast';
+import HistoryPage from './components/Modules/History/HistoryPage';
 
 const AppLayout = ({ children }) => {
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -62,6 +63,7 @@ function App() {
 
               {/* Scenarios */}
               <Route path="/scenarios" element={<ScenariosPage />} />
+              <Route path="/history" element={<HistoryPage />} />
 
               {/* Revenue Planning */}
               <Route path="/customers" element={<CustomerManagement />} />

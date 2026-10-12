@@ -12,7 +12,9 @@ uses (financial_statements.load_sales_lines), so:
 Per product / customer / customer type figures are a contribution margin
 before factory overhead (overhead is a period expense from expense
 allocations, not a per-unit cost); only the monthly summary carries
-overhead, so it ties to the income statement.
+overhead, indirect labor and the direct labor variance (payroll classed
+direct or indirect, see financial_statements.labor_lines_by_period), so it
+ties to the income statement.
 """
 from __future__ import annotations
 
@@ -22,8 +24,10 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from services.financial_statements import (
+    describe_labor_policy,
     require_known_scenarios,
     expenses_by_period,
+    labor_lines_by_period,
     load_sales_lines,
     payroll_by_period,
     period_range,
@@ -138,16 +142,23 @@ def build_cogs_forecast(cursor, forecast_ids: Sequence[str], start_period: str, 
     by_period_metrics = {p: _empty_metrics() for p in periods}
     for line in lines:
         _add_line(by_period_metrics[line["period"]], line)
+    # Payroll classed direct / indirect lands in COGS exactly as on the income statement.
+    labor_lines = labor_lines_by_period(payroll_by_period(cursor, forecast_ids, periods),
+                                        {p: by_period_metrics[p]["labor"] for p in periods}, periods)
 
     summary_rows: List[Dict[str, Any]] = []
     totals = _empty_metrics()
-    totals.update({"factory_overhead": 0.0, "other_cogs": 0.0, "total_cogs": 0.0, "gross_profit": 0.0})
+    totals.update({"labor_variance": 0.0, "indirect_labor": 0.0, "factory_overhead": 0.0, "other_cogs": 0.0,
+                   "total_cogs": 0.0, "gross_profit": 0.0})
     for p in periods:
         m = by_period_metrics[p]
         overhead = expenses["factory_overhead"][p]
         other = expenses["other_cogs"][p]
-        total_cogs = m["product_cogs"] + overhead + other
-        row = {"period": p, **m, "factory_overhead": overhead, "other_cogs": other,
+        variance = labor_lines["labor_variance"][p]
+        indirect = labor_lines["indirect_labor"][p]
+        total_cogs = m["product_cogs"] + variance + indirect + overhead + other
+        row = {"period": p, **m, "labor_variance": variance, "indirect_labor": indirect,
+               "factory_overhead": overhead, "other_cogs": other,
                "total_cogs": total_cogs, "gross_profit": m["net_sales"] - total_cogs}
         row["gross_margin_pct"] = _pct(row["gross_profit"], row["net_sales"])
         row["contribution_margin_pct"] = _pct(row["contribution_margin"], row["net_sales"])
@@ -355,6 +366,35 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
     direct_labor_cost = sum(r["cost"] for r in totals_by_period.values())
     payroll = payroll_by_period(cursor, forecast_ids, periods)
     payroll_cost = sum(payroll["total"].values())
+    labor_lines = labor_lines_by_period(payroll, {p: totals_by_period[p]["cost"] for p in periods}, periods)
+
+    # Standard (routings) vs payroll (employees classed direct), month by month.
+    comparison_rows = []
+    sums = {"standard_hours": 0.0, "standard_cost": 0.0, "direct_payroll_cost": 0.0, "paid_hours": 0.0,
+            "labor_variance": 0.0, "indirect_payroll_cost": 0.0}
+    for p in periods:
+        paid_hours = payroll["paid_hours_by_class"]["direct"][p]
+        row = {
+            "period": p,
+            "standard_hours": totals_by_period[p]["hours"],
+            "standard_cost": totals_by_period[p]["cost"],
+            "direct_payroll_cost": labor_lines["direct_payroll"][p],
+            "paid_hours": paid_hours,
+            "labor_variance": labor_lines["labor_variance"][p],
+            "indirect_payroll_cost": labor_lines["indirect_labor"][p],
+        }
+        row["utilization_pct"] = row["standard_hours"] / paid_hours * 100 if paid_hours > 0 else None
+        for key in sums:
+            sums[key] += row[key]
+        comparison_rows.append(_round(row))
+    sums["utilization_pct"] = sums["standard_hours"] / sums["paid_hours"] * 100 if sums["paid_hours"] > 0 else None
+    admin_cost = sum(labor_lines["payroll"].values())
+    unclassified = payroll["unclassified_employees"]
+    policy_message = describe_labor_policy(direct_labor_cost, sums["direct_payroll_cost"], sums["labor_variance"],
+                                           sums["indirect_payroll_cost"], admin_cost, unclassified)
+    if sums["direct_payroll_cost"] > 0 and sums["paid_hours"] > 0:
+        policy_message += (f" Employees classed Direct are paid for {sums['paid_hours']:,.0f} hours; the routings "
+                           f"need {sums['standard_hours']:,.0f} ({sums['utilization_pct']:,.0f}% utilization).")
 
     return {
         "forecast_ids": forecast_ids,
@@ -370,17 +410,33 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
             "cost": direct_labor_cost,
             "avg_fte": sum(all_ftes) / len(all_ftes) if all_ftes else 0.0,
             "peak_fte": max(all_ftes) if all_ftes else 0.0,
+            "direct_payroll_cost": sums["direct_payroll_cost"],
+            "paid_hours": sums["paid_hours"],
+            "labor_variance": sums["labor_variance"],
+            "utilization_pct": sums["utilization_pct"],
+            "indirect_payroll_cost": sums["indirect_payroll_cost"],
         }),
+        "standard_vs_payroll": {
+            "by_period": comparison_rows,
+            "totals": _round(sums),
+            "direct_employee_count": sum(1 for e in payroll["employees"]
+                                         if e.get("labor_class") == "direct" and e["total"] > 0),
+            "basis": ("Standard = routing labor minutes x units sold (hours) and x labor rates (cost). Paid hours = "
+                      "weekly hours x 52 / 12 of employees classed Direct, prorated for start and end dates. "
+                      "Utilization = standard hours / paid hours. Variance = direct payroll - standard cost in "
+                      "months with direct payroll; it is the Direct labor variance line on the income statement."),
+        },
         "by_machine": by_machine,
         "by_product": by_product,
         "payroll_note": _round({
             "direct_labor_cost": direct_labor_cost,
             "payroll_cost": payroll_cost,
-            "message": (
-                "Direct labor in COGS is routing minutes x labor rates. Payroll is reported separately as an "
-                "operating expense. If production workers are also entered in Payroll their cost is counted "
-                "twice; keep direct workers out of Payroll (or out of the routing labor rates)."
-            ),
+            "direct_payroll_cost": sums["direct_payroll_cost"],
+            "indirect_payroll_cost": sums["indirect_payroll_cost"],
+            "admin_payroll_cost": admin_cost,
+            "labor_variance": sums["labor_variance"],
+            "unclassified_employees": unclassified,
+            "message": policy_message,
         }),
         "warnings": warnings,
     }

@@ -1,9 +1,10 @@
 import React, { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Info } from 'lucide-react';
 import { cn } from '../../../../lib/utils';
 import { formatCurrency, formatPeriod } from '../utils/formatters';
-import { LABOR_METRICS, laborMatrix, laborChartData } from '../utils/cogsLabor';
+import { LABOR_METRICS, laborMatrix, laborChartData, laborComparison } from '../utils/cogsLabor';
 import { Segmented, TabIntro, fmt, tableWrap, tableClass, theadRow, stickyName } from './parts';
 
 // Categorical series colors in fixed order (assigned by labor type id, never by rank).
@@ -19,6 +20,7 @@ export const laborColors = (types) => {
 };
 
 const hoursFmt = (v) => `${Math.round(v || 0).toLocaleString('en-US')} h`;
+const money0 = (v) => formatCurrency(v, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 
 const ChartTooltip = ({ active, payload, label }) => {
   if (!active || !payload || payload.length === 0) return null;
@@ -52,6 +54,7 @@ const LaborTab = ({ labor, loading, metric, onMetricChange, hoursPerFteInput, on
   const byProduct = labor?.by_product || [];
   const showMachineHours = byProduct.some(p => typeof p.machine_hours === 'number');
   const note = labor?.payroll_note;
+  const comparison = useMemo(() => laborComparison(labor), [labor]);
 
   const controls = (
     <>
@@ -178,16 +181,66 @@ const LaborTab = ({ labor, loading, metric, onMetricChange, hoursPerFteInput, on
         </>
       )}
 
+      {comparison && comparison.hasPayroll && (
+        <div>
+          <div className="mb-2 flex items-baseline justify-between gap-3">
+            <h4 className="text-sm font-semibold text-gray-800">Standard vs payroll</h4>
+            <span className="text-xs text-gray-500">Routing standard against the pay of employees classed Direct</span>
+          </div>
+          <div className={tableWrap}>
+            <table data-testid="labor-vs-payroll" className={tableClass}>
+              <thead>
+                <tr className={theadRow}>
+                  <th scope="col" className={cn('px-3 py-2 text-left font-medium bg-gray-100 min-w-[200px]', stickyName)}>Measure</th>
+                  {comparison.periods.map(p => <th key={p} scope="col" className="px-2 py-2 text-right font-medium whitespace-nowrap min-w-[64px]">{formatPeriod(p)}</th>)}
+                  <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap bg-gray-200 text-gray-800">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparison.rows.map(r => (
+                  <tr key={r.key} className={cn('border-t border-gray-100 hover:bg-orange-50/40', r.key === 'labor_variance' && 'font-medium')}>
+                    <td className={cn('px-3 py-1.5 text-left whitespace-nowrap bg-white', stickyName)} title={r.help}>
+                      {r.help ? <span className="cursor-help border-b border-dotted border-gray-300">{r.label}</span> : r.label}
+                    </td>
+                    {comparison.periods.map(p => (
+                      <td key={p} className="px-2 py-1.5 text-right whitespace-nowrap">{r.values[p] === null ? '—' : fmt(r.values[p], r.format)}</td>
+                    ))}
+                    <td className="px-3 py-1.5 text-right whitespace-nowrap bg-gray-50 font-medium">{r.total === null ? '—' : fmt(r.total, r.format)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {note && (
         <div className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700" data-testid="payroll-note">
           <Info className="mt-0.5 h-4 w-4 flex-none text-slate-500" aria-hidden="true" />
           <div>
             <p>
-              <span className="font-medium">Direct labor in COGS: {formatCurrency(note.direct_labor_cost, { maximumFractionDigits: 0, minimumFractionDigits: 0 })}</span>
+              <span className="font-medium">Direct labor (standard): {money0(note.direct_labor_cost)}</span>
+              {typeof note.direct_payroll_cost === 'number' && note.direct_payroll_cost > 0 && (
+                <>
+                  <span className="mx-2 text-slate-400">·</span>
+                  <span className="font-medium">Direct payroll: {money0(note.direct_payroll_cost)}</span>
+                </>
+              )}
+              {typeof note.indirect_payroll_cost === 'number' && note.indirect_payroll_cost > 0 && (
+                <>
+                  <span className="mx-2 text-slate-400">·</span>
+                  <span className="font-medium">Indirect labor: {money0(note.indirect_payroll_cost)}</span>
+                </>
+              )}
               <span className="mx-2 text-slate-400">·</span>
-              <span className="font-medium">Payroll (operating expense): {formatCurrency(note.payroll_cost, { maximumFractionDigits: 0, minimumFractionDigits: 0 })}</span>
+              <span className="font-medium">Payroll (operating expense): {money0(note.admin_payroll_cost ?? note.payroll_cost)}</span>
             </p>
             <p className="mt-0.5 text-slate-600">{note.message}</p>
+            {(note.unclassified_employees || []).length > 0 && (
+              <p className="mt-1 text-slate-600">
+                Set labor classes under <Link to="/payroll" className="font-medium text-orange-700 hover:underline">Payroll</Link>.
+              </p>
+            )}
           </div>
         </div>
       )}

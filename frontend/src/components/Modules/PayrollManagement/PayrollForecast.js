@@ -2,11 +2,17 @@ import React, { useState } from 'react';
 import './PayrollManagement.css';
 import { monthKey, formatDateOnly } from '../../../lib/dates';
 import { PAY_FREQUENCY_LABELS, runTotal } from './payrollView';
+import PayrollBridge from './PayrollBridge';
 
 // Pay runs come from /payroll/forecast: total cost is the EMPLOYER cost
 // (gross + employer payroll taxes + benefits). Employee withholding is shown
 // for information; it comes out of gross pay and is not an extra cost.
-const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYear = 26, payFrequency }) => {
+// The horizon defaults to one year of runs for the pay frequency (12 / 24 /
+// 26 / 52); the bridge below reconciles the income statement with pay dates.
+const PayrollForecast = ({
+  forecast, forecastHorizon, onHorizonChange, runsPerYear = 26, payFrequency,
+  bridge = null, bridgeLoading = false, bridgeWindow = null, onBridgeWindowChange
+}) => {
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'chart'
   const [showDetails, setShowDetails] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
@@ -76,13 +82,14 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYe
   const formatDate = (dateStr) => formatDateOnly(dateStr, { month: 'short', day: 'numeric', year: 'numeric' }, '—');
 
   const frequencyLabel = PAY_FREQUENCY_LABELS[payFrequency] || '';
+  const horizon = forecastHorizon || runsPerYear;
   const horizonOptions = [
     { value: Math.max(1, Math.round(runsPerYear / 2)), label: '6 months' },
     { value: runsPerYear, label: '1 year' },
     { value: runsPerYear * 2, label: '2 years' }
   ];
-  if (!horizonOptions.some(option => option.value === forecastHorizon)) {
-    horizonOptions.push({ value: forecastHorizon, label: 'custom' });
+  if (!horizonOptions.some(option => option.value === horizon)) {
+    horizonOptions.push({ value: horizon, label: 'custom' });
     horizonOptions.sort((a, b) => a.value - b.value);
   }
 
@@ -93,9 +100,9 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYe
         <div className="payroll-forecast-controls">
           <label>
             Forecast Horizon:
-            <select value={forecastHorizon} onChange={(e) => onHorizonChange(Number(e.target.value))}>
+            <select value={horizon} onChange={(e) => onHorizonChange(Number(e.target.value))} aria-label="Forecast horizon">
               {horizonOptions.map(option => (
-                <option key={option.value} value={option.value}>{option.value} periods ({option.label})</option>
+                <option key={option.value} value={option.value}>{option.label} ({option.value} pay runs)</option>
               ))}
             </select>
           </label>
@@ -161,7 +168,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYe
             )}
           </div>
           <div className="payroll-summary-detail">
-            {forecastHorizon} pay periods
+            {safeForecast.length} pay periods
           </div>
         </div>
       </div>
@@ -234,6 +241,14 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYe
           ))}
         </div>
       </div>
+
+      <PayrollBridge
+        bridge={bridge}
+        loading={bridgeLoading}
+        window={bridgeWindow}
+        onWindowChange={onBridgeWindowChange}
+        payFrequency={payFrequency}
+      />
 
       {/* Period Details Modal */}
       {showDetails && selectedPeriod && (

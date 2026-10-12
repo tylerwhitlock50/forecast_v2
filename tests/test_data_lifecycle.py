@@ -363,7 +363,10 @@ def _seed_everything(path):
 
 
 def _row_total(path):
-    names = [r[0] for r in q(path, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    # audit_log (the change history) records every write request, refused ones included, and is kept
+    # by start clean / reset on purpose (tests/test_governance_api.py covers it); count model data only.
+    names = [r[0] for r in q(path, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+             if r[0] not in DatabaseManager.KEEP_ON_CLEAR]
     return {n: q(path, f'SELECT COUNT(*) FROM "{n}"')[0][0] for n in names}
 
 

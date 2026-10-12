@@ -71,6 +71,14 @@ describe('StatementTable', () => {
     expect(cells).toEqual(['(1,200)', '—']);
   });
 
+  it('does not colour a neutral row (a favourable variance) red', () => {
+    const variance = [{ key: 'labor_variance', label: 'Labor variance', kind: 'line', neutral: true }];
+    render(<StatementTable rows={variance} columns={[{ key: '2026-01', values: { labor_variance: -1200 } }]} />);
+    const cell = within(rowByLabel('Labor variance')).getAllByRole('cell')[0];
+    expect(cell).toHaveTextContent('(1,200)');
+    expect(cell).not.toHaveClass('text-red-600');
+  });
+
   it('omits the Total column when no totals are passed', () => {
     render(<StatementTable rows={rows} columns={periodColumns(byPeriod)} />);
     expect(screen.queryByText('Total')).not.toBeInTheDocument();

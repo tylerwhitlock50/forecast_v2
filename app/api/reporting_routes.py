@@ -552,9 +552,13 @@ async def list_actuals_batches(
 @router.delete("/actuals/batches/{batch_id}", response_model=ForecastResponse)
 async def undo_actuals_batch(
     batch_id: str,
-    dry_run: bool = Query(False, description="Report what undo would remove; change nothing"),
+    dry_run: bool = Query(False, description="Report what undo would remove or restore; change nothing"),
 ):
-    """Undo an import: delete the rows still stamped with this batch. Refused (409) for closed months."""
+    """
+    Undo an import: delete the rows this batch added and restore the earlier
+    amount / notes / source of the rows it overwrote, for rows still stamped
+    with it. Refused (409) for closed months.
+    """
     conn = db_manager.get_connection()
     try:
         result = actuals_service.undo_batch(conn, batch_id.strip(), dry_run=dry_run)

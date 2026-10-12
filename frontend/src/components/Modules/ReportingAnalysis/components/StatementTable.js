@@ -10,6 +10,8 @@ import { formatAccounting, formatPct, formatPeriod } from '../utils/formatters';
  *          negate:    show the value with the opposite sign (red when that is negative).
  *          deduction: an amount taken off the line above (sales deductions); shown in
  *                     parentheses in gray, never red, because it is expected, not a loss.
+ *          neutral:   a signed adjustment (e.g. a variance) whose negative values are
+ *                     favourable: parentheses, but not red.
  *          help:      tooltip on the row label explaining the line.
  * columns: [{ key, label?, values: { [rowKey]: number }, emphasis?: bool }]
  *          label defaults to formatPeriod(key) so plain 'YYYY-MM' keys render as "Jan 2026".
@@ -37,7 +39,7 @@ export const formatCell = (value, row) => {
 };
 
 const isNegative = (value, row) => {
-  if (typeof value !== 'number' || row.deduction) return false;
+  if (typeof value !== 'number' || row.deduction || row.neutral) return false;
   const v = row.negate ? -value : value;
   return v < 0 && Number(Math.abs(v).toFixed(2)) !== 0;
 };

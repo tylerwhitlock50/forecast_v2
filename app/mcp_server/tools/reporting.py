@@ -412,10 +412,11 @@ async def undo_actuals_batch(
     batch_id: Annotated[str, Field(description="ACT-xxxxxxxx from forecast_list_actuals_batches or an import result")],
     dry_run: Annotated[bool, Field(description="Report what would be removed; change nothing (default)")] = True,
 ) -> Dict[str, Any]:
-    """Undo an actuals import: delete the rows still stamped with the batch
-    (rows changed since by a later entry belong to that entry and stay).
-    Rows the batch changed are removed too, not restored to their earlier
-    amounts. Refused for closed months. dry_run defaults to true: call again
+    """Undo an actuals import: rows the batch added are deleted and rows it
+    overwrote get their earlier amount, notes and source back (rows_to_restore
+    / restored; changed[].action says which). Only rows still stamped with
+    the batch: a row changed since by a later entry belongs to that entry and
+    stays. Refused for closed months. dry_run defaults to true: call again
     with dry_run=false to undo."""
     return await call("DELETE", f"/reporting/actuals/batches/{require(batch_id, 'batch_id')}",
                       params={"dry_run": dry_run})

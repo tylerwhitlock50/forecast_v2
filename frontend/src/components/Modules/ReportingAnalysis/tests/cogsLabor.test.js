@@ -1,7 +1,7 @@
 import {
   BRIDGE_ROWS, bridgeColumns, statementCsvRows, hasSalesInWindow, groupRows, groupTotals, sortRows,
   groupCsvRows, laborMatrix, laborCsvRows, laborChartData, machineCsvRows, unitCostCsvRows, headline, isOverCapacity,
-  mergeReportWarnings, machinePeak, groupColumns, displayGroupColumns
+  mergeReportWarnings, machinePeak, groupColumns, displayGroupColumns, laborComparison, LABOR_COMPARISON_ROWS
 } from '../utils/cogsLabor';
 import { toCsv, csvCell, slug, filenameFromDisposition } from '../utils/csv';
 import { formatPeriodRanges } from '../utils/formatters';
@@ -42,8 +42,14 @@ describe('gross margin bridge', () => {
     const keys = BRIDGE_ROWS.map(r => r.key);
     expect(keys).toEqual([
       'gross_sales', 'terms_allowance', 'chargebacks', 'other_allowances', 'excise_tax', 'total_sales_deductions', 'net_sales', 'units',
-      'cogs_header', 'materials', 'labor', 'machine', 'factory_overhead', 'other_cogs', 'total_cogs', 'gross_profit', 'gross_margin_pct'
+      'cogs_header', 'materials', 'labor', 'labor_variance', 'machine', 'indirect_labor', 'factory_overhead', 'other_cogs',
+      'total_cogs', 'gross_profit', 'gross_margin_pct'
     ]);
+    // Labor lines say what they are: the routing standard, then payroll classed Direct / Indirect.
+    expect(BRIDGE_ROWS.find(r => r.key === 'labor').label).toBe('Direct labor (standard)');
+    expect(BRIDGE_ROWS.find(r => r.key === 'labor_variance').label).toBe('Direct labor variance (payroll vs standard)');
+    expect(BRIDGE_ROWS.find(r => r.key === 'indirect_labor').label).toBe('Indirect labor (factory)');
+    expect(BRIDGE_ROWS.find(r => r.key === 'labor_variance').help).toMatch(/classed Direct/);
     expect(BRIDGE_ROWS.filter(r => r.deduction).map(r => r.key)).toEqual(['terms_allowance', 'chargebacks', 'other_allowances', 'excise_tax', 'total_sales_deductions']);
   });
 
@@ -247,5 +253,35 @@ describe('commissions column', () => {
     expect(csv[1][csv[1].length - 1]).toBe(45.5);
     expect(csv[csv.length - 1][csv[0].length - 1]).toBe(45.5);
     expect(groupCsvRows(groupRows(cogs, 'product'), 'product')[0]).not.toContain('Commissions');
+  });
+});
+
+describe('standard vs payroll', () => {
+  const laborWithPayroll = {
+    periods: ['2027-01', '2027-02'],
+    standard_vs_payroll: {
+      by_period: [
+        { period: '2027-01', standard_hours: 100, standard_cost: 3000, direct_payroll_cost: 4333.33, paid_hours: 173.33, labor_variance: 1333.33, indirect_payroll_cost: 5000, utilization_pct: 57.69 },
+        { period: '2027-02', standard_hours: 0, standard_cost: 0, direct_payroll_cost: 0, paid_hours: 0, labor_variance: 0, indirect_payroll_cost: 5000, utilization_pct: null }
+      ],
+      totals: { standard_hours: 100, standard_cost: 3000, direct_payroll_cost: 4333.33, paid_hours: 173.33, labor_variance: 1333.33, indirect_payroll_cost: 10000, utilization_pct: 57.69 }
+    }
+  };
+
+  it('builds a measure per row with month values and a total, never summing utilization', () => {
+    const c = laborComparison(laborWithPayroll);
+    expect(c.rows.map(r => r.key)).toEqual(LABOR_COMPARISON_ROWS.map(r => r.key));
+    const util = c.rows.find(r => r.key === 'utilization_pct');
+    expect(util.values).toEqual({ '2027-01': 57.69, '2027-02': null });
+    expect(util.total).toBe(57.69);
+    expect(c.rows.find(r => r.key === 'labor_variance').values['2027-01']).toBe(1333.33);
+    expect(c.hasPayroll).toBe(true);
+    expect(c.hasDirect).toBe(true);
+  });
+
+  it('is null for an older API without the block and flags a window with no payroll', () => {
+    expect(laborComparison({ periods })).toBeNull();
+    const none = laborComparison({ periods, standard_vs_payroll: { by_period: [], totals: { direct_payroll_cost: 0, indirect_payroll_cost: 0 } } });
+    expect(none.hasPayroll).toBe(false);
   });
 });

@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { StatsCard } from '../../../ui/stats-card';
 import StatementTable, { periodColumns } from './StatementTable';
 import { formatCurrency, formatPct, formatPeriod, formatAccounting } from '../utils/formatters';
-import { DEDUCTION_HELP } from '../utils/lineHelp';
+import { DEDUCTION_HELP, LABOR_HELP } from '../utils/lineHelp';
 
-export { DEDUCTION_HELP };
+export { DEDUCTION_HELP, LABOR_HELP };
 
 export const INCOME_STATEMENT_ROWS = [
   { key: 'gross_sales', label: 'Gross sales', kind: 'subtotal', help: 'Invoice value of the sales forecast (quantity × price), including any excise tax embedded in the price.' },
@@ -18,8 +18,10 @@ export const INCOME_STATEMENT_ROWS = [
   { key: 'units_sold', label: 'Units sold', kind: 'line', indent: 1, format: 'number' },
   { key: 'cogs_header', label: 'Cost of goods sold', kind: 'header' },
   { key: 'cogs_materials', label: 'Materials', kind: 'line', indent: 1, help: 'BOM material cost per unit × units sold.' },
-  { key: 'cogs_labor', label: 'Direct labor', kind: 'line', indent: 1, help: 'Routing labor minutes × labor rates × units sold.' },
+  { key: 'cogs_labor', label: 'Direct labor (standard)', kind: 'line', indent: 1, help: LABOR_HELP.cogs_labor },
+  { key: 'labor_variance', label: 'Direct labor variance (payroll vs standard)', kind: 'line', indent: 1, neutral: true, help: LABOR_HELP.labor_variance },
   { key: 'cogs_manufacturing', label: 'Machine / manufacturing', kind: 'line', indent: 1, help: 'Routing machine minutes × machine rates × units sold.' },
+  { key: 'indirect_labor', label: 'Indirect labor (factory)', kind: 'line', indent: 1, help: LABOR_HELP.indirect_labor },
   { key: 'factory_overhead', label: 'Factory overhead', kind: 'line', indent: 1, help: 'Expenses categorised as factory overhead.' },
   { key: 'other_cogs', label: 'Other COGS', kind: 'line', indent: 1 },
   { key: 'total_cogs', label: 'Total COGS', kind: 'subtotal' },
@@ -27,7 +29,7 @@ export const INCOME_STATEMENT_ROWS = [
   { key: 'gross_margin_pct', label: 'Gross margin %', kind: 'pct', indent: 1 },
   { key: 'opex_header', label: 'Operating expenses', kind: 'header' },
   { key: 'commissions', label: 'Sales commissions', kind: 'line', indent: 1, help: 'Commission rules from Pricing & Deductions; a selling expense, not a sales deduction.' },
-  { key: 'payroll', label: 'Payroll', kind: 'line', indent: 1 },
+  { key: 'payroll', label: 'Payroll', kind: 'line', indent: 1, help: LABOR_HELP.payroll },
   { key: 'admin_expense', label: 'Admin expenses', kind: 'line', indent: 1 },
   { key: 'operating_expense', label: 'Operating expenses', kind: 'line', indent: 1 },
   { key: 'depreciation', label: 'Depreciation', kind: 'line', indent: 1 },

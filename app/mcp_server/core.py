@@ -20,22 +20,31 @@ Design
 * Tool arguments are strict: an unknown or misspelled argument is an error
   naming the valid ones, never silently ignored (a guessed filter must not
   turn into "every row").
+* Change history: the in-process client sends ``X-Forecast-Client: mcp``,
+  so the API's audit middleware records every REST write a tool makes with
+  client 'mcp'. A write tool that changes the database without a REST call
+  (the bulk adjusters) is recorded here instead (``ForecastMCPServer.call_tool``).
+  A write refused because a scenario is approved and locked comes back as a
+  plain explanation, never a bare crash.
 """
 from __future__ import annotations
 
+import contextvars
 import inspect
 import json
 import logging
 import math
 import os
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import anyio
 import httpx
 from pydantic import ConfigDict, model_validator
 from pydantic_core import PydanticCustomError
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -57,7 +66,8 @@ GROSS TO NET: gross sales (qty x price) - terms allowance - chargebacks - other 
 
 ADJUSTING: forecast_branch_scenario to compare; forecast_adjust_sales (e.g. ASP -35% in June => periods=[2026-06], price_multiplier=0.65); forecast_upsert_prices then forecast_apply_price_list; forecast_adjust_material_costs (e.g. steel +12% => material_contains=steel, price_multiplier=1.12) is company-wide, every scenario and month; a change starting in a given month cannot be modelled yet, say so. Show the effect with forecast_financial_statements before and after.
 
-SAFETY: a tool with a dry_run parameter (imports, forecast_apply_price_list, the adjusters) runs with dry_run=true first; show the user the counts and errors; call forecast_save_database before sweeping changes (replace modes delete the lines / rules they replace). Keep responses small: summaries by default, group_by / top_n / sections / limit for detail."""
+SAFETY: a tool with a dry_run parameter (imports, forecast_apply_price_list, the adjusters) runs with dry_run=true first; show the user the counts and errors; call forecast_save_database before sweeping changes (replace modes delete the lines / rules they replace). Keep responses small: summaries by default, group_by / top_n / sections / limit for detail.
+Approved = locked: branch to change."""
 
 # ---------------------------------------------------------------------------
 # Result serialisation: one compact JSON text block
@@ -281,6 +291,139 @@ class ForecastMCPServer(MCPServer):
         if tool is not None and not isinstance(tool.fn_metadata, _CompactFuncMetadata):
             harden_tool(tool)
 
+    async def call_tool(self, name: str, arguments: Dict[str, Any], context: Any = None) -> Any:
+        """
+        Run a tool, turning a scenario-lock refusal into a plain error and
+        recording a write tool that changed the database without a REST call
+        (the bulk adjusters) in the change history.
+        """
+        writes = [0]
+        token = _REST_WRITES.set(writes)
+        started = time.perf_counter()
+        status: Optional[int] = 200
+        result = None
+        try:
+            result = await super().call_tool(name, arguments, context)
+            if isinstance(result, CallToolResult) and result.is_error:
+                status = None
+            return result
+        except UnexpectedToolError as exc:
+            if _is_lock_error(exc):
+                status = 409
+                raise ToolError(f"Error executing tool {name}: {_lock_text(arguments)} Nothing was changed.") from exc
+            status = 500
+            raise
+        except ToolError:
+            # Refused input (bad arguments, a missing filter ...): nothing ran, nothing to record.
+            status = None
+            raise
+        finally:
+            _REST_WRITES.reset(token)
+            if writes[0] == 0 and status is not None:
+                await self._record_direct_write(name, arguments, status, result, started)
+
+    async def _record_direct_write(self, name: str, arguments: Dict[str, Any], status: int, result: Any,
+                                   started: float) -> None:
+        tool = self._tool_manager.get_tool(name)
+        if tool is None or (tool.annotations is not None and tool.annotations.read_only_hint):
+            return
+        try:
+            from services.governance import body_excerpt, record_audit, utc_now
+
+            payload = _result_payload(result)
+            args = arguments if isinstance(arguments, dict) else {}
+            fid = args.get("forecast_id")
+            if not fid and isinstance(args.get("forecast_ids"), list) and args["forecast_ids"]:
+                fid = args["forecast_ids"][0]
+            entry = {
+                "created_at": utc_now(),
+                "client": "mcp",
+                "actor": None,
+                "method": "TOOL",
+                "path": f"/mcp/tools/{name}",
+                "query": None,
+                "status": status,
+                "forecast_id": str(fid)[:40] if fid else None,
+                "summary": _tool_summary(name, status, payload),
+                "body_excerpt": body_excerpt("application/json", json.dumps(args, default=str).encode(), args),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
+            await anyio.to_thread.run_sync(record_audit, entry)
+        except Exception:  # the history must never break a tool call
+            logging.getLogger(__name__).exception("Could not record MCP tool %s in the change history", name)
+
+
+#: Per tool call: how many REST writes (non-GET requests) it made through ``api``.
+_REST_WRITES: contextvars.ContextVar = contextvars.ContextVar("forecast_mcp_rest_writes", default=None)
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    seen = 0
+    while exc is not None and seen < 10:
+        if "SCENARIO_LOCKED" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def _lock_text(arguments: Any) -> str:
+    from services.governance import locked_message, locked_scenario_name
+
+    fid = arguments.get("forecast_id") if isinstance(arguments, dict) else None
+    _fid, name = locked_scenario_name(fid)
+    return (locked_message(name).replace("branch it", "branch it (forecast_branch_scenario)")
+            .replace("unlock it with a reason", "unlock it with the user's reason (forecast_unlock_scenario)"))
+
+
+def _result_payload(result: Any) -> Any:
+    if isinstance(result, CallToolResult):
+        text = "".join(getattr(block, "text", "") or "" for block in result.content or [])
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+    return result
+
+
+def _plain_adjustment(payload: Dict[str, Any]) -> Optional[str]:
+    """'Material costs (company-wide): 2 BOM lines changed, $270 -> $302.40 per set' and the like."""
+    def money(value: Any) -> str:
+        try:
+            return f"${float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "?"
+    if "matched_lines" in payload:
+        totals = payload.get("material_cost_total") or {}
+        phrase = (payload.get("filters") or {}).get("material_contains")
+        verb = "would change" if payload.get("dry_run") else "changed"
+        return (f"Material costs (company-wide{', ' + repr(phrase) if phrase else ''}): {payload.get('matched_lines')} BOM "
+                f"line(s) {verb}, material cost {money(totals.get('before'))} -> {money(totals.get('after'))}")
+    if "matched_rows" in payload and "revenue_change" in payload:
+        verb = "would change" if payload.get("dry_run") else "changed"
+        change = float(payload.get("revenue_change") or 0)
+        return (f"Sales of {payload.get('forecast_id')}: {payload.get('matched_rows')} row(s) {verb}, revenue "
+                f"{'+' if change >= 0 else '-'}{money(abs(change))}")
+    return None
+
+
+def _tool_summary(name: str, status: int, payload: Any) -> str:
+    plain = _plain_adjustment(payload) if isinstance(payload, dict) and status < 400 else None
+    if plain:
+        return (("Dry run: " if payload.get("dry_run") is True else "") + plain)[:300]
+    if isinstance(payload, dict):
+        text = payload.get("message") or payload.get("summary")
+        if not text:
+            numbers = [f"{k}={v}" for k, v in payload.items()
+                       if isinstance(v, (int, float)) and not isinstance(v, bool)][:5]
+            text = ", ".join(numbers)
+        prefix = "Dry run: " if payload.get("dry_run") is True else ""
+        text = f"{prefix}{text}" if text else prefix.strip()
+    else:
+        text = str(payload or "")[:200]
+    head = f"MCP tool {name}" + ("" if status < 400 else f" refused ({status})")
+    return (f"{head}: {text}" if text else head)[:300]
+
 
 mcp = ForecastMCPServer(SERVER_NAME, instructions=INSTRUCTIONS)
 
@@ -318,6 +461,9 @@ DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idemp
 # ---------------------------------------------------------------------------
 
 _fastapi_app: Any = None
+
+#: Sent with every in-process request: the audit middleware records these calls with client 'mcp'.
+CLIENT_HEADERS = {"X-Forecast-Client": "mcp"}
 
 
 def set_app(fastapi_app: Any) -> None:
@@ -362,9 +508,18 @@ def _error_detail(resp: httpx.Response) -> str:
 
 async def api(method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
               json: Any = None) -> Any:
-    """Call a REST endpoint of the running app and return the parsed body."""
+    """
+    Call a REST endpoint of the running app and return the parsed body.
+    Sends ``X-Forecast-Client: mcp`` so the change history records the call
+    as made by an MCP tool.
+    """
+    if str(method).upper() not in ("GET", "HEAD", "OPTIONS"):
+        counter = _REST_WRITES.get()
+        if counter is not None:
+            counter[0] += 1
     transport = httpx.ASGITransport(app=get_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://forecast.internal") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://forecast.internal",
+                                 headers=CLIENT_HEADERS) as client:
         resp = await client.request(method, path, params=_clean_params(params), json=json)
     if resp.status_code >= 400:
         raise ToolError(f"{method} {path} failed with HTTP {resp.status_code}: {_error_detail(resp)}")

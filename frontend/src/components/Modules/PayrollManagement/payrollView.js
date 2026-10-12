@@ -18,6 +18,74 @@ export const PAY_FREQUENCY_LABELS = {
 
 export const runsPerYearFor = (frequency) => PAY_RUNS_PER_YEAR[frequency] || 26;
 
+// ---------------------------------------------------------------------------
+// Labor class: where an employee's pay lands on the statements
+// ---------------------------------------------------------------------------
+
+/** Options for the employee form (value '' = not classified, treated as admin). */
+export const LABOR_CLASS_OPTIONS = [
+  { value: 'direct', label: 'Direct', help: 'Builds product. Pay goes to cost of goods sold and replaces the routing labor standard, so it is never counted twice.' },
+  { value: 'indirect', label: 'Indirect (factory)', help: 'Factory support: supervisors, maintenance, material handling. Pay goes to cost of goods sold as Indirect labor.' },
+  { value: 'admin', label: 'Admin', help: 'Office, sales, management. Pay is Payroll in operating expenses.' }
+];
+
+export const NOT_CLASSIFIED_LABEL = 'Not classified';
+
+/** 'Direct' / ' indirect ' / 'ADMIN' -> 'direct' / 'indirect' / 'admin'; anything else -> '' (not classified). */
+export const normalizeLaborClass = (value) => {
+  const text = String(value ?? '').trim().toLowerCase();
+  return LABOR_CLASS_OPTIONS.some(o => o.value === text) ? text : '';
+};
+
+export const laborClassLabel = (value) =>
+  (LABOR_CLASS_OPTIONS.find(o => o.value === normalizeLaborClass(value)) || {}).label || NOT_CLASSIFIED_LABEL;
+
+export const laborClassHelp = (value) =>
+  (LABOR_CLASS_OPTIONS.find(o => o.value === normalizeLaborClass(value)) || {}).help
+  || 'Not classified: treated as Admin (operating expenses). If this person builds product, class them Direct.';
+
+/**
+ * Pay runs to show when the user has not picked a horizon: one year of runs
+ * for the pay frequency (12 monthly, 24 semi-monthly, 26 bi-weekly, 52 weekly).
+ */
+export const defaultHorizonFor = (frequency) => runsPerYearFor(frequency);
+
+/** Query string for GET /payroll/forecast: `periods` only when the user chose a horizon. */
+export const payRunQuery = (horizon, forecastId) => {
+  const parts = [];
+  if (horizon) parts.push(`periods=${horizon}`);
+  if (forecastId) parts.push(`forecast_id=${encodeURIComponent(forecastId)}`);
+  return parts.join('&');
+};
+
+/** GET /payroll/statement-bridge -> rows for the 'Statement vs pay dates' table. */
+export const bridgeToView = (bridge) => {
+  if (!bridge || !Array.isArray(bridge.by_period)) return null;
+  return {
+    frequency: bridge.pay_frequency,
+    runsPerYear: bridge.runs_per_year || null,
+    start: bridge.start_period,
+    end: bridge.end_period,
+    opening: Number(bridge.opening_accrued_payroll) || 0,
+    closing: Number(bridge.closing_accrued_payroll) || 0,
+    note: bridge.note || '',
+    rows: bridge.by_period.map(r => ({
+      period: r.period,
+      accrued: Number(r.accrued) || 0,
+      paid: Number(r.paid) || 0,
+      payRuns: r.pay_runs || 0,
+      difference: Number(r.difference) || 0,
+      balance: Number(r.accrued_payroll_balance) || 0
+    })),
+    totals: {
+      accrued: Number(bridge.totals?.accrued) || 0,
+      paid: Number(bridge.totals?.paid) || 0,
+      payRuns: bridge.totals?.pay_runs || 0,
+      difference: Number(bridge.totals?.difference) || 0
+    }
+  };
+};
+
 /** A salary at or above this is an annual salary (the engine's ANNUAL_SALARY_THRESHOLD). */
 export const ANNUAL_SALARY_THRESHOLD = 1000;
 /** An hourly rate above this is almost certainly an annual salary entered as hourly. */

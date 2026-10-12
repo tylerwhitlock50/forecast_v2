@@ -58,3 +58,30 @@ describe('EmployeeModal pay rate', () => {
     expect(validatePayRate('hourly', 0)).toMatch(/greater than 0/);
   });
 });
+
+describe('EmployeeModal labor class', () => {
+  const employee = {
+    employee_name: 'Dana', department: 'Production', hourly_rate: 25, rate_type: 'hourly', weekly_hours: 40,
+    start_date: '2027-01-01', end_date: null, next_review_date: null, expected_raise: 0, benefits_eligible: true,
+    allocations: { 'OEM Work': 100 }, forecast_id: null, labor_class: 'Direct'
+  };
+
+  it('shows the stored class (any case), explains it and saves the choice', () => {
+    const onSave = jest.fn();
+    render(<EmployeeModal employee={employee} departments={['Production']} businessUnits={['OEM Work']} onSave={onSave} onCancel={() => {}} />);
+    const select = screen.getByLabelText('Labor class');
+    expect(select).toHaveValue('direct');
+    expect(screen.getByTestId('labor-class-help')).toHaveTextContent('never counted twice');
+    fireEvent.change(select, { target: { value: 'indirect' } });
+    expect(screen.getByTestId('labor-class-help')).toHaveTextContent('Indirect labor');
+    fireEvent.click(screen.getByText('Add Employee'));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ labor_class: 'indirect' }));
+  });
+
+  it('offers Not classified and explains it counts as Admin', () => {
+    render(<EmployeeModal employee={{ ...employee, labor_class: null }} departments={['Production']} businessUnits={['OEM Work']} onSave={() => {}} onCancel={() => {}} />);
+    expect(screen.getByLabelText('Labor class')).toHaveValue('');
+    expect(screen.getByRole('option', { name: 'Not classified (counted as Admin)' })).toBeInTheDocument();
+    expect(screen.getByTestId('labor-class-help')).toHaveTextContent('treated as Admin');
+  });
+});

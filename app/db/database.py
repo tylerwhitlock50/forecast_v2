@@ -12,7 +12,7 @@ from typing import Dict, Any, Iterator, List, Optional, Tuple
 # a revert, a reset ...). /database/list reports them as "system_backup".
 SYSTEM_BACKUP_PREFIXES = (
     'current_backup_', 'pre_revert_backup_', 'reset_backup_', 'start_clean_backup_',
-    'clear_data_backup_', 'force_reload_backup_',
+    'clear_data_backup_', 'force_reload_backup_', 'approved_',
 )
 AUTOSAVE_PREFIX = 'autosave_'
 SQLITE_HEADER = b'SQLite format 3\x00'
@@ -34,6 +34,7 @@ SNAPSHOT_KIND_PREFIXES = (
     ('start_clean_backup_', 'start_clean_backup'),
     ('current_backup_', 'before_load_backup'),
     ('pre_revert_backup_', 'before_revert_backup'),
+    ('approved_', 'approval_snapshot'),
 )
 SNAPSHOT_KIND_LABELS = {
     'manual_save': 'Named save',
@@ -41,14 +42,15 @@ SNAPSHOT_KIND_LABELS = {
     'start_clean_backup': 'Automatic backup taken before Start clean',
     'before_load_backup': 'Automatic backup taken before a load',
     'before_revert_backup': 'Automatic backup taken before a revert',
+    'approval_snapshot': 'Copy taken when a scenario was approved',
     'system_backup': 'Automatic backup taken before a reset or clear',
 }
-#: Tables that hold logs or caches, not model data: ignored when deciding whether a database is empty.
-NON_DATA_TABLES = ('execution_log', 'forecast_results')
+#: Tables that hold logs, caches or the change history, not model data: ignored when deciding whether a database is empty.
+NON_DATA_TABLES = ('execution_log', 'forecast_results', 'audit_log')
 
 
 def snapshot_detail_kind(filename: str) -> str:
-    """manual_save / autosave / start_clean_backup / before_load_backup / before_revert_backup / system_backup."""
+    """manual_save / autosave / start_clean_backup / before_load_backup / before_revert_backup / approval_snapshot / system_backup."""
     for prefix, kind in SNAPSHOT_KIND_PREFIXES:
         if filename.startswith(prefix):
             return kind

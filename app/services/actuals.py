@@ -31,8 +31,11 @@ Actual screen, the MCP tools) runs the same steps:
 Every write records an ``actuals_batches`` row (batch_id 'ACT-xxxxxxxx')
 and stamps ``actuals.batch_id`` on the rows it inserted or changed. Rows a
 batch inserted get the actual_id '<batch_id>-<n>', so undo can tell rows it
-added from rows it changed. Undoing a batch deletes the rows still stamped
-with it (a row changed again later belongs to the later batch and is kept).
+added from rows it changed, and the values a batch overwrote are kept in
+``actuals_batch_changes``. Undoing a batch deletes the rows it added and puts
+back the amount, notes and source of the rows it changed, but only rows
+still stamped with it (a row changed again later belongs to the later batch
+and is kept).
 
 HTTP outcome (the routes and the MCP tools rely on it):
 

@@ -29,14 +29,23 @@ def _snapshot(prefix: str) -> Dict[str, Any]:
     return take_system_snapshot(prefix)
 
 
+def _kept_tables() -> tuple:
+    """Tables a reset keeps on purpose (the change history): not counted as data left behind."""
+    return tuple(getattr(_manager(), "KEEP_ON_CLEAR", ()) or ())
+
+
 def _verify_empty() -> Dict[str, Any]:
     counts = _manager().table_counts()
-    non_empty = {name: n for name, n in counts.items() if n}
+    kept = _kept_tables()
+    data = {name: n for name, n in counts.items() if name not in kept}
+    non_empty = {name: n for name, n in data.items() if n}
     return {
         "all_empty": not non_empty,
-        "total_rows": sum(counts.values()),
+        "total_rows": sum(data.values()),
         "table_count": len(counts),
         "non_empty_tables": non_empty,
+        # Kept by design (start clean keeps the change history): {table: rows}
+        "kept_tables": {name: counts[name] for name in kept if name in counts},
     }
 
 
@@ -69,7 +78,8 @@ async def start_clean(body: Optional[Dict[str, Any]] = Body(None)):
     customers, products, BOMs, routings, machines, labor rates, payroll,
     expenses and allocations, loans and schedules, assumptions, capex,
     actuals, price list, deduction rules, logs) and re-applies the schema.
-    The tables and columns stay. ``scenario_name`` optionally creates an
+    The tables and columns stay; the change history (audit_log) is kept and
+    ``verify`` reports it under ``kept_tables``. ``scenario_name`` optionally creates an
     empty base scenario (F001). Refused with 400 unless ``confirm`` is true.
     """
     body = body or {}
@@ -150,24 +160,36 @@ async def clear_database_data(snapshot_first: bool = True):
 
 @router.post("/database/verify-empty")
 async def verify_database_empty():
-    """Row counts of every table and whether they are all empty."""
+    """
+    Row counts of every table and whether they are all empty. The change
+    history (audit_log) is kept by Start clean on purpose: it is listed with
+    ``kept: true`` and not counted in ``all_empty`` / ``total_rows``
+    (``history_rows`` gives its size).
+    """
     try:
         counts = _manager().table_counts()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify database: {str(e)}")
-    total_rows = sum(counts.values())
+    kept = _kept_tables()
+    total_rows = sum(n for name, n in counts.items() if name not in kept)
     return JSONResponse(status_code=200, content={
         "status": "success",
         "all_empty": total_rows == 0,
         "total_rows": total_rows,
+        "history_rows": sum(n for name, n in counts.items() if name in kept),
         "table_count": len(counts),
-        "tables": [{"table_name": name, "row_count": n, "is_empty": n == 0} for name, n in counts.items()],
+        "tables": [{"table_name": name, "row_count": n, "is_empty": n == 0, "kept": name in kept}
+                   for name, n in counts.items()],
     })
 
 
 @router.get("/database/info")
 async def get_database_info():
-    """The live database file (path, size, WAL size), snapshot folder and row counts per table."""
+    """
+    The live database file (path, size, WAL size), snapshot folder and row
+    counts per table. ``total_rows`` counts model data; the change history
+    (audit_log, kept by Start clean) is ``history_rows``.
+    """
     mgr = _manager()
     try:
         counts = mgr.table_counts()
@@ -187,6 +209,7 @@ async def get_database_info():
         "snapshot_dir": mgr.snapshot_dir,
         "data_dir": mgr.data_dir,
         "table_count": len(counts),
-        "total_rows": sum(counts.values()),
+        "total_rows": sum(n for name, n in counts.items() if name not in _kept_tables()),
+        "history_rows": sum(n for name, n in counts.items() if name in _kept_tables()),
         "tables": [{"name": name, "row_count": n} for name, n in counts.items()],
     })

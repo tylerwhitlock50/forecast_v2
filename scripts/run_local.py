@@ -36,7 +36,8 @@ def build_command(host: str, port: int, reload: bool) -> list:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run the Forecast API locally")
-    parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"))
+    # No login: listen on this machine only unless --host / HOST says otherwise.
+    parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
     parser.add_argument("--no-reload", action="store_true", help="do not restart on code changes")
     args = parser.parse_args(argv)

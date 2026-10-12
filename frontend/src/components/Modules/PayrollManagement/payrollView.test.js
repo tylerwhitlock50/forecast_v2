@@ -5,7 +5,12 @@ import {
   serverForecastToView,
   formatRate,
   mergeBusinessUnits,
-  runTotal
+  runTotal,
+  normalizeLaborClass,
+  laborClassLabel,
+  defaultHorizonFor,
+  payRunQuery,
+  bridgeToView
 } from './payrollView';
 
 const money = (v) => `$${Math.round(v).toLocaleString('en-US')}`;
@@ -56,5 +61,38 @@ describe('payroll view helpers', () => {
     });
     // Older payloads without run totals fall back to the employee rows.
     expect(runTotal({ employeeDetails: run.employeeDetails }, 'grossPay')).toBe(4615.38);
+  });
+});
+
+describe('labor class, horizon and bridge helpers', () => {
+  it('normalises labor classes and labels them plainly', () => {
+    expect(normalizeLaborClass('Direct')).toBe('direct');
+    expect(normalizeLaborClass(' INDIRECT ')).toBe('indirect');
+    expect(normalizeLaborClass(null)).toBe('');
+    expect(normalizeLaborClass('supervisor')).toBe('');
+    expect(laborClassLabel('indirect')).toBe('Indirect (factory)');
+    expect(laborClassLabel(null)).toBe('Not classified');
+  });
+
+  it('defaults the pay-run horizon to one year of runs and only sends periods when chosen', () => {
+    expect(defaultHorizonFor('monthly')).toBe(12);
+    expect(defaultHorizonFor('semimonthly')).toBe(24);
+    expect(defaultHorizonFor('biweekly')).toBe(26);
+    expect(defaultHorizonFor('weekly')).toBe(52);
+    expect(payRunQuery(null, 'F 1')).toBe('forecast_id=F%201');
+    expect(payRunQuery(6, null)).toBe('periods=6');
+  });
+
+  it('shapes the statement bridge', () => {
+    const view = bridgeToView({
+      pay_frequency: 'biweekly', runs_per_year: 26, start_period: '2027-01', end_period: '2027-02',
+      opening_accrued_payroll: 1931.43, closing_accrued_payroll: 544.76,
+      by_period: [{ period: '2027-01', accrued: 4506.67, paid: 6240, pay_runs: 3, difference: -1733.33, accrued_payroll_balance: 198.1 }],
+      totals: { accrued: 9013.33, paid: 10400, pay_runs: 5, difference: -1386.67 }
+    });
+    expect(view.rows[0]).toEqual({ period: '2027-01', accrued: 4506.67, paid: 6240, payRuns: 3, difference: -1733.33, balance: 198.1 });
+    expect(view.opening).toBe(1931.43);
+    expect(view.totals.payRuns).toBe(5);
+    expect(bridgeToView(null)).toBeNull();
   });
 });

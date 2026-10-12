@@ -22,6 +22,7 @@ from api.source_data_routes import router as source_data_router
 from api.database_management_routes import router as database_management_router
 from api.pricing_routes import router as pricing_router
 from api.import_routes import router as import_router
+from api.governance_routes import router as governance_router, install_governance
 
 # MCP server (AI assistants manage the model through the same API)
 from mcp_server import mcp_lifespan, mount_mcp
@@ -57,6 +58,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Change history (audit_log) for every write request, and HTTP 409 for writes
+# refused because a scenario is approved and locked (api.governance_routes).
+install_governance(app)
+
 # Include API routers
 app.include_router(data_router)
 app.include_router(forecast_router)
@@ -71,6 +76,7 @@ app.include_router(source_data_router)
 app.include_router(database_management_router)
 app.include_router(pricing_router)
 app.include_router(import_router)
+app.include_router(governance_router)
 
 # MCP endpoint for Claude Code / Codex: http://localhost:8000/mcp
 mount_mcp(app)
@@ -89,5 +95,7 @@ async def root():
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # No login: listen on this machine only unless HOST says otherwise (e.g. HOST=0.0.0.0 on a trusted network).
+    uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "8000")))

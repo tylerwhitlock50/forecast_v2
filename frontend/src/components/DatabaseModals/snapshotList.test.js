@@ -12,6 +12,9 @@ describe('snapshotGroup', () => {
     // A generic system backup is placed by its file name.
     expect(snapshotGroup(item('reset_backup_20261012_090000_000.db', { type: 'system_backup', kind: 'system_backup' }))).toBe('start_clean');
     expect(snapshotGroup(item('force_reload_backup_20261012_090000_000.db', { type: 'system_backup', kind: 'system_backup' }))).toBe('before_load');
+    // The whole-database copy taken when a scenario is approved has its own group.
+    expect(snapshotGroup(item('approved_s1_20261012_090000.db', { type: 'system_backup', kind: 'approval_snapshot' }))).toBe('approvals');
+    expect(snapshotGroup(item('approved_s1_20261012_090000.db', { type: 'system_backup' }))).toBe('approvals');
   });
 
   it('falls back to the type and file name for older servers', () => {

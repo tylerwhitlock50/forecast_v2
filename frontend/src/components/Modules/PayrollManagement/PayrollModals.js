@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { parseLocalDate, toDateOnly } from '../../../lib/dates';
-import { ANNUAL_SALARY_THRESHOLD, MAX_PLAUSIBLE_HOURLY_RATE, allocationTotal as sumAllocations } from './payrollView';
+import {
+  ANNUAL_SALARY_THRESHOLD, MAX_PLAUSIBLE_HOURLY_RATE, allocationTotal as sumAllocations,
+  LABOR_CLASS_OPTIONS, laborClassHelp, normalizeLaborClass
+} from './payrollView';
 
 /**
  * Pay-rate validation, the same rules as the API: salaried staff are entered
@@ -35,14 +38,15 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
     expected_raise: 0,
     benefits_eligible: true,
     allocations: { 'Customer-Centric Brands': 100 },
-    forecast_id: activeScenario || null
+    forecast_id: activeScenario || null,
+    labor_class: ''
   });
 
   const [errors, setErrors] = useState({});
 
   useEffect(() => {
     if (employee) {
-      setFormData({ ...employee });
+      setFormData({ ...employee, labor_class: normalizeLaborClass(employee.labor_class) });
     }
   }, [employee]);
 
@@ -167,6 +171,23 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                   />
                 </div>
               )}
+
+              <div className="form-group">
+                <label htmlFor="payroll-labor-class">Labor class</label>
+                <select
+                  id="payroll-labor-class"
+                  value={formData.labor_class || ''}
+                  onChange={(e) => setFormData({...formData, labor_class: e.target.value})}
+                >
+                  <option value="">Not classified (counted as Admin)</option>
+                  {LABOR_CLASS_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <small className="text-muted-foreground" data-testid="labor-class-help">
+                  {laborClassHelp(formData.labor_class)}
+                </small>
+              </div>
 
               <div className="form-group">
                 <label>Scope</label>

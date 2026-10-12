@@ -79,7 +79,15 @@ Gross sales - deductions = **net sales**, which is "revenue" on every report.
   sheet and cash flow. Opening balances and the excise payable days are under
   *Assumptions*.
 
-## 5. With Claude Code
+## 5. Approve the budget
+
+When the numbers are final, **Scenarios -> Approve & lock** (or ask Claude to approve it). The
+statement totals, the Excel workbook and a database snapshot are saved as evidence, and the
+scenario is locked: any change to its sales, prices, rules, payroll, expenses or assumptions is
+refused until it is unlocked with a reason. Branch it to work on a revised version. **History**
+shows who changed what and when, and runs read-only checks on older data.
+
+## 6. With Claude Code
 
 Put files under `./data/imports/` (the API's data folder), then for example:
 
@@ -93,13 +101,19 @@ Claude takes a snapshot before sweeping changes. "Restore my last save" undoes t
 
 ## Things to know
 
-* **Direct labor vs payroll.** COGS direct labor comes from routings x labor rates.
-  Payroll is a separate operating expense. If production workers are also entered in
-  Payroll, their cost is counted twice. The labor forecast prints this reminder.
+* **Direct labor vs payroll.** COGS direct labor comes from routings x labor rates (the
+  standard). Give every employee a labor class in Payroll: **Direct** (production workers),
+  **Indirect** (supervisors, maintenance, quality: factory overhead in COGS) or **Admin**
+  (operating expense). When Direct employees are entered, COGS direct labor becomes their pay:
+  the standard plus a *direct labor variance* line, so nobody is counted twice. The COGS & Labor
+  Forecast's labor tab compares standard hours with paid hours (utilization). Employees with no
+  class are treated as Admin and listed until you class them.
 * **Overhead.** Per-product and per-customer margins are before factory overhead. The
   monthly bridge and the income statement include it.
 * **Payroll.** Salaried employees are entered at their annual salary. Burden is the
   employer cost only (FICA, unemployment, workers comp, benefits); income-tax withholding
-  is not a company cost.
+  is not a company cost. The statements spread pay evenly over each month; Payroll ->
+  Forecast -> *Statement vs pay dates* shows when it is actually paid (a month with three
+  biweekly Fridays) and the pay owed at each month end.
 * **Income tax** accrues on year-to-date profit, so loss months offset profitable ones
   within the year.
