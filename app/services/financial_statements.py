@@ -46,6 +46,12 @@ Conventions
   payments and new-loan proceeds, which keeps the balance sheet identity exact.
 * Opening equity is plugged so the opening balance sheet balances unless the
   user supplies it explicitly, in which case any imbalance is reported.
+* Income tax accrues on year-to-date pre-tax income within each calendar
+  year, so loss months net against profitable ones; the year's tax is never
+  negative (no carry-back / carry-forward across years).
+* Payroll burden is employer cost only (social security, medicare,
+  unemployment, workers comp, benefits); income tax withheld from employees
+  is not added. Salaried employees store their annual salary.
 """
 from __future__ import annotations
 
@@ -379,7 +385,13 @@ def load_sales_lines(cursor, forecast_ids: Sequence[str], periods: Sequence[str]
         if not period or not _MONTH_RE.match(period) or period not in period_set:
             continue
         qty = float(quantity or 0)
-        gross = float(total_revenue) if total_revenue is not None else qty * float(unit_price or 0)
+        # quantity x unit_price is the truth; total_revenue is a stored copy
+        # that a quantity-only edit can leave stale. Rows with no price (legacy
+        # loads) fall back to the stored total.
+        if unit_price is not None:
+            gross = qty * float(unit_price)
+        else:
+            gross = float(total_revenue or 0)
 
         key = (bom_id, bom_version, router_id)
         if key not in unit_cost_cache:
@@ -523,16 +535,33 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
 # Payroll
 # ---------------------------------------------------------------------------
 
+#: A salaried employee's rate at or above this is an annual salary; below it
+#: is an hourly equivalent (older data stored salaried staff as $/hour while
+#: the UI asks for the annual salary).
+ANNUAL_SALARY_THRESHOLD = 1000.0
+
+
+def annual_base_pay(rate_type: Optional[str], rate: float, weekly_hours: Any = None) -> float:
+    """Annual gross pay: hourly = rate x weekly hours x 52; salary = the annual salary."""
+    rate = float(rate or 0)
+    if (rate_type or "hourly") == "salary":
+        return rate if rate >= ANNUAL_SALARY_THRESHOLD else rate * 40 * 52
+    return rate * float(weekly_hours or 0) * 52
+
+
 def _employee_annual_gross(emp: Dict[str, Any], rate: float) -> float:
-    if (emp.get("rate_type") or "hourly") == "salary":
-        return rate * 40 * 52
-    return rate * float(emp.get("weekly_hours") or 0) * 52
+    return annual_base_pay(emp.get("rate_type"), rate, emp.get("weekly_hours"))
+
+
+#: Employer-paid payroll costs. federal_tax_rate / state_tax_rate are income
+#: tax WITHHELD from the employee's gross pay, not an extra employer cost, so
+#: they are not part of the burden.
+EMPLOYER_BURDEN_KEYS = ("social_security_rate", "medicare_rate", "unemployment_rate", "workers_comp_rate")
 
 
 def _burden_multiplier(config: Dict[str, Any], benefits_eligible: bool) -> float:
     rate = 1.0
-    for key in ("federal_tax_rate", "state_tax_rate", "social_security_rate",
-                "medicare_rate", "unemployment_rate", "workers_comp_rate"):
+    for key in EMPLOYER_BURDEN_KEYS:
         rate += float(config.get(key) or 0)
     if benefits_eligible:
         rate += float(config.get("benefits_rate") or 0)
@@ -936,6 +965,14 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     if not forecast_ids:
         raise ValueError("At least one forecast_id is required")
     periods = period_range(start_period, end_period)
+    cursor.execute(
+        f"SELECT forecast_id FROM forecast WHERE forecast_id IN ({','.join('?' for _ in forecast_ids)})",
+        forecast_ids,
+    )
+    known = {row[0] for row in cursor.fetchall()}
+    unknown = [f for f in forecast_ids if f not in known]
+    if unknown:
+        raise ValueError(f"Unknown scenario id(s): {', '.join(unknown)}")
 
     # Assumptions come from the first selected scenario (they describe the
     # company, not the scenario), falling back to defaults.
@@ -1060,6 +1097,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     acc_dep = opening_acc_dep
     debt = opening_debt
     cumulative_ni = 0.0
+    tax_year = None
+    pre_tax_ytd = 0.0
+    tax_ytd = 0.0
     cash_shortfall_periods: List[str] = []
 
     for period in all_periods:
@@ -1086,7 +1126,13 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
 
         interest = loans["interest"][period]
         pre_tax = operating_income - interest
-        tax = max(pre_tax, 0.0) * tax_rate
+        # Tax accrues on year-to-date income so a loss month offsets earlier
+        # profit in the same calendar year (never below zero for the year).
+        if period[:4] != tax_year:
+            tax_year, pre_tax_ytd, tax_ytd = period[:4], 0.0, 0.0
+        pre_tax_ytd += pre_tax
+        tax = max(pre_tax_ytd, 0.0) * tax_rate - tax_ytd
+        tax_ytd += tax
         net_income = pre_tax - tax
         cumulative_ni += net_income
 
