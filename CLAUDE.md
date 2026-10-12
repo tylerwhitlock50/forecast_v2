@@ -65,9 +65,14 @@ cd frontend && CI=true npm run build
   - `payroll_routes.py` - Employees, payroll config (burden rates, pay frequency), payroll forecast (monthly or per pay run)
   - `expense_routes.py` - Expense categories, expenses, per-period allocations
   - `loan_routes.py` - Loans and amortization schedules
-  - `reporting_routes.py` - Financial statements, CSV export, budget-vs-actual, assumptions, capex, actuals
+  - `reporting_routes.py` - Financial statements, CSV export, budget-vs-actual, assumptions, capex, actuals, COGS forecast, labor forecast, sales detail, Excel workbook (`/reporting/workbook`)
+  - `pricing_routes.py` - Customer / customer-type price list and sales deduction rules (terms allowance, chargebacks, other allowances, embedded excise tax, commissions): CRUD, simulate, preview, resolve, apply prices to the forecast
+  - `import_routes.py` - Bulk imports with header aliases and dry runs: BOMs, routings, customers / products / machines / labor rates, prices, deduction rules; CSV templates (`/import/templates/{kind}`)
 - **Services**: Business logic in `app/services/`
   - `financial_statements.py` - The statements engine. Single source of truth for the income statement, cash flow and balance sheet. Every number on the reporting screens, the payroll monthly forecast and the scenario comparison comes from here.
+  - `pricing.py` - Price-list and deduction-rule resolution (most specific rule wins; see the module docstring). Used by the engine and the pricing / import routes.
+  - `operations_forecast.py` - COGS forecast (gross sales -> deductions -> net sales -> COGS -> gross profit by month, product, customer, customer type) and labor forecast (hours / cost / FTE by labor type by month, machine hours vs capacity). Aggregates the engine's `load_sales_lines`, so it ties to the statements.
+  - `workbook_export.py` - The Excel export (Read Me, gross margin, statements, by product / customer / customer type, labor, machines, unit costs, sales detail, rules, price list).
   - `model_adjustments.py` - Bulk what-if adjustments (re-price / re-volume sales rows by period, customer, product; re-price BOM lines by material). Keeps `total_revenue` and `material_cost` consistent. Used by the MCP server.
 - **MCP server**: `app/mcp_server/` - Model Context Protocol server mounted at `/mcp` (streamable HTTP, stateless JSON) so Claude Code / Codex can manage the model. `core.py` holds the `MCPServer` instance and an in-process ASGI client; `tools/*.py` register one tool module per domain. Tools call the REST endpoints in-process (no duplicated business logic); only the bulk adjusters and the read-only SQL tool touch the database directly. Package is named `mcp_server` so it does not shadow the SDK's `mcp` package. Guide: `documentation/mcp_server_guide.md`. Tests: `tests/test_mcp_server.py`.
 - **Utilities**: `app/utils/cost_rollup.py` (per-unit material / labor / machine cost with data-quality warnings), `data_loader.py`, `period_normalizer.py`
@@ -113,6 +118,8 @@ The application uses SQLite with the following key tables:
 - `loans`, `loan_payments` - Debt and amortization schedules
 - `financial_assumptions` - Per-scenario opening balances, DSO/DIO/DPO days, income tax rate, minimum cash
 - `capital_expenditures` - Planned asset purchases, depreciated straight-line
+- `price_list` - Prices by product x customer / customer type (fixed or % off base price), company-wide or per scenario
+- `sales_deduction_rules` - Terms allowance, chargebacks, other allowances, excise tax and commissions by customer / customer type / product / product type, company-wide or per scenario
 - `actuals` - Actual results by period and statement line, for budget vs actual
 
 ## Development Patterns
@@ -147,11 +154,13 @@ All API responses follow this pattern:
 - Cash flow `totals` sum the flows; `opening_cash` / `closing_cash` in `totals` are the window's balances, never sums of monthly balances. `cash_flow.reconciliation` proves opening + net cash flow = closing.
 - Scenario scoping: rows with `forecast_id` in the selected set OR `NULL` are included. `NULL` means company-wide (payroll, expenses, capex). Sales are always scenario-specific. The payroll / expense list endpoints and the generic `/data/{table}` read apply the same rule, so the module screens show what the statements use.
 - Scenario lifecycle (`forecast_routes.py`): `GET /forecast/scenarios` is enriched with counts and the sales window; branching (`POST /forecast/scenario/{id}/duplicate`) copies sales, scenario-specific expenses / payroll / capex, assumptions and notes in one transaction and applies price / quantity multipliers and period extension server-side; delete cascades the same tables. Exactly one scenario has `is_base = 1`. Tests: `tests/test_scenarios.py`. Workflow: `documentation/scenario_workflow_guide.md`.
-- Payroll is prorated to each calendar month from `start_date` / `end_date`, with raises applied from `next_review_date`. Never annualize payroll in reporting code; call `payroll_by_period`.
-- Working capital uses days assumptions: AR = revenue x DSO / 30.4, inventory = product COGS x DIO / 30.4, AP = purchases x DPO / 30.4.
-- Cash rolls forward from `opening_cash`: net income + depreciation - working capital change - capex + loan proceeds - principal.
+- Revenue: every sales row is enriched once by `load_sales_lines` (gross = quantity x unit_price, deductions from `sales_deduction_rules`, BOM/routing cost, labor and machine minutes). The income statement's `revenue` is NET sales: gross sales - terms allowance - chargebacks - other allowances - excise tax. Commissions are an operating expense. One rule per deduction type applies to a row (most specific match; a 0% rule is an exemption); types stack. Embedded excise = gross x rate / (1 + rate).
+- Payroll is prorated to each calendar month from `start_date` / `end_date`, with raises applied from `next_review_date`. Never annualize payroll in reporting code; call `payroll_by_period`. Salaried employees store their annual salary (`annual_base_pay`; values under 1,000 are read as a legacy hourly equivalent). Burden is employer cost only (`EMPLOYER_BURDEN_KEYS` + benefits); federal / state income tax rates are employee withholding.
+- Direct labor in COGS comes from routings x labor rates; payroll is an operating expense. Production workers entered in payroll as well are counted twice (the labor forecast says so).
+- Working capital uses days assumptions: AR = (net sales + excise) x DSO / 30.4, inventory = product COGS x DIO / 30.4, AP = purchases (incl. commissions) x DPO / 30.4, excise tax payable = excise x `excise_payable_days` / 30.4.
+- Cash rolls forward from `opening_cash`: net income + depreciation - working capital change (incl. excise payable) - capex + loan proceeds - principal.
 - Debt rolls forward from the opening balance in the loan schedules, so the balance sheet identity holds exactly; opening equity is plugged unless supplied.
-- Income tax applies only to positive pre-tax income (no loss carry-forward).
+- Income tax accrues on year-to-date pre-tax income within each calendar year (a loss month reverses tax booked earlier that year); the year's tax is never negative and nothing carries across years.
 - Add a new statement line by extending `build_statements` and, if actuals should be tracked for it, `VARIANCE_LINE_ITEMS`.
 - Budget vs actual (`build_variance`): a line/month with no stored actual is MISSING (`actual: null`, no variance); a stored 0 is a confirmed zero and is compared. To-date totals compare each line only over the months that line has actuals for; every line reports `coverage` (`complete` / `partial` / `none`), `periods_compared` and `missing_periods` up to `actuals_through`, and the report carries `period_coverage`, `incomplete_lines` and an `incomplete_actuals` warning.
 - Calendars: pay runs come from `pay_run_dates` (Fridays for weekly/biweekly, 15th + month end for semimonthly, month end for monthly) and loan schedules from `add_months` (calendar months, day clamped to month end). Never use average-day increments (30.44 days, 365.25 / runs) for dates. The API sends dates as `YYYY-MM-DD` strings; the frontend parses them with `src/lib/dates.js` (`parseLocalDate`, `monthKey`) so a month-end date never shifts into the previous month in a US timezone.
