@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import VarianceReport, { buildActualsTemplate, saveMessage } from '../components/VarianceReport';
+import VarianceReport, { buildActualsTemplate, lineMonthTotals, saveMessage } from '../components/VarianceReport';
 import api from '../../../../lib/apiClient';
 
 jest.mock('../../../../lib/apiClient', () => ({
@@ -212,7 +212,12 @@ describe('VarianceReport', () => {
     expect(screen.getByText(/latest Feb 2026/)).toBeInTheDocument();
   });
 
-  it('prefills the entry form from existing actuals and posts entries on save', async () => {
+  it('prefills the entry form from existing actuals and posts only the changed lines on save', async () => {
+    api.post.mockResolvedValue({
+      status: 'success',
+      data: { outcome: 'imported', written: true, inserted: 0, updated: 1, unchanged: 0, rejected: 0, replaced: 0, batch_id: 'ACT-1a2b3c4d' },
+      message: 'Imported actuals'
+    });
     render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
     await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toHaveValue(95000));
     expect(screen.getByLabelText(/^Payroll/)).toHaveValue(43000);
@@ -223,15 +228,66 @@ describe('VarianceReport', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalled());
     const [url, body] = api.post.mock.calls[0];
     expect(url).toBe('/reporting/actuals');
-    expect(body.entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ period: '2026-02', line_item: 'revenue', amount: 99000 }),
-        expect.objectContaining({ period: '2026-02', line_item: 'payroll', amount: 43000 })
-      ])
-    );
-    expect(body.entries.find(e => e.line_item === 'capex')).toBeUndefined();
-    await screen.findByText(/Saved 2 actual\(s\) for Feb 2026 \(2 changed\)/);
+    // Payroll is unchanged, so it is not sent; each sent line sets its month total (replace_lines).
+    expect(body.entries).toEqual([expect.objectContaining({ period: '2026-02', line_item: 'revenue', amount: 99000 })]);
+    expect(body.replace_lines).toBe(true);
+    await screen.findByText(/Saved 1 actual\(s\) for Feb 2026 \(1 changed\)/);
     expect(body.source).toBe('manual');
+  });
+
+  it('shows a line total that includes imported amounts and replaces them instead of adding (UI-1)', async () => {
+    const imported = {
+      actuals: [
+        { actual_id: 'ACT-9-0001', period: '2026-02', line_item: 'revenue', amount: 1060000, reference_id: 'GL-JAN', source: 'file import' },
+        { actual_id: 'ACT-2', period: '2026-02', line_item: 'payroll', amount: 43000, reference_id: '', source: 'manual' }
+      ]
+    };
+    api.get.mockImplementation((url) => (url.startsWith('/reporting/actuals?')
+      ? Promise.resolve({ status: 'success', data: imported })
+      : mockGet(url)));
+    api.post.mockResolvedValue({
+      status: 'success',
+      data: { outcome: 'imported', written: true, inserted: 1, updated: 0, unchanged: 0, rejected: 0, replaced: 1, batch_id: 'ACT-5e5e5e5e' },
+      message: 'Imported actuals'
+    });
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+
+    // The field holds the month total, imported amount included, and says where it comes from.
+    await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toHaveValue(1060000));
+    expect(screen.getByTestId('actual-revenue-imported')).toHaveTextContent('Includes imported GL-JAN 1,060,000.00');
+    expect(screen.getByTestId('actuals-entry-help')).toHaveTextContent('imported amounts included');
+    expect(screen.getByTestId('actuals-entry-help')).toHaveTextContent('replaced by it, not added to');
+
+    fireEvent.change(screen.getByLabelText(/^Revenue/), { target: { value: '1070000' } });
+    expect(screen.getByTestId('actual-revenue-imported')).toHaveTextContent('replaced by this total when you save');
+    fireEvent.click(screen.getByText('Save actuals'));
+
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    const [, body] = api.post.mock.calls[0];
+    expect(body.entries).toEqual([expect.objectContaining({ period: '2026-02', line_item: 'revenue', amount: 1070000, source: 'manual' })]);
+    expect(body.replace_lines).toBe(true);
+    expect(await screen.findByTestId('actuals-entry-status')).toHaveTextContent('1 imported amount replaced');
+    expect(screen.getByTestId('actuals-entry-status')).toHaveTextContent('Import history');
+  });
+
+  it('does not post when no line changed', async () => {
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+    await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toHaveValue(95000));
+    fireEvent.click(screen.getByText('Save actuals'));
+    expect(await screen.findByTestId('actuals-entry-status')).toHaveTextContent('Nothing changed for Feb 2026');
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it('adds up every reference into the month total', () => {
+    expect(lineMonthTotals([
+      { line_item: 'revenue', amount: 300000, reference_id: 'JE-101' },
+      { line_item: 'revenue', amount: 200000, reference_id: 'JE-102' },
+      { line_item: 'revenue', amount: 0.1, reference_id: '' },
+      { line_item: 'payroll', amount: 43000, reference_id: '' }
+    ])).toEqual({
+      revenue: { total: 500000.1, referenced: [{ reference_id: 'JE-101', amount: 300000 }, { reference_id: 'JE-102', amount: 200000 }] },
+      payroll: { total: 43000, referenced: [] }
+    });
   });
 
   it('shows why nothing was saved when the save is refused', async () => {
@@ -247,6 +303,7 @@ describe('VarianceReport', () => {
     });
     render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
     await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toHaveValue(95000));
+    fireEvent.change(screen.getByLabelText(/^Revenue/), { target: { value: '96000' } });
     fireEvent.click(screen.getByText('Save actuals'));
     expect(await screen.findByTestId('actuals-entry-status')).toHaveTextContent('closed months: Feb 2026');
   });
@@ -287,6 +344,8 @@ describe('VarianceReport', () => {
   it('describes a save in plain words', () => {
     expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 2 }, '2026-02')).toBe('Saved 3 actual(s) for Feb 2026 (1 new, 2 changed).');
     expect(saveMessage({ outcome: 'unchanged', inserted: 0, updated: 0, unchanged: 3 }, '2026-02')).toMatch(/Nothing changed for Feb 2026/);
+    expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 0, replaced: 2 }, '2026-02'))
+      .toBe('Saved 1 actual(s) for Feb 2026 (1 new, 2 imported amounts replaced). Undo the save under Import history to put the imported amounts back.');
   });
 
   it('clears a period after confirmation', async () => {

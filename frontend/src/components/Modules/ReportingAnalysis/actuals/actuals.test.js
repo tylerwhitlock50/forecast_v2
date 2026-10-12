@@ -2,9 +2,9 @@ import React from 'react';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ImportActualsDialog from './ImportActualsDialog';
-import ImportHistory from './ImportHistory';
+import ImportHistory, { batchCounts, undoSummary } from './ImportHistory';
 import PeriodClosePanel from './PeriodClosePanel';
-import { previewHeadline } from './ImportPreview';
+import { otherReferenceLines, previewHeadline } from './ImportPreview';
 import { formatWhen, importQuery, reportFromError } from './actualsApi';
 import api from '../../../../lib/apiClient';
 
@@ -56,7 +56,29 @@ describe('actuals helpers', () => {
   it('builds the import query', () => {
     expect(importQuery({ dryRun: true, allowPartial: true, combineDuplicates: false, controlTotal: ' 1,000.50 ', note: 'April' }))
       .toBe('?dry_run=true&allow_partial=true&control_total=1%2C000.50&note=April');
+    expect(importQuery({ replaceLines: true })).toBe('?replace_lines=true');
     expect(importQuery({})).toBe('');
+  });
+
+  it('warns when lines already hold amounts under other references', () => {
+    const lineTotals = [{ period: '2026-04', label: 'Apr 2026', line_item: 'revenue', line_label: 'Net Sales', before: 500000,
+      file_amount: 500000, after: 1000000, replaced: false, other_references: [{ reference_id: 'JE-101', amount: 300000 }] }];
+    expect(otherReferenceLines({ line_totals: lineTotals })).toHaveLength(1);
+    const added = previewHeadline({ outcome: 'imported', line_totals: lineTotals });
+    expect(added.tone).toBe('warning');
+    expect(added.title).toMatch(/some lines already hold other amounts/);
+    expect(added.text).toMatch(/Replace these months' lines/);
+    const replaced = previewHeadline({ outcome: 'imported', line_totals: [{ ...lineTotals[0], replaced: true, after: 500000 }] });
+    expect(replaced.title).toBe('Ready to import');
+    expect(previewHeadline({ outcome: 'unchanged', line_totals: lineTotals }).text).toMatch(/kept and added/);
+  });
+
+  it('describes an undo that puts replaced amounts back', () => {
+    expect(undoSummary({ rows_to_remove: 1, rows_to_restore: 0, rows_to_put_back: 2 }))
+      .toBe('This removes 1 amount and puts back 2 amounts this import replaced');
+    expect(undoSummary({ rows_to_remove: 1, rows_to_restore: 1, rows_to_put_back: 1 }))
+      .toBe('This removes 1 amount, puts 1 amount back to its earlier value and puts back 1 amount this import replaced');
+    expect(batchCounts({ inserted: 1, replaced: 2 })).toBe('1 new, 2 replaced');
   });
 
   it('reads the report out of a refused write', () => {
@@ -135,6 +157,35 @@ describe('ImportActualsDialog', () => {
     expect(screen.getByTestId('actuals-control')).toHaveTextContent('does not tie: control total 13,000.00, difference 500.00');
     expect(screen.getByTestId('actuals-preview-status')).toHaveTextContent('does not tie to the control total');
     expect(screen.getByTestId('actuals-import-confirm')).toBeDisabled();
+  });
+
+  it('shows the month totals after the import and replaces other references on request (ACT-4)', async () => {
+    const lineTotals = [{ period: '2026-04', label: 'Apr 2026', line_item: 'revenue', line_label: 'Net Sales', before: 500000,
+      file_amount: 500000, after: 1000000, replaced: false,
+      other_references: [{ reference_id: 'JE-101', amount: 300000, batch_id: 'ACT-0a0a0a0a' }, { reference_id: 'JE-102', amount: 200000, batch_id: 'ACT-0a0a0a0a' }] }];
+    const added = { ...partialReport, outcome: 'imported', rejected: 0, errors: [], inserted: 1, updated: 0, line_totals: lineTotals,
+      stored_before_total: 500000, stored_after_total: 1000000, control_total: 500000, control_matches: true,
+      control_matches_after: false, control_difference_after: 500000,
+      totals: { ...totals, grand_total: 500000 } };
+    const replaced = { ...added, replaced: 2, line_totals: [{ ...lineTotals[0], after: 500000, replaced: true }],
+      stored_after_total: 500000, control_matches_after: true, control_difference_after: 0 };
+    api.upload.mockImplementation((url) => Promise.resolve({ status: 'success', data: url.includes('replace_lines=true') ? replaced : added }));
+    render(<ImportActualsDialog onClose={jest.fn()} />);
+    fireEvent.change(screen.getByLabelText('Control total (optional)'), { target: { value: '500000' } });
+    chooseFile();
+    await screen.findByTestId('actuals-line-totals');
+    expect(screen.getByTestId('actuals-preview-status')).toHaveTextContent('some lines already hold other amounts');
+    expect(screen.getByTestId('actuals-after-total')).toHaveTextContent('hold 1,000,000.00 in total');
+    expect(screen.getByTestId('actuals-after-total')).toHaveTextContent('500,000.00 off the control total');
+    const row = within(screen.getByTestId('actuals-line-totals')).getAllByRole('row')[1];
+    expect(row).toHaveTextContent('Apr 2026Net Sales500,000.00500,000.001,000,000.00JE-101 300,000.00; JE-102 200,000.00(kept and added)');
+
+    fireEvent.click(screen.getByLabelText(/Replace these months/));
+    await waitFor(() => expect(api.upload.mock.calls.some(([url]) => url.includes('replace_lines=true'))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('actuals-line-totals')).toHaveTextContent('(replaced)'));
+    expect(within(screen.getByTestId('actuals-preview-counts')).getByText('Replaced')).toBeInTheDocument();
+    expect(screen.getByTestId('actuals-after-total')).toHaveTextContent('hold 500,000.00 in total');
+    expect(screen.getByTestId('actuals-preview-status')).toHaveTextContent('Ready to import');
   });
 
   it('explains a file that cannot be read', async () => {

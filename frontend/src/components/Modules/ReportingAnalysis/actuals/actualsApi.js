@@ -25,6 +25,7 @@ export const importQuery = (options = {}) => {
   if (options.dryRun) params.set('dry_run', 'true');
   if (options.allowPartial) params.set('allow_partial', 'true');
   if (options.combineDuplicates) params.set('combine_duplicates', 'true');
+  if (options.replaceLines) params.set('replace_lines', 'true');
   const control = String(options.controlTotal ?? '').trim();
   if (control) params.set('control_total', control);
   if (options.note && options.note.trim()) params.set('note', options.note.trim());
@@ -50,13 +51,18 @@ export const uploadActuals = async (file, options = {}) => {
   }
 };
 
-/** Save JSON entries through the same pipeline (the hand-entry form). Same resolution as uploadActuals. */
+/**
+ * Save JSON entries through the same pipeline (the hand-entry form). Same resolution as uploadActuals.
+ * replaceLines: each entry sets its month + line total (amounts stored under other references, e.g.
+ * an imported GL-JAN, are replaced; undoing the save puts them back) instead of being added to them.
+ */
 export const saveActualEntries = async (entries, options = {}) => {
   try {
     const res = await api.post('/reporting/actuals', {
       entries,
       dry_run: !!options.dryRun,
       allow_partial: !!options.allowPartial,
+      replace_lines: !!options.replaceLines,
       source: options.source || 'manual',
     }, quiet);
     const report = res?.data || null;

@@ -8,21 +8,35 @@ Actual screen, the MCP tools) runs the same steps:
 1. read      file -> rows (header row detected; blank rows skipped; footer
              rows such as 'Total' with no month are skipped and reported)
 2. map       column names through aliases (Month -> period, Account ->
-             line_item, Actual -> amount, Ref -> reference_id, Memo -> notes)
+             line_item, Actual -> amount, Ref -> reference_id, Memo -> notes).
+             When several columns map to one field, the line item is the
+             column whose values are statement lines ('Account Name' beats a
+             GL-number 'Account'); the report says which column was used.
 3. validate  every row: period is a month (normalize_month: '2026-04',
              'Apr 2026', '4/30/2026' ...), line_item is a statement line
              (key, label or alias, ignoring case: 'Net Sales' -> revenue),
-             amount is a number ('$1,234.50', '(500)' = -500, '500-' = -500).
-             A BLANK amount rejects the row ('no amount'); it is never
-             stored as 0. '0' (or an accounting dash) is a confirmed zero.
+             amount is a number in US format ('$1,234.50', '(500)' = -500,
+             '500-' = -500); a decimal comma or misplaced commas ('12.500,00',
+             '1,23') are refused, never guessed. A BLANK amount rejects the
+             row ('no amount'); it is never stored as 0. '0' (or an accounting
+             dash) is a confirmed zero.
 4. duplicates  two rows with the same period + line_item + reference_id are
              an error naming both rows, unless ``combine_duplicates`` adds
              them up.
 5. compare   with what is stored: each row is inserted / updated / unchanged
-             / rejected.
+             / rejected. Amounts are stored per period + line + reference and
+             ADDED UP, so ``line_totals`` gives each month + line of the
+             request its stored total before, the request's amount, the total
+             after and the rows under other references; a warning names them
+             whenever they exist (a summary on top of detail would double
+             count). ``replace_lines`` removes those rows in the same
+             transaction (undo puts them back), so the line's month total
+             becomes the request's: the hand-entry form uses it.
 6. controls  ``control_total`` (the file must add up to it within 0.005) and
              closed months (a row that would change a closed month refuses
-             the whole request).
+             the whole request). ``stored_after_total`` /
+             ``control_matches_after`` compare the control total with the
+             stored months after the import.
 7. write     in ONE transaction. Atomic by default: any rejected row means
              nothing is written. ``allow_partial`` writes the valid rows and
              reports the rest; ``dry_run`` writes nothing and reports what
@@ -31,11 +45,13 @@ Actual screen, the MCP tools) runs the same steps:
 Every write records an ``actuals_batches`` row (batch_id 'ACT-xxxxxxxx')
 and stamps ``actuals.batch_id`` on the rows it inserted or changed. Rows a
 batch inserted get the actual_id '<batch_id>-<n>', so undo can tell rows it
-added from rows it changed, and the values a batch overwrote are kept in
-``actuals_batch_changes``. Undoing a batch deletes the rows it added and puts
-back the amount, notes and source of the rows it changed, but only rows
-still stamped with it (a row changed again later belongs to the later batch
-and is kept).
+added from rows it changed; the values a batch overwrote, and the rows it
+removed with replace_lines, are kept in ``actuals_batch_changes``. Undoing a
+batch deletes the rows it added, puts back the rows it removed and returns
+the rows it changed to the value of the latest earlier batch that is not
+undone (an undone batch's value never comes back), but only rows still
+stamped with it (a row changed again later belongs to the later batch and
+is kept). Undoing a set of batches in any order leaves the same rows.
 
 HTTP outcome (the routes and the MCP tools rely on it):
 
@@ -53,7 +69,8 @@ import io
 import math
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dt_time, timezone
+from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from services.financial_statements import VARIANCE_LINE_ITEMS, period_range
@@ -126,6 +143,40 @@ def _text(value: Any) -> Optional[str]:
     return str(value).strip()
 
 
+def json_safe(value: Any) -> Any:
+    """
+    A spreadsheet cell as a JSON value, so every caller (the routes, the MCP
+    server posting rows as JSON) can pass read_table's rows on: dates ->
+    'YYYY-MM-DD' (a time of day other than midnight is kept: 'YYYY-MM-DD
+    HH:MM:SS'), times -> 'HH:MM:SS', Decimal -> float, NaN -> None; numbers and
+    text are unchanged and anything else becomes text.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, datetime):
+        if (value.hour, value.minute, value.second, value.microsecond) == (0, 0, 0, 0):
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dt_time):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _end_sentence(text: str) -> str:
+    """'... line' -> '... line.'; text already ending in . ? or ! is left alone (no '..' or '?.')."""
+    text = (text or "").rstrip()
+    return text if not text or text[-1] in ".?!" else text + "."
+
+
 # ---------------------------------------------------------------------------
 # Columns
 # ---------------------------------------------------------------------------
@@ -160,8 +211,12 @@ def column_field(name: Any) -> Optional[str]:
     return hit[0] if hit else None
 
 
-def map_columns(row: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """Rename a raw row's keys to the canonical fields; returns (mapped, unknown column names)."""
+def map_columns(row: Dict[str, Any], prefer: Optional[Dict[str, str]] = None) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Rename a raw row's keys to the canonical fields; returns (mapped, unknown column names).
+    When several columns map to one field the best alias wins, unless ``prefer`` names the
+    column to use for that field (see choose_columns).
+    """
     out: Dict[str, Any] = {}
     ranks: Dict[str, int] = {}
     unknown: List[str] = []
@@ -172,6 +227,8 @@ def map_columns(row: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
                 unknown.append(str(raw_key))
             continue
         canonical, rank = hit
+        if prefer and prefer.get(canonical) == str(raw_key):
+            rank = -1
         if canonical in out and rank >= ranks[canonical]:
             continue
         if canonical in out and _blank(value):
@@ -179,6 +236,75 @@ def map_columns(row: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         out[canonical] = value
         ranks[canonical] = rank
     return out, unknown
+
+
+FIELD_NAMES = {"period": "period", "line_item": "line item", "amount": "amount", "reference_id": "reference",
+               "notes": "notes", "source": "source"}
+
+
+def _quoted(names: Sequence[str]) -> str:
+    quoted = [f"'{n}'" for n in names]
+    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
+
+
+def choose_columns(rows: List[Tuple[int, Dict[str, Any]]]) -> Tuple[Dict[str, str], List[str]]:
+    """
+    When several columns of a file map to one field (a trial balance with 'Account' = the GL
+    number and 'Account Name'), pick one and say which. The line item is chosen by its values:
+    the column whose values are statement lines on the most rows (ties: the better alias).
+    Other fields keep the better alias. Returns ({field: column to use}, warnings).
+    """
+    candidates: Dict[str, List[Tuple[int, str]]] = {}
+    seen = set()
+    for _row, raw in rows:
+        for key in raw:
+            if key in seen:
+                continue
+            seen.add(key)
+            hit = _COLUMN_LOOKUP.get(header_key(key))
+            if hit:
+                candidates.setdefault(hit[0], []).append((hit[1], str(key)))
+    prefer: Dict[str, str] = {}
+    warnings: List[str] = []
+    resolved_cache: Dict[str, bool] = {}
+
+    def is_line(value: Any) -> bool:
+        key = str(value)
+        if key not in resolved_cache:
+            resolved_cache[key] = resolve_line_item(value)[0] is not None
+        return resolved_cache[key]
+
+    for field, columns in candidates.items():
+        if len(columns) < 2:
+            continue
+        columns.sort()
+        names = [name for _rank, name in columns]
+        label = FIELD_NAMES.get(field, field)
+        if field != "line_item":
+            warnings.append(f"Columns {_quoted(names)} could each be the {label}: used '{names[0]}'.")
+            continue
+        scored = []
+        for rank, name in columns:
+            values = [raw.get(name) for _row, raw in rows if not _blank(raw.get(name))]
+            resolved = sum(1 for v in values if is_line(v))
+            scored.append((resolved, -rank, name, values))
+        best = max(scored, key=lambda s: (s[0], s[1]))
+        if best[0] == 0:
+            warnings.append(f"Columns {_quoted(names)} could each be the line item, but none holds statement "
+                            f"line names, so '{names[0]}' was used. Map the accounts to statement lines (e.g. "
+                            f"'Net Sales', 'Payroll'), or remove or rename the columns that are not the line item.")
+            continue
+        prefer[field] = best[2]
+        others = []
+        for resolved, _r, name, values in scored:
+            if name == best[2]:
+                continue
+            sample = next((_text(v) for v in values if not is_line(v)), None)
+            others.append(f"'{name}'" + (f" (e.g. '{sample}')" if sample else ""))
+        rows_with = len([1 for _row, raw in rows if not _blank(raw.get(best[2]))])
+        warnings.append(f"Used '{best[2]}' for the line item ({best[0]} of {rows_with} rows are statement lines); "
+                        f"not used: {', '.join(others)}.")
+    return prefer, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +403,8 @@ def resolve_line_item(value: Any) -> Tuple[Optional[str], Optional[str]]:
     labels = [meta.get("label", key) for key, meta in VARIANCE_LINE_ITEMS.items()]
     by_norm = {line_key(label): label for label in labels}
     close = difflib.get_close_matches(norm, list(by_norm), n=2, cutoff=0.75)
-    hint = f" Did you mean {' or '.join(repr(by_norm[c]) for c in close)}?" if close else ""
-    return None, f"line item '{text}' is not a statement line.{hint}"
+    hint = f". Did you mean {' or '.join(repr(by_norm[c]) for c in close)}?" if close else ""
+    return None, f"line item '{text}' is not a statement line{hint}"
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +413,21 @@ def resolve_line_item(value: Any) -> Tuple[Optional[str], Optional[str]]:
 
 _ACCOUNTING_ZEROS = {"-", "--", "–", "—", "−"}
 _TOTAL_RE = re.compile(r"^\s*(grand\s+|sub\s*-?\s*)?totals?\b", re.IGNORECASE)
+#: US number format: commas only between groups of three digits, '.' for decimals ('1,234.50', '1234.5', '1.5E+03').
+_NUMBER_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d*)?(?:[eE][+-]?\d+)?$")
+#: European format: '.' between thousands and / or a decimal comma ('12.500,00', '1.234,50', '1,23', '1.234.567').
+_DECIMAL_COMMA_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+,\d+)$")
+#: Spaces between thousands ('1 000'): plain, no-break, figure, thin and narrow no-break spaces.
+_SPACES = (" ", "\u00a0", "\u2007", "\u2009", "\u202f")
 
 
 def parse_amount(value: Any) -> Tuple[Optional[float], Optional[str]]:
-    """(amount, None) or (None, why not). Blank is 'no amount', never 0."""
+    """
+    (amount, None) or (None, why not). Blank is 'no amount', never 0. Text is read in US
+    format ('$1,234.50', '(500)' = -500, '500-' = -500, '1 000'); a decimal comma or
+    misplaced commas ('12.500,00', '1,23', '1,2,3') are refused, never guessed: stripping
+    the commas would turn 12.500,00 into 12.50.
+    """
     if _blank(value):
         return None, "no amount (leave the row out, or enter 0 for a confirmed zero)"
     if isinstance(value, bool):
@@ -300,7 +437,9 @@ def parse_amount(value: Any) -> Tuple[Optional[float], Optional[str]]:
             return None, f"amount {value} is not a number"
         return float(value), None
     raw = str(value).strip()
-    text = raw.replace(",", "").replace("$", "").replace(" ", "").replace(" ", "").replace("−", "-")
+    text = raw.replace("$", "").replace("\u2212", "-")
+    for space in _SPACES:
+        text = text.replace(space, "")
     if text in _ACCOUNTING_ZEROS:
         return 0.0, None
     negative = False
@@ -308,15 +447,21 @@ def parse_amount(value: Any) -> Tuple[Optional[float], Optional[str]]:
         negative, text = True, text[1:-1]
     elif text.startswith("-(") and text.endswith(")"):
         negative, text = True, text[2:-1]
-    elif len(text) > 1 and text.endswith("-") and re.match(r"^\d[\d.]*-$", text):
+    elif len(text) > 1 and text.endswith("-") and re.match(r"^\d[\d.,]*-$", text):
         negative, text = True, text[:-1]   # SAP-style trailing minus: 500-
-    if text.startswith("-$") or text.startswith("$-"):
-        text = "-" + text[2:]
+    if not _NUMBER_RE.match(text):
+        if _DECIMAL_COMMA_RE.match(text):
+            return None, (f"amount '{raw}' looks like a European number (decimal comma, '.' between thousands): "
+                          f"save the file with '.' for decimals and ',' or nothing between thousands "
+                          f"(e.g. 12500.00 or 12,500.00), then import again")
+        if "," in text:
+            return None, f"amount '{raw}' is not a number: commas may only separate thousands (e.g. 1,234.50)"
+        return None, f"amount '{raw}' is not a number"
     try:
-        number = float(text)
+        number = float(text.replace(",", ""))
     except ValueError:
         return None, f"amount '{raw}' is not a number"
-    if not math.isfinite(number) or not re.search(r"\d", text):
+    if not math.isfinite(number):
         return None, f"amount '{raw}' is not a number"
     return (-number if negative else number), None
 
@@ -425,7 +570,8 @@ def read_table(filename: Optional[str], raw: bytes, sheet: Optional[str] = None,
     """
     Parse an uploaded CSV / XLSX into [(spreadsheet row number, {header: value})].
     The header row is ``header_row`` (1-based) when given, else detected (a report title above it is
-    skipped); blank rows are dropped.
+    skipped); blank rows are dropped. Values are JSON-safe (json_safe: Excel dates -> 'YYYY-MM-DD'),
+    so the rows can be posted on as JSON entries.
     """
     name = (filename or "").strip()
     lower = name.lower()
@@ -459,6 +605,7 @@ def read_table(filename: Optional[str], raw: bytes, sheet: Optional[str] = None,
     for offset, raw_row in enumerate(grid[header_index + 1:], start=header_index + 2):
         record: Dict[str, Any] = {}
         for i, value in enumerate(raw_row or []):
+            value = json_safe(value)
             if i >= len(headers):
                 if not _blank(value):
                     record[f"column_{i + 1}"] = value
@@ -629,13 +776,102 @@ def _sign_warnings(planned: List[Dict[str, Any]]) -> List[str]:
             f"Costs are entered as positive numbers; a negative cost lowers the expense."]
 
 
+#: Records what a write overwrote ('updated') or removed ('removed') so undo can put it back exactly.
+_RECORD_CHANGE = """INSERT OR IGNORE INTO actuals_batch_changes (batch_id, actual_id, previous_amount, previous_notes,
+        previous_source, previous_batch_id, previous_updated_at, change_type, previous_period, previous_line_item,
+        previous_reference_id, previous_created_at)
+    SELECT ?, actual_id, amount, notes, source, batch_id, updated_at, ?, period, line_item, reference_id, created_at
+    FROM actuals WHERE actual_id = ?"""
+
+
+def _refs_text(rows: Sequence[Dict[str, Any]], limit: int = 3) -> str:
+    shown = "; ".join(f"{r['reference_id'] or '(no reference)'} {_money(r['amount'])}" for r in rows[:limit])
+    return shown + (f" and {len(rows) - limit} more" if len(rows) > limit else "")
+
+
+def _line_totals(planned: List[Dict[str, Any]], parsed: List[Dict[str, Any]],
+                 stored_by_pair: Dict[Tuple[str, str], List[Dict[str, Any]]],
+                 replace_lines: bool) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Per month + line in the request: the stored total before, the amount in the request, the
+    total after, and the rows stored under other references (references the request does not
+    mention for that month and line). Amounts are stored per (period, line, reference) and
+    added up, so those rows count in the month's line total unless replace_lines removes them.
+    Returns (line totals, stored rows to remove).
+    """
+    refs_in_request: Dict[Tuple[str, str], set] = {}
+    for item in parsed:
+        if item["period"] and item["line_item"]:
+            refs_in_request.setdefault((item["period"], item["line_item"]), set()).add(item["reference_id"])
+    by_pair: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for item in planned:
+        by_pair.setdefault((item["period"], item["line_item"]), []).append(item)
+    order = {key: i for i, key in enumerate(VARIANCE_LINE_ITEMS)}
+    totals: List[Dict[str, Any]] = []
+    to_remove: List[Dict[str, Any]] = []
+    for period, line_item in sorted(by_pair, key=lambda k: (k[0], order.get(k[1], 999), k[1])):
+        items = by_pair[(period, line_item)]
+        planned_refs = {i["reference_id"] for i in items}
+        rows_now = stored_by_pair.get((period, line_item), [])
+        others = [r for r in rows_now if (r["reference_id"] or "") not in refs_in_request[(period, line_item)]]
+        removed_ids = {r["actual_id"] for r in others} if replace_lines else set()
+        before = sum(float(r["amount"] or 0) for r in rows_now)
+        request_amount = sum(i["amount"] for i in items)
+        kept = sum(float(r["amount"] or 0) for r in rows_now
+                   if (r["reference_id"] or "") not in planned_refs and r["actual_id"] not in removed_ids)
+        if replace_lines:
+            to_remove.extend(others)
+        totals.append({
+            "period": period, "label": month_label(period), "line_item": line_item,
+            "line_label": line_label(line_item),
+            "before": round(before, 2), "file_amount": round(request_amount, 2), "after": round(kept + request_amount, 2),
+            "other_references": [{"reference_id": r["reference_id"] or "", "amount": round(float(r["amount"] or 0), 2),
+                                  "batch_id": r.get("batch_id"), "actual_id": r["actual_id"]} for r in others],
+            "other_references_amount": round(sum(float(r["amount"] or 0) for r in others), 2),
+            "replaced": bool(removed_ids),
+        })
+    return totals, to_remove
+
+
+def _other_reference_warnings(line_totals: List[Dict[str, Any]], replace_lines: bool) -> List[str]:
+    """Say when a month's line holds amounts under references the import does not include (they add up)."""
+    flagged = [t for t in line_totals if t["other_references"]]
+    out: List[str] = []
+    for t in flagged[:5]:
+        others = t["other_references"]
+        what = f"{t['label']} {t['line_label']}"
+        if replace_lines:
+            out.append(f"{what}: replacing {_plural(len(others), 'amount')} stored under other references "
+                       f"({_refs_text(others)}); the month's line total becomes {_money(t['after'])} "
+                       f"(was {_money(t['before'])}). Undoing this import puts them back.")
+            continue
+        batches = sorted({o["batch_id"] for o in others if o.get("batch_id")})
+        undo_hint = (f", or undo {'import' if len(batches) == 1 else 'imports'} {', '.join(batches)}"
+                     if batches else "")
+        out.append(f"{what} already holds {_plural(len(others), 'amount')} under other references "
+                   f"({_refs_text(others)}) that this import does not include: they are kept and added, so the "
+                   f"month's line total becomes {_money(t['after'])}, not {_money(t['file_amount'])}. If this import "
+                   f"replaces them, import it with 'Replace these months' lines' (replace_lines){undo_hint}.")
+    if len(flagged) > 5:
+        more = len(flagged) - 5
+        out.append(f"{more} more month{'s' if more != 1 else ''} and line{'s' if more != 1 else ''} "
+                   f"{'hold' if more != 1 else 'holds'} amounts under other references (see line_totals).")
+    return out
+
+
 def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = False, allow_partial: bool = False,
                combine_duplicates: bool = False, control_total: Optional[float] = None,
                source: Optional[str] = None, filename: Optional[str] = None, note: Optional[str] = None,
-               default_notes: Optional[str] = None, file_info: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
+               default_notes: Optional[str] = None, file_info: Optional[Dict[str, Any]] = None,
+               replace_lines: bool = False) -> Tuple[int, Dict[str, Any]]:
     """
     Validate, reconcile and (unless dry_run or refused) write actuals in one transaction.
     Returns (HTTP status, report). See the module docstring for the rules.
+
+    ``replace_lines``: for every month + line in the request, rows stored under other
+    references are removed in the same transaction (recorded, so undo puts them back), so
+    the month's line total becomes the request's. Without it they are kept and added, and the
+    report warns. ``line_totals`` gives every month + line's stored total before and after.
     """
     cursor = conn.cursor()
     warnings: List[str] = []
@@ -644,9 +880,11 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
     parsed: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
-    # 1-3: map and validate every row
+    # 1-3: map and validate every row (several candidate columns for one field: choose_columns)
+    prefer, column_warnings = choose_columns(rows)
+    warnings.extend(column_warnings)
     for row_no, raw in rows:
-        mapped, unknown = map_columns(raw)
+        mapped, unknown = map_columns(raw, prefer)
         for column in unknown:
             if column not in unknown_columns and not column.startswith("column_"):
                 unknown_columns.append(column)
@@ -684,7 +922,7 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
         what = "looks like a total or a note" if len(skipped) == 1 else "look like totals or notes"
         warnings.append(f"Skipped {_plural(len(skipped), 'row')} that {what}, not data: {shown}"
                         + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else ""))
-    present = {key for _row, raw in rows for key in map_columns(raw)[0]}
+    present = {key for _row, raw in rows for key in map_columns(raw, prefer)[0]}
     missing_columns = [c for c in ("period", "line_item", "amount") if c not in present]
     if missing_columns:
         found = (file_info or {}).get("columns") or sorted({str(k) for _row, raw in rows for k in raw})
@@ -757,14 +995,17 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
     try:
         periods = sorted({p["period"] for p in planned})
         stored: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        stored_by_pair: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         if periods:
             marks = ",".join("?" * len(periods))
             cursor.execute(f"SELECT actual_id, period, line_item, reference_id, amount, notes, source, batch_id "
-                           f"FROM actuals WHERE period IN ({marks})", periods)
+                           f"FROM actuals WHERE period IN ({marks}) ORDER BY period, line_item, reference_id",
+                           periods)
             columns = [d[0] for d in cursor.description]
             for record in cursor.fetchall():
                 row = dict(zip(columns, record))
                 stored[(row["period"], row["line_item"], row["reference_id"] or "")] = row
+                stored_by_pair.setdefault((row["period"], row["line_item"]), []).append(row)
         closed = set(closed_periods(cursor, periods))
         closed_hits: Dict[str, int] = {}
         for item in planned:
@@ -786,13 +1027,38 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
                 closed_hits[item["period"]] = closed_hits.get(item["period"], 0) + 1
                 item["closed"] = True
 
+        # Other references for the same month + line: they add up, or replace_lines removes them.
+        line_totals, to_remove = _line_totals(planned, parsed, stored_by_pair, replace_lines)
+        for row in to_remove:
+            if row["period"] in closed:
+                closed_hits[row["period"]] = closed_hits.get(row["period"], 0) + 1
+
         to_write = [i for i in planned if i["action"] in ("insert", "update")]
         counts = {
             "inserted": sum(1 for i in planned if i["action"] == "insert"),
             "updated": sum(1 for i in planned if i["action"] == "update"),
             "unchanged": sum(1 for i in planned if i["action"] == "unchanged"),
             "rejected": len(errors),
+            "replaced": len(to_remove),
         }
+        warnings.extend(_other_reference_warnings(line_totals, replace_lines))
+        stored_before_total = round(sum(t["before"] for t in line_totals), 2)
+        stored_after_total = round(sum(t["after"] for t in line_totals), 2)
+        control_difference_after = None
+        control_matches_after = None
+        if control_total is not None:
+            control_difference_after = round(stored_after_total - control_total, 2)
+            control_matches_after = abs(stored_after_total - control_total) <= TOLERANCE
+            if control_matches and not control_matches_after:
+                why = []
+                if any(t["other_references"] for t in line_totals) and not replace_lines:
+                    why.append("amounts stored under other references are counted too")
+                if errors:
+                    why.append("rows with problems are left out")
+                warnings.append(f"The file ties to the control total {_money(control_total)}, but after this import "
+                                f"its months and lines hold {_money(stored_after_total)} in total (difference "
+                                f"{_money(control_difference_after)})" + (f": {' and '.join(why)}" if why else "")
+                                + ". See line_totals.")
         warnings.extend(_sign_warnings(planned))
         warnings.extend(_tie_out_warnings(planned))
 
@@ -810,17 +1076,18 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
             first_errors = "; ".join(f"row {e['row']}: {e['error']}" for e in errors[:3])
             more = f" (and {_plural(len(errors) - 3, 'more problem')})" if len(errors) > 3 else ""
             verb = "has a problem" if len(errors) == 1 else "have problems"
-            refused_reason = (f"{_plural(len(errors), 'row')} of {len(parsed)} {verb}: {first_errors}{more}. "
+            refused_reason = (f"{_plural(len(errors), 'row')} of {len(parsed)} {verb}: "
+                              f"{_end_sentence(first_errors + more)} "
                               f"Fix the file and import again, or import only the valid rows.")
             status_code = 422
         elif not planned:
             refused_reason = (f"None of the {_plural(len(parsed), 'row')} can be imported. First problem: "
-                              f"row {errors[0]['row']}: {errors[0]['error']}")
+                              f"row {errors[0]['row']}: {_end_sentence(errors[0]['error'])}")
             status_code = 422
 
         if refused_reason:
             outcome = "rejected"
-        elif not to_write:
+        elif not to_write and not to_remove:
             outcome = "unchanged"
         elif errors:
             outcome = "partial"
@@ -838,11 +1105,16 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
                 notes_for_batch.append(f"Added up duplicate rows for {_plural(len(combined), 'line')}")
             cursor.execute(
                 """INSERT INTO actuals_batches (batch_id, created_at, source, filename, rows_in_file, inserted, updated,
-                       unchanged, rejected, file_total, control_total, status, note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       unchanged, rejected, file_total, control_total, status, note, replaced)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (batch_id, now, source, filename, len(parsed) + len(skipped), counts["inserted"], counts["updated"],
                  counts["unchanged"], counts["rejected"], totals["grand_total"], control_total,
-                 "partial" if outcome == "partial" else "imported", " | ".join(notes_for_batch) or None))
+                 "partial" if outcome == "partial" else "imported", " | ".join(notes_for_batch) or None,
+                 counts["replaced"]))
+            # replace_lines: rows under other references go, recorded so undo puts them back exactly.
+            for row in to_remove:
+                cursor.execute(_RECORD_CHANGE, (batch_id, "removed", row["actual_id"]))
+                cursor.execute("DELETE FROM actuals WHERE actual_id = ?", (row["actual_id"],))
             sequence = 0
             for item in to_write:
                 if item["action"] == "insert":
@@ -857,12 +1129,7 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
                          item["source"], item["notes"], now, now, batch_id))
                 else:
                     # Keep what this import overwrites so undo can put it back.
-                    cursor.execute(
-                        """INSERT OR IGNORE INTO actuals_batch_changes (batch_id, actual_id, previous_amount,
-                               previous_notes, previous_source, previous_batch_id, previous_updated_at)
-                           SELECT ?, actual_id, amount, notes, source, batch_id, updated_at
-                           FROM actuals WHERE actual_id = ?""",
-                        (batch_id, item["actual_id"]))
+                    cursor.execute(_RECORD_CHANGE, (batch_id, "updated", item["actual_id"]))
                     cursor.execute(
                         """UPDATE actuals SET amount = ?, notes = COALESCE(?, notes), source = COALESCE(?, source),
                                updated_at = ?, batch_id = ?
@@ -923,9 +1190,15 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
         "control_total": control_total,
         "control_difference": control_difference,
         "control_matches": control_matches,
+        "line_totals": line_totals,
+        "stored_before_total": stored_before_total,
+        "stored_after_total": stored_after_total,
+        "control_difference_after": control_difference_after,
+        "control_matches_after": control_matches_after,
         "warnings": warnings,
         "rows": row_report,
-        "options": {"allow_partial": allow_partial, "combine_duplicates": combine_duplicates},
+        "options": {"allow_partial": allow_partial, "combine_duplicates": combine_duplicates,
+                    "replace_lines": replace_lines},
     }
     if file_info:
         report["file"] = {k: v for k, v in file_info.items() if v is not None}
@@ -944,6 +1217,8 @@ def _list(numbers: Sequence[int]) -> str:
 
 def _import_message(report: Dict[str, Any], refused_reason: Optional[str]) -> str:
     counts = f"{report['inserted']} new, {report['updated']} changed, {report['unchanged']} unchanged"
+    if report.get("replaced"):
+        counts += f", {report['replaced']} replaced"
     if report["dry_run"]:
         if report["outcome"] == "rejected":
             return f"Check only, nothing written. The import would be refused: {refused_reason}"
@@ -1024,7 +1299,10 @@ def delete_actuals(conn, *, period: Optional[str] = None, line_item: Optional[st
 # ---------------------------------------------------------------------------
 
 BATCH_COLUMNS = ("batch_id", "created_at", "source", "filename", "rows_in_file", "inserted", "updated", "unchanged",
-                 "rejected", "file_total", "control_total", "status", "note")
+                 "rejected", "file_total", "control_total", "status", "note", "replaced")
+CHANGE_COLUMNS = ("batch_id", "actual_id", "previous_amount", "previous_notes", "previous_source", "previous_batch_id",
+                  "previous_updated_at", "change_type", "previous_period", "previous_line_item",
+                  "previous_reference_id", "previous_created_at")
 
 
 def _batch_rows(cursor, batch_id: str) -> List[Dict[str, Any]]:
@@ -1032,6 +1310,68 @@ def _batch_rows(cursor, batch_id: str) -> List[Dict[str, Any]]:
                    "ORDER BY period, line_item, reference_id", (batch_id,))
     columns = [d[0] for d in cursor.description]
     return [dict(zip(columns, r)) for r in cursor.fetchall()]
+
+
+def _change_records(cursor, where: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
+    cursor.execute(f"SELECT {', '.join('c.' + c for c in CHANGE_COLUMNS)} FROM actuals_batch_changes c "
+                   f"WHERE {where}", tuple(params))
+    out = []
+    for record in cursor.fetchall():
+        change = dict(zip(CHANGE_COLUMNS, record))
+        change["change_type"] = change["change_type"] or "updated"
+        out.append(change)
+    return out
+
+
+def _batch_statuses(cursor) -> Dict[str, str]:
+    cursor.execute("SELECT batch_id, status FROM actuals_batches")
+    return {r[0]: r[1] for r in cursor.fetchall()}
+
+
+def _resolve_earlier(cursor, actual_id: str, change: Dict[str, Any],
+                     statuses: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """
+    What a row goes back to when the import that recorded ``change`` is undone: the value the
+    latest earlier import that is NOT undone wrote. Walks back through undone imports (their own
+    change records), so an undone import's value never comes back. None: no live import wrote
+    the row before (an undone import added it, or there is no earlier value on record), so the
+    row is removed. Returns (state, undone imports skipped).
+    """
+    skipped: List[str] = []
+    state = change
+    while True:
+        owner = state.get("previous_batch_id")
+        if not owner or owner in skipped or statuses.get(owner) != "undone":
+            return state, skipped
+        skipped.append(owner)
+        if str(actual_id).startswith(f"{owner}-"):
+            return None, skipped
+        earlier = _change_records(cursor, "c.batch_id = ? AND c.actual_id = ?", (owner, actual_id))
+        if not earlier:
+            return None, skipped
+        state = earlier[0]
+
+
+def _row_exists(cursor, actual_id: str) -> bool:
+    cursor.execute("SELECT 1 FROM actuals WHERE actual_id = ?", (actual_id,))
+    return cursor.fetchone() is not None
+
+
+def _key_taken(cursor, change: Dict[str, Any]) -> bool:
+    cursor.execute("SELECT 1 FROM actuals WHERE period = ? AND line_item = ? AND COALESCE(reference_id, '') = ?",
+                   (change["previous_period"], change["previous_line_item"], change["previous_reference_id"] or ""))
+    return cursor.fetchone() is not None
+
+
+def _latest_removal_at(cursor, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The newest replace_lines removal recorded for this row's month, line and reference (another row)."""
+    found = _change_records(
+        cursor,
+        "c.change_type = 'removed' AND c.previous_period = ? AND c.previous_line_item = ? "
+        "AND COALESCE(c.previous_reference_id, '') = ? AND c.actual_id <> ? "
+        "ORDER BY (SELECT b.rowid FROM actuals_batches b WHERE b.batch_id = c.batch_id) DESC LIMIT 1",
+        (row["period"], row["line_item"], row["reference_id"] or "", row["actual_id"]))
+    return found[0] if found else None
 
 
 def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -1043,6 +1383,7 @@ def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     batches = [dict(zip(BATCH_COLUMNS, r)) for r in cursor.fetchall()]
     closed = set(closed_periods(cursor))
     for batch in batches:
+        batch["replaced"] = batch.get("replaced") or 0
         cursor.execute("SELECT period, COUNT(*), SUM(CASE WHEN actual_id LIKE ? THEN 1 ELSE 0 END) "
                        "FROM actuals WHERE batch_id = ? GROUP BY period ORDER BY period",
                        (f"{batch['batch_id']}-%", batch["batch_id"]))
@@ -1050,7 +1391,12 @@ def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         batch["rows_current"] = sum(r[1] for r in per_period)
         batch["rows_added_current"] = sum(r[2] or 0 for r in per_period)
         batch["periods"] = [r[0] for r in per_period]
-        batch["closed_periods"] = [r[0] for r in per_period if r[0] in closed]
+        replaced_periods = []
+        if batch["replaced"] and batch["status"] not in ("undone", "deleted"):
+            cursor.execute("SELECT DISTINCT previous_period FROM actuals_batch_changes WHERE batch_id = ? "
+                           "AND change_type = 'removed'", (batch["batch_id"],))
+            replaced_periods = [r[0] for r in cursor.fetchall() if r[0]]
+        batch["closed_periods"] = sorted({p for p in batch["periods"] + replaced_periods if p in closed})
         if batch["status"] in ("undone", "deleted"):
             batch["can_undo"] = False
             batch["undo_blocked_reason"] = ("Already undone" if batch["status"] == "undone"
@@ -1064,14 +1410,28 @@ def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     return {"batches": batches, "total_count": total, "limit": limit, "offset": offset}
 
 
+def _rows_word(n: int, singular: str, plural_: str) -> str:
+    return singular if n == 1 else plural_
+
+
 def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
     """
-    Undo an import: rows it added are deleted; rows it changed get their
-    earlier amount, notes and source back (recorded in actuals_batch_changes
-    when the import ran). Only rows still stamped with the batch are touched,
-    so a later correction is kept. Rows changed by an import made before
-    change tracking existed have no earlier amount on record and are removed.
-    Refused for closed months.
+    Undo an import, as if it had never run:
+
+    * rows it added are deleted;
+    * rows it changed go back to the value the latest earlier import that is NOT undone wrote
+      (recorded in actuals_batch_changes when the import ran). An earlier import that was
+      already undone is skipped, so its value never comes back; when no live import wrote the
+      row before, it is removed. Undoing a set of imports in any order therefore leaves the
+      same rows as undoing them newest first;
+    * rows it removed with replace_lines are put back exactly (same id, key, value and owner),
+      unless the same reference has been written again since;
+    * a row it added where an import that is already undone had removed (replaced) a row brings
+      that row back.
+
+    Only rows still stamped with the batch are touched, so a later correction is kept. Rows
+    changed by an import made before change tracking existed have no earlier amount on record and
+    are removed. Refused for closed months.
     """
     if not dry_run:
         conn.execute("BEGIN IMMEDIATE")
@@ -1082,49 +1442,147 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
         if not found:
             raise ActualsError(f"Import batch '{batch_id}' not found", status=404)
         batch = dict(zip(BATCH_COLUMNS, found))
+        batch["replaced"] = batch.get("replaced") or 0
         if batch["status"] == "undone":
             raise ActualsError(f"Batch {batch_id} was already undone", status=409)
         if batch["status"] == "deleted":
             raise ActualsError(f"Batch {batch_id} records a deletion; a deletion cannot be undone", status=409)
+        statuses = _batch_statuses(cursor)
+        prefix = f"{batch_id}-"
         rows = _batch_rows(cursor, batch_id)
-        added = [r for r in rows if str(r["actual_id"]).startswith(f"{batch_id}-")]
-        changed = [r for r in rows if not str(r["actual_id"]).startswith(f"{batch_id}-")]
-        cursor.execute("""SELECT actual_id, previous_amount, previous_notes, previous_source, previous_batch_id,
-                                 previous_updated_at FROM actuals_batch_changes WHERE batch_id = ?""", (batch_id,))
-        previous = {r[0]: r[1:] for r in cursor.fetchall()}
-        restorable = [r for r in changed if r["actual_id"] in previous]
-        untracked = [r for r in changed if r["actual_id"] not in previous]
-        periods = sorted({r["period"] for r in rows})
+        added = [r for r in rows if str(r["actual_id"]).startswith(prefix)]
+        changed = [r for r in rows if not str(r["actual_id"]).startswith(prefix)]
+        records = _change_records(cursor, "c.batch_id = ?", (batch_id,))
+        updates = {c["actual_id"]: c for c in records if c["change_type"] == "updated"}
+        removals = [c for c in records if c["change_type"] == "removed"]
+
+        # Rows this import changed: back to the latest live earlier value, or removed.
+        restore: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        removed_back: List[Dict[str, Any]] = []        # changed rows whose earlier writer was undone too
+        untracked: List[Dict[str, Any]] = []
+        past_undone: List[Tuple[List[str], bool]] = []
+        targets: Dict[str, Optional[Dict[str, Any]]] = {}
+        for r in changed:
+            change = updates.get(r["actual_id"])
+            if change is None:
+                untracked.append(r)
+                continue
+            state, skipped = _resolve_earlier(cursor, r["actual_id"], change, statuses)
+            targets[r["actual_id"]] = state
+            if skipped:
+                past_undone.append((skipped, state is None))
+            if state is None:
+                removed_back.append(r)
+            else:
+                restore.append((r, state))
+
+        # Rows to put back: what this import replaced away, and rows an undone import had replaced
+        # where this import then added a row with the same reference.
+        put_back: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        blocked: List[Dict[str, Any]] = []
+        dropped: List[Tuple[Dict[str, Any], List[str]]] = []
+        for change in removals:
+            if _row_exists(cursor, change["actual_id"]) or _key_taken(cursor, change):
+                blocked.append(change)
+                continue
+            state, skipped = _resolve_earlier(cursor, change["actual_id"], change, statuses)
+            if state is None:
+                dropped.append((change, skipped))
+            else:
+                put_back.append((change, state))
+        for r in added:
+            change = _latest_removal_at(cursor, r)
+            if not change or statuses.get(change["batch_id"]) != "undone" or _row_exists(cursor, change["actual_id"]):
+                continue
+            state, _skipped = _resolve_earlier(cursor, change["actual_id"], change, statuses)
+            if state is not None:
+                put_back.append((change, state))
+
+        # Rows that left this import since (changed by a later entry and kept, or deleted).
+        cursor.execute("""SELECT COUNT(*) FROM actuals WHERE COALESCE(batch_id, '') <> ?
+                            AND (substr(actual_id, 1, ?) = ? OR actual_id IN (
+                                 SELECT actual_id FROM actuals_batch_changes
+                                 WHERE batch_id = ? AND COALESCE(change_type, 'updated') = 'updated'))""",
+                       (batch_id, len(prefix), prefix, batch_id))
+        changed_since = cursor.fetchone()[0]
+        gone = max((batch["inserted"] or 0) + (batch["updated"] or 0) - len(rows), 0)
+        changed_since = min(changed_since, gone)
+        deleted_since = gone - changed_since
+        legacy = len(updates) + len(untracked) < (batch["updated"] or 0)
+
+        to_remove = added + untracked + removed_back
+        periods = sorted({r["period"] for r in rows} | {c["previous_period"] for c, _s in put_back
+                                                        if c.get("previous_period")})
         closed = closed_periods(cursor, periods)
         preview = {
             "batch_id": batch_id,
             "batch": batch,
-            "rows_to_remove": len(added) + len(untracked),
-            "rows_to_restore": len(restorable),
+            "rows_to_remove": len(to_remove),
+            "rows_to_restore": len(restore),
+            "rows_to_put_back": len(put_back),
             "added_rows": len(added),
             "changed_rows": len(changed),
+            "rows_changed_since": changed_since,
+            "rows_deleted_since": deleted_since,
             "periods": periods,
             "closed_periods": closed,
-            "amount_removed": round(sum(float(r["amount"] or 0) for r in added + untracked), 2),
+            "amount_removed": round(sum(float(r["amount"] or 0) for r in to_remove), 2),
             "changed": [{"period": r["period"], "line_item": r["line_item"], "label": line_label(r["line_item"]),
                          "reference_id": r["reference_id"], "amount": r["amount"],
-                         "restores_to": previous[r["actual_id"]][0] if r["actual_id"] in previous else None,
-                         "action": "restore" if r["actual_id"] in previous else "remove"}
+                         "restores_to": (targets[r["actual_id"]] or {}).get("previous_amount")
+                         if r["actual_id"] in targets else None,
+                         "action": "restore" if targets.get(r["actual_id"]) is not None else "remove"}
                         for r in changed[:50]],
+            "put_back_rows": [{"period": c["previous_period"], "line_item": c["previous_line_item"],
+                               "label": line_label(c["previous_line_item"]),
+                               "reference_id": c["previous_reference_id"] or "", "amount": s["previous_amount"],
+                               "batch_id": s["previous_batch_id"]} for c, s in put_back[:50]],
             "dry_run": dry_run,
         }
-        later = (batch["inserted"] or 0) + (batch["updated"] or 0) - len(rows)
         notes = []
-        if restorable:
-            notes.append(f"{_plural(len(restorable), 'row')} existed before this import and "
-                         f"{'goes' if len(restorable) == 1 else 'go'} back to the earlier amount.")
+        if restore:
+            notes.append(f"{_plural(len(restore), 'row')} existed before this import and "
+                         f"{_rows_word(len(restore), 'goes', 'go')} back to the earlier amount.")
+        back_to = [s for s, gone_too in past_undone if not gone_too]
+        if back_to:
+            ids = sorted({b for skipped in back_to for b in skipped})
+            notes.append(f"{_plural(len(back_to), 'row')} {_rows_word(len(back_to), 'goes', 'go')} back past "
+                         f"{'import' if len(ids) == 1 else 'imports'} {', '.join(ids)} (already undone) to the "
+                         f"amount before {_rows_word(len(ids), 'it', 'them')}.")
+        gone_with = [s for s, gone_too in past_undone if gone_too]
+        if gone_with:
+            ids = sorted({b for skipped in gone_with for b in skipped})
+            notes.append(f"{_plural(len(gone_with), 'row')} {_rows_word(len(gone_with), 'is', 'are')} removed: no "
+                         f"import that is still in place wrote {_rows_word(len(gone_with), 'it', 'them')} before "
+                         f"(already undone: {', '.join(ids)}).")
         if untracked:
-            notes.append(f"{_plural(len(untracked), 'row')} changed by this import {'has' if len(untracked) == 1 else 'have'} "
-                         f"no earlier amount on record (imported before change tracking) and "
-                         f"{'is' if len(untracked) == 1 else 'are'} removed.")
-        if later > 0:
-            notes.append(f"{_plural(later, 'row')} from this import {'has' if later == 1 else 'have'} been changed since "
-                         f"by later entries and {'is' if later == 1 else 'are'} kept.")
+            notes.append(f"{_plural(len(untracked), 'row')} changed by this import "
+                         f"{_rows_word(len(untracked), 'has', 'have')} no earlier amount on record (imported before "
+                         f"change tracking) and {_rows_word(len(untracked), 'is', 'are')} removed.")
+        if put_back:
+            notes.append(f"{_plural(len(put_back), 'row')} replaced under other references "
+                         f"{_rows_word(len(put_back), 'is', 'are')} put back.")
+        if blocked:
+            notes.append(f"{_plural(len(blocked), 'row')} this import replaced {_rows_word(len(blocked), 'is', 'are')} "
+                         f"not put back: the same month, line and reference has been written again since.")
+        if dropped:
+            ids = sorted({b for _c, skipped in dropped for b in skipped})
+            notes.append(f"{_plural(len(dropped), 'row')} this import replaced {_rows_word(len(dropped), 'is', 'are')} "
+                         f"not put back: the import that wrote {_rows_word(len(dropped), 'it', 'them')} "
+                         f"({', '.join(ids)}) was undone.")
+        if legacy and gone:
+            notes.append(f"{_plural(gone, 'row')} from this import {_rows_word(gone, 'has', 'have')} been changed or "
+                         f"deleted since by later entries; undo leaves {_rows_word(gone, 'it', 'them')} as "
+                         f"{_rows_word(gone, 'it is', 'they are')}.")
+        else:
+            if changed_since:
+                notes.append(f"{_plural(changed_since, 'row')} from this import "
+                             f"{_rows_word(changed_since, 'has', 'have')} been changed since by later entries and "
+                             f"{_rows_word(changed_since, 'is', 'are')} kept.")
+            if deleted_since:
+                notes.append(f"{_plural(deleted_since, 'row')} from this import "
+                             f"{_rows_word(deleted_since, 'has', 'have')} been deleted since (or replaced by a later "
+                             f"import); nothing to undo for {_rows_word(deleted_since, 'it', 'them')}.")
         preview["notes"] = notes
         if closed:
             if dry_run:
@@ -1133,23 +1591,34 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
                 return preview
             raise ActualsError(closed_message(closed, "removed"), status=409, data=preview)
         preview["can_undo"] = True
+        put_back_text = (f" and put back {_plural(len(put_back), 'replaced row')}" if put_back else "")
         if dry_run:
-            preview["message"] = (f"Undo would remove {_plural(len(added) + len(untracked), 'row')} and restore "
-                                  f"{_plural(len(restorable), 'row')} to the earlier amounts"
+            preview["message"] = (f"Undo would remove {_plural(len(to_remove), 'row')}, restore "
+                                  f"{_plural(len(restore), 'row')} to the earlier amounts{put_back_text}"
                                   + (f" in {_months_text(periods)}" if periods else "") + ".")
             return preview
-        for r in restorable:
-            amount, notes_before, source_before, batch_before, updated_before = previous[r["actual_id"]]
+        for r, state in restore:
             cursor.execute(
                 """UPDATE actuals SET amount = ?, notes = ?, source = ?, batch_id = ?, updated_at = ?
                    WHERE actual_id = ? AND batch_id = ?""",
-                (amount, notes_before, source_before, batch_before, updated_before, r["actual_id"], batch_id))
-        restored = len(restorable)
+                (state["previous_amount"], state["previous_notes"], state["previous_source"],
+                 state["previous_batch_id"], state["previous_updated_at"], r["actual_id"], batch_id))
+        restored = len(restore)
         cursor.execute("DELETE FROM actuals WHERE batch_id = ?", (batch_id,))
         removed = cursor.rowcount
+        for change, state in put_back:
+            cursor.execute(
+                """INSERT INTO actuals (actual_id, period, line_item, amount, reference_id, source, notes,
+                       created_at, updated_at, batch_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (change["actual_id"], change["previous_period"], change["previous_line_item"],
+                 state["previous_amount"], change["previous_reference_id"] or "", state["previous_source"],
+                 state["previous_notes"], change["previous_created_at"] or state["previous_updated_at"],
+                 state["previous_updated_at"], state["previous_batch_id"]))
         stamp = utc_now()
         undo_note = (f"Undone {stamp[:10]} {stamp[11:16]} UTC: removed {_plural(removed, 'row')}, "
-                     f"restored {_plural(restored, 'row')}")
+                     f"restored {_plural(restored, 'row')}"
+                     + (f", put back {_plural(len(put_back), 'replaced row')}" if put_back else ""))
         cursor.execute("UPDATE actuals_batches SET status = 'undone', note = CASE WHEN note IS NULL OR note = '' "
                        "THEN ? ELSE note || ' | ' || ? END WHERE batch_id = ?", (undo_note, undo_note, batch_id))
         conn.commit()
@@ -1159,8 +1628,9 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
         raise
     preview["removed"] = removed
     preview["restored"] = restored
-    preview["message"] = (f"Undid import {batch_id}: removed {_plural(removed, 'row')} and restored "
-                          f"{_plural(restored, 'row')} to the earlier amounts"
+    preview["put_back"] = len(put_back)
+    preview["message"] = (f"Undid import {batch_id}: removed {_plural(removed, 'row')}, restored "
+                          f"{_plural(restored, 'row')} to the earlier amounts{put_back_text}"
                           + (f" in {_months_text(periods)}" if periods else "") + ".")
     return preview
 
@@ -1170,6 +1640,16 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 PERIOD_COLUMNS = ("period", "status", "closed_at", "closed_by", "note", "updated_at")
+#: The close / reopen trail kept in actuals_periods.note (newest first) is cut to this many characters.
+NOTE_TRAIL_MAX = 2000
+
+
+def _note_trail(newest: Optional[str], trail: Optional[str]) -> Optional[str]:
+    """'Reopened ... by bob: reason | Aug close v1': the newest entry first, earlier ones kept after it."""
+    text = " | ".join(part.strip() for part in (newest, trail) if part and part.strip())
+    if len(text) > NOTE_TRAIL_MAX:
+        text = text[:NOTE_TRAIL_MAX - 3].rstrip() + "..."
+    return text or None
 
 
 def list_periods(conn, start_period: Optional[str] = None, end_period: Optional[str] = None) -> Dict[str, Any]:
@@ -1218,17 +1698,19 @@ def close_period(conn, period: str, closed_by: Optional[str] = None, note: Optio
     now = utc_now()
     closed_by = (closed_by or "").strip() or None
     note = (note or "").strip() or None
+    # A month closed again keeps its trail (the reopen reason and earlier close notes), newest first.
+    stored_note = _note_trail(note, current["note"] if current else None)
     cursor.execute(
         """INSERT INTO actuals_periods (period, status, closed_at, closed_by, note, updated_at)
            VALUES (?, 'closed', ?, ?, ?, ?)
            ON CONFLICT(period) DO UPDATE SET status = 'closed', closed_at = excluded.closed_at,
                closed_by = excluded.closed_by, note = excluded.note, updated_at = excluded.updated_at""",
-        (period, now, closed_by, note, now))
+        (period, now, closed_by, stored_note, now))
     conn.commit()
     cursor.execute("SELECT COUNT(*) FROM actuals WHERE period = ?", (period,))
     rows = cursor.fetchone()[0]
     return {"period": period, "status": "closed", "changed": True, "closed_at": now, "closed_by": closed_by,
-            "note": note, "rows": rows,
+            "note": stored_note, "rows": rows,
             "message": f"Closed {month_label(period)}" + (f" ({_plural(rows, 'actual')} locked)" if rows else
                                                           " (no actuals entered yet)") + "."}
 
@@ -1246,9 +1728,10 @@ def reopen_period(conn, period: str, reason: Optional[str], reopened_by: Optiona
                 "message": f"{month_label(period)} is not closed; nothing to reopen."}
     now = utc_now()
     who = (reopened_by or "").strip()
-    note = f"Reopened {now[:10]}{' by ' + who if who else ''}: {reason}"
+    entry = f"Reopened {now[:10]}{' by ' + who if who else ''}: {reason}"
     if current.get("closed_by") or current.get("closed_at"):
-        note += f" (was closed {str(current.get('closed_at') or '')[:10]}{' by ' + current['closed_by'] if current.get('closed_by') else ''})"
+        entry += f" (was closed {str(current.get('closed_at') or '')[:10]}{' by ' + current['closed_by'] if current.get('closed_by') else ''})"
+    note = _note_trail(entry, current.get("note"))
     cursor.execute("UPDATE actuals_periods SET status = 'open', note = ?, updated_at = ? WHERE period = ?",
                    (note, now, period))
     conn.commit()

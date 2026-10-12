@@ -393,12 +393,13 @@ def _flag(value: Any) -> bool:
 
 
 def _run_actuals_import(rows, *, dry_run, allow_partial, combine_duplicates, control_total, source, filename,
-                        note, file_info=None):
+                        note, file_info=None, replace_lines=False):
     conn = db_manager.get_connection()
     try:
         return actuals_service.run_import(
             conn, rows, dry_run=dry_run, allow_partial=allow_partial, combine_duplicates=combine_duplicates,
-            control_total=control_total, source=source, filename=filename, note=note, file_info=file_info)
+            control_total=control_total, source=source, filename=filename, note=note, file_info=file_info,
+            replace_lines=replace_lines)
     finally:
         db_manager.close_connection(conn)
 
@@ -443,14 +444,18 @@ async def upsert_actuals(
     combine_duplicates: Optional[bool] = Query(None),
     control_total: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
+    replace_lines: Optional[bool] = Query(None),
 ):
     """
     Create or update actuals from JSON: ``{entries: [{period, line_item, amount, reference_id?, notes?,
-    source?}], dry_run?, allow_partial?, combine_duplicates?, control_total?, source?, filename?, note?,
-    first_row_number? | row_numbers?}`` (flags may also be query parameters; the body wins). Column
-    names go through the same aliases as a file import (Month, Account, Actual ...). Same pipeline and answers
-    as the file import: (period, line_item, reference_id) is the key; atomic unless allow_partial; a
-    refused write is 422 (409 for a closed month) with the report in ``data``.
+    source?}], dry_run?, allow_partial?, combine_duplicates?, control_total?, replace_lines?, source?,
+    filename?, note?, first_row_number? | row_numbers?}`` (flags may also be query parameters; the body
+    wins). Column names go through the same aliases as a file import (Month, Account, Actual ...). Same
+    pipeline and answers as the file import: (period, line_item, reference_id) is the key and amounts
+    under different references add up (``line_totals`` gives each month + line's total before and
+    after); ``replace_lines`` removes the other references of every month + line in the request (undo
+    puts them back); atomic unless allow_partial; a refused write is 422 (409 for a closed month) with
+    the report in ``data``.
     """
     if not isinstance(payload, dict):
         return _actuals_error(actuals_service.ActualsError("Send {entries: [...]}"))
@@ -469,7 +474,8 @@ async def upsert_actuals(
             allow_partial=_flag(pick("allow_partial", allow_partial)),
             combine_duplicates=_flag(pick("combine_duplicates", combine_duplicates)),
             control_total=control, source=pick("source", source) or "api",
-            filename=payload.get("filename"), note=payload.get("note"))
+            filename=payload.get("filename"), note=payload.get("note"),
+            replace_lines=_flag(pick("replace_lines", replace_lines)))
     except actuals_service.ActualsError as exc:
         return _actuals_error(exc)
     except (TypeError, ValueError) as exc:
@@ -487,6 +493,9 @@ async def import_actuals(
     control_total: Optional[str] = Query(None, description="The file's amounts must add up to this (within 0.005)"),
     sheet: Optional[str] = Query(None, description="Excel sheet (default: the first with period / line / amount columns)"),
     note: Optional[str] = Query(None, description="A note kept with the import batch"),
+    replace_lines: bool = Query(False, description=(
+        "For every month + line in the file, remove the amounts stored under other references (undo puts "
+        "them back), so the line's month total becomes the file's")),
 ):
     """
     Import actuals from a CSV or XLSX file: one row per month and line with the columns period,
@@ -494,7 +503,9 @@ async def import_actuals(
     Account, Line, Actual, Ref, Memo) and line items may be keys, labels or common names ('Net Sales').
     Atomic: any rejected row and nothing is written (422, or 409 when a row would change a closed month,
     with the full report in ``data``) unless allow_partial. A dry run always answers 200 with the report
-    (``outcome`` = what a real import would do). Every write is recorded as a batch you can undo.
+    (``outcome`` = what a real import would do; ``line_totals`` = each month + line's stored total before
+    and after, with the amounts under other references, which add up unless replace_lines). Every write
+    is recorded as a batch you can undo.
     """
     raw = await file.read()
 
@@ -504,7 +515,7 @@ async def import_actuals(
         return _run_actuals_import(
             rows, dry_run=dry_run, allow_partial=allow_partial, combine_duplicates=combine_duplicates,
             control_total=control, source=source or "file import", filename=file.filename, note=note,
-            file_info=info)
+            file_info=info, replace_lines=replace_lines)
 
     try:
         status_code, report = await run_in_threadpool(run)
@@ -555,9 +566,10 @@ async def undo_actuals_batch(
     dry_run: bool = Query(False, description="Report what undo would remove or restore; change nothing"),
 ):
     """
-    Undo an import: delete the rows this batch added and restore the earlier
-    amount / notes / source of the rows it overwrote, for rows still stamped
-    with it. Refused (409) for closed months.
+    Undo an import: delete the rows this batch added, put back the rows it
+    replaced (replace_lines) and return the rows it overwrote to the value of
+    the latest earlier import that is not undone, for rows still stamped with
+    it. Refused (409) for closed months.
     """
     conn = db_manager.get_connection()
     try:
@@ -606,7 +618,8 @@ async def close_actuals_period(period: str, request: Request, payload: Optional[
 @router.post("/actuals/periods/{period}/reopen", response_model=ForecastResponse)
 async def reopen_actuals_period(period: str, request: Request, payload: Optional[Dict[str, Any]] = Body(None)):
     """Reopen a closed month. Body: {reason (required), reopened_by?} (reopened_by defaults to the
-    X-Forecast-User header); the reason is kept with the month."""
+    X-Forecast-User header); the reason is kept with the month (``note``, newest first, also after the
+    month is closed again)."""
     period = _check_period(period)
     payload = payload or {}
     reopened_by = payload.get("reopened_by") or request.headers.get("x-forecast-user")

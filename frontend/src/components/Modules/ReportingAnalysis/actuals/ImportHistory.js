@@ -22,6 +22,7 @@ export const batchCounts = (batch) => {
   if (batch.inserted) parts.push(`${batch.inserted} new`);
   if (batch.updated) parts.push(`${batch.updated} changed`);
   if (batch.unchanged) parts.push(`${batch.unchanged} unchanged`);
+  if (batch.replaced) parts.push(`${batch.replaced} replaced`);
   if (batch.rejected) parts.push(`${batch.rejected} left out`);
   return parts.join(', ') || 'none';
 };
@@ -88,9 +89,12 @@ const UndoButton = ({ batch, onClick }) => {
 export const undoSummary = (preview) => {
   const removes = preview?.rows_to_remove || 0;
   const restores = preview?.rows_to_restore || 0;
+  const putsBack = preview?.rows_to_put_back || 0;
   const parts = [];
   if (removes) parts.push(`removes ${plural(removes, 'amount')}`);
   if (restores) parts.push(`puts ${plural(restores, 'amount')} back to ${restores === 1 ? 'its' : 'their'} earlier value`);
+  if (putsBack) parts.push(`puts back ${plural(putsBack, 'amount')} this import replaced`);
+  if (parts.length > 2) return `This ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   return parts.length ? `This ${parts.join(' and ')}` : 'This changes nothing';
 };
 
@@ -231,7 +235,19 @@ const ImportHistory = ({ refreshKey, onChanged }) => {
                           {formatPeriod(r.period)} {r.label}{r.reference_id ? ` (${r.reference_id})` : ''}: now {formatAccounting(r.amount, { decimals: 2 })}
                           {r.action === 'restore' && r.restores_to !== null && r.restores_to !== undefined
                             ? `, goes back to ${formatAccounting(r.restores_to, { decimals: 2 })}`
-                            : ' (no earlier amount on record: removed)'}
+                            : ' (no earlier amount still in place: removed)'}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {confirm.preview.put_back_rows?.length > 0 && (
+                  <div>
+                    <p className="text-gray-700">Amounts this import replaced, put back:</p>
+                    <ul className="mt-1 list-inside list-disc text-gray-700" data-testid="actuals-undo-put-back">
+                      {confirm.preview.put_back_rows.map(r => (
+                        <li key={`${r.period}|${r.line_item}|${r.reference_id}`}>
+                          {formatPeriod(r.period)} {r.label}{r.reference_id ? ` (${r.reference_id})` : ''}: {formatAccounting(r.amount, { decimals: 2 })}
                         </li>
                       ))}
                     </ul>
