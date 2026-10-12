@@ -10,6 +10,18 @@ import { errorText, plural, uploadActuals } from './actualsApi';
 const ACCEPT = '.csv,.xlsx,.xlsm,.tsv,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const CHECK_DELAY_MS = 400;
 
+// The confirm button counts what the file writes (new and changed amounts) and, separately, the stored
+// amounts under other references that "Replace these months' lines" removes: "Import 2 amounts, replace 2
+// stored"; a file that only replaces reads "Replace 1 stored amount".
+export const importButtonLabel = (report) => {
+  const written = (report?.inserted || 0) + (report?.updated || 0);
+  const replaced = report?.replaced || 0;
+  if (written && replaced) return `Import ${plural(written, 'amount')}, replace ${replaced} stored`;
+  if (written) return `Import ${plural(written, 'amount')}`;
+  if (replaced) return `Replace ${plural(replaced, 'stored amount')}`;
+  return 'Import';
+};
+
 const Checkbox = ({ id, checked, onChange, children, help }) => (
   <div className="flex items-start gap-2">
     <input id={id} type="checkbox" className="mt-0.5 h-4 w-4 rounded border-gray-300" checked={checked} onChange={e => onChange(e.target.checked)} />
@@ -83,7 +95,6 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
 
   const report = check?.report;
   const canImport = !!file && !checking && !importing && !!report && ['imported', 'partial'].includes(report.outcome);
-  const writeCount = report ? (report.inserted || 0) + (report.updated || 0) + (report.replaced || 0) : 0;
 
   const handleImport = async () => {
     if (!canImport) return;
@@ -185,7 +196,7 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
           <>
             <Button key="cancel" variant="outline" onClick={onClose}>Cancel</Button>
             <Button key="import" onClick={handleImport} disabled={!canImport} data-testid="actuals-import-confirm">
-              {importing ? 'Importing…' : canImport && writeCount ? `Import ${plural(writeCount, 'amount')}` : 'Import'}
+              {importing ? 'Importing…' : canImport ? importButtonLabel(report) : 'Import'}
             </Button>
           </>
         )}

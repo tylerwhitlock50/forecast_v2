@@ -566,10 +566,13 @@ async def undo_actuals_batch(
     dry_run: bool = Query(False, description="Report what undo would remove or restore; change nothing"),
 ):
     """
-    Undo an import: delete the rows this batch added, put back the rows it
-    replaced (replace_lines) and return the rows it overwrote to the value of
-    the latest earlier import that is not undone, for rows still stamped with
-    it. Refused (409) for closed months.
+    Undo an import, as if it had never run: every month + line it touched
+    ends up as replaying the imports still in place (and the deletions), in
+    their original order, would leave it. Rows it added go, rows it overwrote
+    go back to the latest earlier import still in place, rows it replaced
+    (replace_lines) come back, a later correction is kept and a row a later
+    import found unchanged stays with that import (``rows_to_reassign``).
+    Any undo order gives the same rows. Refused (409) for closed months.
     """
     conn = db_manager.get_connection()
     try:

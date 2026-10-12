@@ -68,6 +68,10 @@ const BatchStatus = ({ batch }) => {
   return <Badge variant={status.variant} className="whitespace-nowrap">{status.label}</Badge>;
 };
 
+// An import whose amounts were all changed since, and that replaced nothing, has nothing left to undo.
+// A replace-only import owns no amounts but can still put back the ones it replaced.
+export const nothingToUndo = (batch) => !batch.rows_current && !batch.replaced;
+
 const UndoButton = ({ batch, onClick }) => {
   if (batch.status === 'deleted' || batch.status === 'undone') return null;
   return (
@@ -75,8 +79,8 @@ const UndoButton = ({ batch, onClick }) => {
       size="sm"
       variant="outline"
       className="h-7 px-2 text-xs"
-      disabled={!batch.can_undo || !batch.rows_current}
-      title={batch.undo_blocked_reason || (!batch.rows_current ? 'Every amount from this import has been changed since' : 'Undo this import')}
+      disabled={!batch.can_undo || nothingToUndo(batch)}
+      title={batch.undo_blocked_reason || (nothingToUndo(batch) ? 'Every amount from this import has been changed since' : 'Undo this import')}
       onClick={onClick}
     >
       <Undo2 className="mr-1 h-3 w-3" aria-hidden="true" />Undo
@@ -90,10 +94,12 @@ export const undoSummary = (preview) => {
   const removes = preview?.rows_to_remove || 0;
   const restores = preview?.rows_to_restore || 0;
   const putsBack = preview?.rows_to_put_back || 0;
+  const keeps = preview?.rows_to_reassign || 0;
   const parts = [];
   if (removes) parts.push(`removes ${plural(removes, 'amount')}`);
   if (restores) parts.push(`puts ${plural(restores, 'amount')} back to ${restores === 1 ? 'its' : 'their'} earlier value`);
   if (putsBack) parts.push(`puts back ${plural(putsBack, 'amount')} this import replaced`);
+  if (keeps) parts.push(`keeps ${plural(keeps, 'amount')} another import still in place also entered`);
   if (parts.length > 2) return `This ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   return parts.length ? `This ${parts.join(' and ')}` : 'This changes nothing';
 };
@@ -248,6 +254,19 @@ const ImportHistory = ({ refreshKey, onChanged }) => {
                       {confirm.preview.put_back_rows.map(r => (
                         <li key={`${r.period}|${r.line_item}|${r.reference_id}`}>
                           {formatPeriod(r.period)} {r.label}{r.reference_id ? ` (${r.reference_id})` : ''}: {formatAccounting(r.amount, { decimals: 2 })}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {confirm.preview.reassigned_rows?.length > 0 && (
+                  <div>
+                    <p className="text-gray-700">Amounts that stay, because an import still in place has the same amount:</p>
+                    <ul className="mt-1 list-inside list-disc text-gray-700" data-testid="actuals-undo-kept">
+                      {confirm.preview.reassigned_rows.map(r => (
+                        <li key={`${r.period}|${r.line_item}|${r.reference_id}`}>
+                          {formatPeriod(r.period)} {r.label}{r.reference_id ? ` (${r.reference_id})` : ''}: {formatAccounting(r.amount, { decimals: 2 })}
+                          {r.batch_id ? <> (now <span className="font-mono">{r.batch_id}</span>)</> : ''}
                         </li>
                       ))}
                     </ul>

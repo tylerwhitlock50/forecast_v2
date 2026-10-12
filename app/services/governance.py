@@ -171,6 +171,8 @@ GOVERNED_TABLES: Dict[str, str] = {
                         "/reporting/actuals and DELETE /reporting/actuals/batches/{{batch_id}}."),
     "actuals_batch_changes": ("actuals_batch_changes holds what each actuals batch overwrote: it changes only "
                               "through POST /reporting/actuals and DELETE /reporting/actuals/batches/{{batch_id}}."),
+    "actuals_batch_entries": ("actuals_batch_entries holds what each actuals batch asked for, which undo replays: it "
+                              "changes only through POST /reporting/actuals and DELETE /reporting/actuals."),
     "actuals_periods": ("Month-end close changes only through POST /reporting/actuals/periods/{period}/close and "
                         "/reopen {{reason}} (a reason is required to reopen a month)."),
     "governance_guard": "governance_guard is internal to approve / unlock and is never written directly.",
