@@ -32,7 +32,7 @@ const FIELD_GROUPS = [
     fields: [
       { key: 'dso_days', label: 'DSO (days sales outstanding)', type: 'int', help: 'Days of sales held as accounts receivable (net sales plus the excise tax in the price).' },
       { key: 'dio_days', label: 'DIO (days inventory outstanding)', type: 'int', help: 'Days of COGS held as inventory.' },
-      { key: 'dpo_days', label: 'DPO (days payable outstanding)', type: 'int', help: 'Days of COGS and expenses owed as accounts payable.' },
+      { key: 'dpo_days', label: 'DPO (days payable outstanding)', type: 'int', help: 'Days of purchases owed to suppliers: materials, overhead, other COGS, admin and operating expenses and commissions (payroll is paid in the month).' },
       { key: 'excise_payable_days', label: 'Excise tax payable (days)', type: 'int', blankValue: 30, help: 'Days between collecting federal excise tax in the selling price and paying it to the government. Default 30.' }
     ]
   },
