@@ -528,7 +528,8 @@ async def adjust_sales_tool(
     price op and/or one quantity op. New prices are rounded to 4 decimals,
     quantities to whole units; revenue is recomputed. Without any filter the
     tool refuses unless all_rows=true. Run with dry_run=true first and show
-    the user the before / after totals."""
+    the user the before / after totals. On an approved (locked) scenario the
+    dry run carries locked=true and a warning: the real run will be refused."""
     fid = require(forecast_id, "forecast_id")
     if customer_types:
         customer_ids = _ids_of_types("customers", "customer_id", "customer_type", customer_types, customer_ids, "customer")
@@ -542,7 +543,12 @@ async def adjust_sales_tool(
             f"to adjust the whole scenario. Nothing was changed."
         )
     conn = dbmod.db_manager.get_connection()
+    locked_name = None
     try:
+        if dry_run:
+            # A dry run never reaches the lock triggers: say up front that the real run will be refused.
+            row = conn.execute("SELECT name, locked FROM forecast WHERE forecast_id = ?", (fid,)).fetchone()
+            locked_name = row[0] if row and row[1] else None
         result = adjust_sales(
             conn.cursor(), fid,
             periods=periods, start_period=start_period, end_period=end_period,
@@ -567,6 +573,14 @@ async def adjust_sales_tool(
         result["filters"].update({"customer_types": customer_types, "unit_types": unit_types})
     if result.get("matched_rows") == 0:
         result["hint"] = "No sales rows matched; check the scenario id, periods (YYYY-MM) and ids with forecast_list_sales"
+    if locked_name is not None:
+        from services.governance import locked_message
+
+        result["locked"] = True
+        result["warning"] = (
+            f"{locked_message(locked_name)} This preview shows what would change, but the real run (dry_run=false) "
+            f"will be refused: branch it first (forecast_branch_scenario) or unlock it with the user's reason "
+            f"(forecast_unlock_scenario).")
     return result
 
 

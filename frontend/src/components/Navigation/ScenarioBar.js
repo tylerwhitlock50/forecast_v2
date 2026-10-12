@@ -72,8 +72,10 @@ const ScenarioBar = () => {
 
   return (
     <div className="scenario-bar sticky top-0 z-30" data-testid="scenario-bar">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-gray-200 bg-white/95 px-4 py-2 backdrop-blur sm:px-6 lg:flex-nowrap max-[1024px]:pl-14">
-        <div className="flex min-w-0 flex-none items-center gap-2">
+      {/* Groups wrap onto a new line instead of overlapping: at phone width the Approved badge wraps under the
+          select, and at laptop widths 'Manage scenarios' moves to a second row rather than under the scope badge. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-gray-200 bg-white/95 px-4 py-2 backdrop-blur sm:px-6 max-[1024px]:pl-14">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1" data-testid="scenario-group">
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Scenario</span>
           {firstLoad ? (
             <Skeleton className="h-8 w-48" />
@@ -120,12 +122,13 @@ const ScenarioBar = () => {
           </div>
         )}
 
-        <div className="ml-auto flex min-w-0 items-center justify-end gap-3 lg:flex-1">
-          {active?.description && !onScenariosPage && (
-            <span className="hidden min-w-0 truncate text-xs text-gray-500 xl:block" title={active.description}>
-              {active.description}
-            </span>
-          )}
+        {active?.description && !onScenariosPage && (
+          <span className="hidden min-w-0 flex-1 truncate text-xs text-gray-500 xl:block" title={active.description}>
+            {active.description}
+          </span>
+        )}
+
+        <div className="ml-auto flex flex-none items-center justify-end gap-3" data-testid="scenario-bar-actions">
           {firstLoad ? (
             <Skeleton className="h-5 w-28" />
           ) : list.length === 0 ? (

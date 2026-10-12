@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -87,6 +88,23 @@ def _manager():
     """The live DatabaseManager, looked up per call (tests and /database/switch repoint it)."""
     import db.database as dbmod
     return dbmod.db_manager
+
+
+@contextmanager
+def _governance_write(conn):
+    """
+    Inside this block the forecast row's approval columns may change: the
+    ``governance_guard`` switch the forecast triggers check is set in the
+    connection's CURRENT transaction and cleared before it can commit, so no
+    other writer ever sees it (db.database.migrate_governance_guards).
+    """
+    from db.database import governance_guard_off, governance_guard_on
+
+    governance_guard_on(conn)
+    try:
+        yield
+    finally:
+        governance_guard_off(conn)
 
 
 def utc_now() -> str:
@@ -132,6 +150,97 @@ def locked_scenario_name(forecast_id: Optional[str] = None) -> Tuple[Optional[st
     except Exception:  # pragma: no cover - a message lookup must never fail a request
         pass
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# Governed records: written only by their own endpoints
+# ---------------------------------------------------------------------------
+
+#: Tables the generic writers (/forecast/create, /forecast/update, /forecast/delete/{table}/{id},
+#: /database/load_table) refuse with 409, and what to use instead ({period}: the record id when known).
+GOVERNED_TABLES: Dict[str, str] = {
+    "audit_log": ("audit_log is the change history: the API writes one entry per change and it cannot be edited, "
+                  "deleted or added to. Read it with GET /audit/log."),
+    "scenario_approvals": ("scenario_approvals is the approval history: it changes only through POST "
+                           "/forecast/scenario/{{forecast_id}}/approve {{approved_by, note}} and /unlock {{actor, "
+                           "reason}}, which keep the totals, snapshot and workbook with it."),
+    "actuals": ("Actuals are written only through POST /reporting/actuals or /reporting/actuals/import (closed "
+                "months are refused, every write is a batch you can undo with DELETE "
+                "/reporting/actuals/batches/{{batch_id}}) and removed with DELETE /reporting/actuals."),
+    "actuals_batches": ("actuals_batches is the actuals import history: it changes only through POST "
+                        "/reporting/actuals and DELETE /reporting/actuals/batches/{{batch_id}}."),
+    "actuals_batch_changes": ("actuals_batch_changes holds what each actuals batch overwrote: it changes only "
+                              "through POST /reporting/actuals and DELETE /reporting/actuals/batches/{{batch_id}}."),
+    "actuals_periods": ("Month-end close changes only through POST /reporting/actuals/periods/{period}/close and "
+                        "/reopen {{reason}} (a reason is required to reopen a month)."),
+    "governance_guard": "governance_guard is internal to approve / unlock and is never written directly.",
+}
+
+#: forecast columns that change only through approve / unlock.
+GOVERNED_FORECAST_COLUMNS: Tuple[str, ...] = ("locked", "status", "approved_by", "approved_at", "approval_note")
+#: forecast columns an approved (locked) scenario keeps.
+LOCKED_FORECAST_COLUMNS: Tuple[str, ...] = ("forecast_id", "name", "description", "notes")
+
+
+def governed_table_message(table: Any, record_id: Any = None) -> Optional[str]:
+    """Why a generic write to ``table`` is refused and which endpoint to use, or None for any other table."""
+    template = GOVERNED_TABLES.get(str(table or ""))
+    if template is None:
+        return None
+    period = str(record_id) if record_id not in (None, "") else "{YYYY-MM}"
+    return template.format(period=period)
+
+
+def _governed_value(column: str, value: Any) -> Any:
+    """A governance column's value as compared: locked 0 / 1, status lower-case ('' = draft), text trimmed."""
+    if column == "locked":
+        if isinstance(value, str):
+            text = value.strip().lower()
+            try:
+                return 1 if float(text or 0) else 0
+            except ValueError:
+                return 1 if text in _TRUE else 0
+        try:
+            return 1 if value and float(value) else 0
+        except (TypeError, ValueError):
+            return 1 if value else 0
+    text = "" if value is None else str(value).strip()
+    if column == "status":
+        return text.lower() or "draft"
+    return text or None
+
+
+def forecast_governance_changes(current: Optional[Dict[str, Any]], values: Dict[str, Any]) -> List[str]:
+    """
+    The governance columns (locked, status, approved_*) a write of a forecast
+    row would change. ``current`` is the stored row, or None for a new
+    scenario (which must be a plain draft).
+    """
+    base = current or {"locked": 0, "status": "draft"}
+    return [c for c in GOVERNED_FORECAST_COLUMNS
+            if c in values and _governed_value(c, values[c]) != _governed_value(c, base.get(c))]
+
+
+def forecast_write_refusal(current: Optional[Dict[str, Any]], values: Dict[str, Any],
+                           forecast_id: Any = None) -> Optional[str]:
+    """
+    Why a generic write of a forecast row is refused (409), or None: it would
+    change the approval state (approve / unlock do that, with who and why),
+    or edit an approved scenario's id, name, description or notes. Sending the
+    stored values back is fine.
+    """
+    fid = forecast_id or (current or {}).get("forecast_id") or values.get("forecast_id") or "{id}"
+    changed = forecast_governance_changes(current, values)
+    if changed:
+        return (f"Scenario {fid}: {', '.join(changed)} can change only through POST /forecast/scenario/{fid}/approve "
+                f"{{approved_by, note}} and POST /forecast/scenario/{fid}/unlock {{actor, reason}} (reason "
+                f"required), which keep the evidence and record who did it and why. Nothing was changed.")
+    if current and _governed_value("locked", current.get("locked")):
+        edited = [c for c in LOCKED_FORECAST_COLUMNS
+                  if c in values and str(values[c] or "").strip() != str(current.get(c) or "").strip()]
+        if edited:
+            return f"{locked_message(current.get('name'))} ({', '.join(edited)} cannot change.)"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -332,11 +441,12 @@ def approve_scenario(forecast_id: str, approved_by: Any, note: Any = None) -> Di
         previous = {k: scenario.get(k) for k in ("status", "approved_by", "approved_at", "approval_note")}
 
         # 1. Lock first, so nothing in the scenario changes while the evidence is written.
-        cursor.execute(
-            "UPDATE forecast SET status = 'approved', locked = 1, approved_by = ?, approved_at = ?, approval_note = ? "
-            "WHERE forecast_id = ?",
-            (approver, created_at, note_text, forecast_id),
-        )
+        with _governance_write(conn):
+            cursor.execute(
+                "UPDATE forecast SET status = 'approved', locked = 1, approved_by = ?, approved_at = ?, "
+                "approval_note = ? WHERE forecast_id = ?",
+                (approver, created_at, note_text, forecast_id),
+            )
         cursor.execute(
             "INSERT INTO scenario_approvals (approval_id, forecast_id, action, actor, note, created_at) "
             "VALUES (?, ?, 'approve', ?, ?, ?)",
@@ -397,12 +507,13 @@ def approve_scenario(forecast_id: str, approved_by: Any, note: Any = None) -> Di
 
 def _undo_approval(conn, forecast_id: str, approval_id: str, previous: Dict[str, Any]) -> None:
     try:
-        conn.execute(
-            "UPDATE forecast SET status = ?, locked = 0, approved_by = ?, approved_at = ?, approval_note = ? "
-            "WHERE forecast_id = ?",
-            (previous.get("status") or "draft", previous.get("approved_by"), previous.get("approved_at"),
-             previous.get("approval_note"), forecast_id),
-        )
+        with _governance_write(conn):
+            conn.execute(
+                "UPDATE forecast SET status = ?, locked = 0, approved_by = ?, approved_at = ?, approval_note = ? "
+                "WHERE forecast_id = ?",
+                (previous.get("status") or "draft", previous.get("approved_by"), previous.get("approved_at"),
+                 previous.get("approval_note"), forecast_id),
+            )
         conn.execute("DELETE FROM scenario_approvals WHERE approval_id = ?", (approval_id,))
         conn.commit()
     except Exception:  # pragma: no cover - best effort; logged
@@ -428,7 +539,8 @@ def unlock_scenario(forecast_id: str, actor: Any, reason: Any) -> Dict[str, Any]
         if not scenario.get("locked"):
             raise GovernanceError(409, f"Scenario '{scenario['name']}' is not locked; there is nothing to unlock.")
         try:
-            cursor.execute("UPDATE forecast SET locked = 0, status = 'draft' WHERE forecast_id = ?", (forecast_id,))
+            with _governance_write(conn):
+                cursor.execute("UPDATE forecast SET locked = 0, status = 'draft' WHERE forecast_id = ?", (forecast_id,))
             cursor.execute(
                 "INSERT INTO scenario_approvals (approval_id, forecast_id, action, actor, note, created_at) "
                 "VALUES (?, ?, 'unlock', ?, ?, ?)",
@@ -558,34 +670,151 @@ _SCENARIO_PATH = re.compile(r"/scenarios?/([^/?#]+)")
 _ID_RE = re.compile(r'"forecast_id"\s*:\s*"([^"]{1,40})"')
 
 
+def _own_forecast_id(obj: Any) -> Optional[str]:
+    """``forecast_id`` (or the first of ``forecast_ids``) of one dict, or None."""
+    if not isinstance(obj, dict):
+        return None
+    for key in ("forecast_id", "forecast_ids"):
+        value = obj.get(key)
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value not in (None, "") and not isinstance(value, (dict, list)):
+            return str(value)[:40]
+    return None
+
+
+def _nested_forecast_id(obj: Any, depth: int = 0) -> Optional[str]:
+    """The first ``forecast_id`` inside a body's lists / objects (e.g. ``forecasts[].forecast_id``), depth-limited."""
+    if depth > 3:
+        return None
+    if isinstance(obj, dict):
+        own = _own_forecast_id(obj) if depth else None
+        if own:
+            return own
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                found = _nested_forecast_id(value, depth + 1)
+                if found:
+                    return found
+    elif isinstance(obj, list):
+        for item in obj[:500]:
+            found = _nested_forecast_id(item, depth + 1)
+            if found:
+                return found
+    return None
+
+
 def extract_forecast_id(path: str, query: Dict[str, List[str]], parsed_body: Any = None,
-                        raw_body: bytes = b"", response: Any = None) -> Optional[str]:
-    """The scenario a request is about: the path, ``forecast_id`` / ``forecast_ids`` in the query or body, else the response."""
+                        raw_body: bytes = b"", response: Any = None, target: Optional[str] = None) -> Optional[str]:
+    """
+    The scenario a request is about, first found of: the /scenario(s)/<id>
+    path; the locked scenario a refused write hit (the 409 lock body);
+    ``forecast_id`` / ``forecast_ids`` in the query or at the top of the
+    body; ``target`` (the scenario of the row the request addresses by id,
+    see ``target_forecast_id``); a ``forecast_id`` inside the body's rows
+    (``forecasts[].forecast_id``); the response (top level, ``data`` or one
+    object down in ``data``). None means the request names no scenario
+    (company-wide rows, master data).
+    """
     match = _SCENARIO_PATH.search(path or "")
     if match and match.group(1) not in ("compare", "comparison"):
         return match.group(1)[:40]
+    if isinstance(response, dict) and response.get("code") == LOCK_TOKEN and _own_forecast_id(response):
+        return _own_forecast_id(response)
     for key in ("forecast_id", "forecast_ids"):
         values = query.get(key) or []
         for value in values:
             first = str(value).split(",")[0].strip()
             if first:
                 return first[:40]
-    if isinstance(parsed_body, dict):
-        for key in ("forecast_id", "forecast_ids"):
-            value = parsed_body.get(key)
-            if isinstance(value, list):
-                value = value[0] if value else None
-            if value not in (None, ""):
-                return str(value)[:40]
+    if _own_forecast_id(parsed_body):
+        return _own_forecast_id(parsed_body)
+    if target not in (None, ""):
+        return str(target)[:40]
+    if isinstance(parsed_body, (dict, list)):
+        found = _nested_forecast_id(parsed_body)
+        if found:
+            return found
     elif raw_body and parsed_body is None:
         found = _ID_RE.search(raw_body[:65536].decode("utf-8", "replace"))
         if found:
             return found.group(1)
     if isinstance(response, dict):
         data = response.get("data")
-        if isinstance(data, dict) and data.get("forecast_id") not in (None, ""):
-            return str(data["forecast_id"])[:40]
+        for source in (response, data):
+            if _own_forecast_id(source):
+                return _own_forecast_id(source)
+        if isinstance(data, dict):
+            for value in data.values():
+                if _own_forecast_id(value):
+                    return _own_forecast_id(value)
     return None
+
+
+#: Writes that address a row by id in the path: (pattern, table, key column). The row names the scenario.
+_ID_PATHS: Tuple[Tuple[Any, str, str], ...] = (
+    (re.compile(r"^/expenses/([^/]+)/?$"), "expenses", "expense_id"),
+    (re.compile(r"^/payroll/employees/([^/]+)(?:/allocations)?/?$"), "payroll", "employee_id"),
+    (re.compile(r"^/pricing/prices/([^/]+)/?$"), "price_list", "price_id"),
+    (re.compile(r"^/pricing/deductions/([^/]+)/?$"), "sales_deduction_rules", "rule_id"),
+    (re.compile(r"^/reporting/capex/([^/]+)/?$"), "capital_expenditures", "capex_id"),
+)
+_GENERIC_DELETE_PATH = re.compile(r"^/forecast/delete/([^/]+)/([^/]+)/?$")
+
+
+def _row_forecast_id(conn, table: str, record_id: Any, column: Optional[str] = None) -> Optional[str]:
+    """forecast_id of one row (an expense allocation's comes from its expense); None when it has none."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+        return None
+    if table == "expense_allocations":
+        row = conn.execute("SELECT e.forecast_id FROM expense_allocations a JOIN expenses e "
+                           "ON e.expense_id = a.expense_id WHERE a.allocation_id = ?", (record_id,)).fetchone()
+    else:
+        info = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        if "forecast_id" not in {c[1] for c in info}:
+            return None
+        if column is None:
+            keys = [c[1] for c in sorted(info, key=lambda c: c[5]) if c[5]]
+            if len(keys) != 1:
+                return None
+            column = keys[0]
+        row = conn.execute(f'SELECT forecast_id FROM "{table}" WHERE "{column}" = ?', (record_id,)).fetchone()
+    return str(row[0])[:40] if row and row[0] not in (None, "") else None
+
+
+def target_forecast_id(method: str, path: str, parsed_body: Any = None) -> Optional[str]:
+    """
+    The scenario of the row a write addresses by id: PUT / PATCH / DELETE of
+    /expenses/{id}, /payroll/employees/{id}, /pricing/prices/{id},
+    /pricing/deductions/{id}, /reporting/capex/{id} and
+    /forecast/delete/{table}/{id}, and POST /forecast/update {table, id}.
+    Look it up BEFORE the request runs (a delete removes the row). None for a
+    company-wide row, an unknown row or any other request. Never raises.
+    """
+    try:
+        method = str(method or "").upper()
+        path = path or ""
+        found: Optional[Tuple[str, Any, Optional[str]]] = None
+        if method in ("PUT", "PATCH", "DELETE"):
+            generic = _GENERIC_DELETE_PATH.match(path)
+            if generic and method == "DELETE":
+                found = (generic.group(1), generic.group(2), None)
+            else:
+                for pattern, table, column in _ID_PATHS:
+                    hit = pattern.match(path)
+                    if hit:
+                        found = (table, hit.group(1), column)
+                        break
+        elif method == "POST" and path.rstrip("/") == "/forecast/update" and isinstance(parsed_body, dict):
+            table, record_id = parsed_body.get("table"), parsed_body.get("id")
+            if isinstance(table, str) and record_id not in (None, "") and not isinstance(record_id, (dict, list)):
+                found = (table, record_id, None)
+        if not found:
+            return None
+        with _manager().connection() as conn:
+            return _row_forecast_id(conn, *found)
+    except Exception:  # the history must never break a request
+        return None
 
 
 def extract_actor(header: Optional[str], parsed_body: Any = None) -> Optional[str]:
@@ -936,23 +1165,30 @@ def legacy_checks(cursor) -> List[Dict[str, Any]]:
             "Link a BOM and routing on Product Setup, or import them (Get Started > Import Data).",
             len(uncosted), uncosted, "/products"))
 
-    # 5. Employees without a labor class (direct / indirect / admin).
+    # 5. Employees without a labor class (direct / indirect / admin): blank, or text the engine does not
+    #    recognise (it reads that as not classified, like the payroll list and the labor forecast).
     if "labor_class" in _table_columns(cursor, "payroll"):
-        cursor.execute(
-            "SELECT employee_id, employee_name, forecast_id FROM payroll "
-            "WHERE labor_class IS NULL OR trim(labor_class) = '' ORDER BY employee_name"
-        )
-        rows = cursor.fetchall()
+        from services.financial_statements import normalize_labor_class
+
+        cursor.execute("SELECT employee_id, employee_name, forecast_id, labor_class FROM payroll "
+                       "ORDER BY employee_name")
+        rows = [r for r in cursor.fetchall() if normalize_labor_class(r[3], strict=False) is None]
         if rows:
+            examples = []
+            for eid, name, fid, stored in rows:
+                label = f"{name or eid}" + (f" ({fid})" if fid else " (company-wide)")
+                if str(stored or "").strip():
+                    label += f": stored {str(stored).strip()!r} is not direct / indirect / admin"
+                examples.append(label)
             issues.append(_issue(
                 "employees_without_labor_class", "info",
                 "Employees without a labor class",
                 "Unclassified employees are treated as admin payroll (an operating expense). Production workers "
-                "left unclassified are counted twice: once in direct labor from the routings and again in payroll.",
+                "left unclassified are counted twice: once in direct labor from the routings and again in payroll. "
+                "A stored class other than direct, indirect or admin (e.g. 'Production') reads as not classified.",
                 "On the Payroll screen, set each employee's labor class: direct (production), indirect (factory "
                 "support) or admin.",
-                len(rows), [f"{name or eid}" + (f" ({fid})" if fid else " (company-wide)") for eid, name, fid in rows],
-                "/payroll"))
+                len(rows), examples, "/payroll"))
 
     issues.sort(key=lambda i: (SEVERITY_ORDER.get(i["severity"], 9), i["code"]))
     return issues

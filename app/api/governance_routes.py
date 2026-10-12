@@ -34,6 +34,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from db.database import GOVERNANCE_TOKEN
 from db.models import ForecastResponse
 from services.governance import (
     LOCK_TOKEN,
@@ -54,6 +55,7 @@ from services.governance import (
     record_audit,
     restore_history,
     summarize,
+    target_forecast_id,
     utc_now,
     SEVERITY_ORDER,
 )
@@ -70,6 +72,8 @@ MAX_RESPONSE_CAPTURE = 4 * 1024 * 1024
 READ_METHODS = ("GET", "HEAD", "OPTIONS")
 #: Requests that restore a snapshot INTO the live database: the history recorded since the snapshot is put back.
 RESTORE_PATHS = ("/database/load", "/database/revert-to-last-save")
+#: Writes whose target row is looked up before they run (a delete removes it): see target_forecast_id.
+ID_WRITE_METHODS = ("PUT", "PATCH", "DELETE")
 
 
 def _is_mcp_transport(path: str) -> bool:
@@ -119,8 +123,9 @@ class GovernanceMiddleware:
 
         def request_forecast_id() -> Optional[str]:
             parsed = parse_json_body(bytes(state["body"])) if state["body"] and not state["truncated"] else None
+            target = state.get("target") or target_forecast_id(method, path, parsed)
             return extract_forecast_id(path, parse_qs(scope.get("query_string", b"").decode("latin-1")),
-                                       parsed, bytes(state["body"][:65536]))
+                                       parsed, bytes(state["body"][:65536]), target=target)
 
         async def flush_held(final_body: bytes, more_body: bool) -> None:
             start = held["start"]
@@ -176,6 +181,9 @@ class GovernanceMiddleware:
         saved_history = None
         if record and path in RESTORE_PATHS:
             saved_history = await anyio.to_thread.run_sync(history_rows)
+        if record and method in ID_WRITE_METHODS:
+            # The scenario of the row a PUT / DELETE addresses by id, read before the row changes or goes.
+            state["target"] = await anyio.to_thread.run_sync(target_forecast_id, method, path, None)
 
         error: Optional[BaseException] = None
         try:
@@ -200,6 +208,11 @@ class GovernanceMiddleware:
         if record:
             try:
                 entry = self._entry(scope, headers, method, path, state, started)
+                if entry["forecast_id"] is None and method == "POST":
+                    # POST /forecast/update {table, id}: the updated row names the scenario.
+                    target = await anyio.to_thread.run_sync(target_forecast_id, method, path,
+                                                            self._parsed_body(headers, state))
+                    entry["forecast_id"] = target
                 await anyio.to_thread.run_sync(record_audit, entry)
             except Exception:  # never break a request over the history
                 logger.exception("Could not record %s %s in the change history", method, path)
@@ -216,11 +229,17 @@ class GovernanceMiddleware:
         return is_preview_request(path, query, parsed)
 
     @staticmethod
-    def _entry(scope, headers: Dict[str, str], method: str, path: str, state: Dict[str, Any],
+    def _parsed_body(headers: Dict[str, str], state: Dict[str, Any]) -> Any:
+        raw = bytes(state["body"])
+        ctype = headers.get("content-type", "")
+        return parse_json_body(raw) if raw and not state["truncated"] and "multipart" not in ctype else None
+
+    @classmethod
+    def _entry(cls, scope, headers: Dict[str, str], method: str, path: str, state: Dict[str, Any],
                started: float) -> Dict[str, Any]:
         raw = bytes(state["body"])
         ctype = headers.get("content-type", "")
-        parsed = parse_json_body(raw) if raw and not state["truncated"] and "multipart" not in ctype else None
+        parsed = cls._parsed_body(headers, state)
         query_string = scope.get("query_string", b"").decode("latin-1")
         status = int(state["status"] or 500)
         return {
@@ -233,7 +252,7 @@ class GovernanceMiddleware:
             "status": status,
             "forecast_id": extract_forecast_id(path, parse_qs(query_string), parsed,
                                                raw[:65536] if "multipart" not in ctype else b"",
-                                               state.get("response")),
+                                               state.get("response"), target=state.get("target")),
             "summary": summarize(method, path, status, state.get("response")),
             "body_excerpt": body_excerpt(ctype, raw, parsed, state["truncated"]),
             "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -241,9 +260,15 @@ class GovernanceMiddleware:
 
 
 async def _integrity_error_handler(request: Request, exc: sqlite3.IntegrityError):
-    """A scenario-lock trigger error that reached the framework: 409 (the middleware words it)."""
+    """
+    A scenario-lock trigger error that reached the framework: 409 (the
+    middleware words it). So is the forecast trigger that keeps the approval
+    columns to approve / unlock (its own message names those endpoints).
+    """
     if is_lock_error(exc):
         return JSONResponse(status_code=409, content={"detail": LOCK_TOKEN, "code": LOCK_TOKEN})
+    if GOVERNANCE_TOKEN in str(exc):
+        return JSONResponse(status_code=409, content={"detail": str(exc), "code": GOVERNANCE_TOKEN})
     raise exc
 
 

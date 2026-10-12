@@ -23,9 +23,11 @@ Design
 * Change history: the in-process client sends ``X-Forecast-Client: mcp``,
   so the API's audit middleware records every REST write a tool makes with
   client 'mcp'. A write tool that changes the database without a REST call
-  (the bulk adjusters) is recorded here instead (``ForecastMCPServer.call_tool``).
-  A write refused because a scenario is approved and locked comes back as a
-  plain explanation, never a bare crash.
+  (the bulk adjusters) is recorded here instead (``ForecastMCPServer.call_tool``),
+  and so is a real write refused at its own preview (the middleware leaves
+  previews out). Dry runs are never recorded. A write refused because a
+  scenario is approved and locked comes back as a plain explanation, never a
+  bare crash.
 """
 from __future__ import annotations
 
@@ -297,11 +299,13 @@ class ForecastMCPServer(MCPServer):
         recording a write tool that changed the database without a REST call
         (the bulk adjusters) in the change history.
         """
-        writes = [0]
+        # [REST writes, REST previews (dry runs: the middleware leaves them out), status of a refused preview]
+        writes: List[Any] = [0, 0, None]
         token = _REST_WRITES.set(writes)
         started = time.perf_counter()
         status: Optional[int] = 200
         result = None
+        dry_run = _is_dry_run_call(arguments)
         try:
             result = await super().call_tool(name, arguments, context)
             if isinstance(result, CallToolResult) and result.is_error:
@@ -313,13 +317,21 @@ class ForecastMCPServer(MCPServer):
                 raise ToolError(f"Error executing tool {name}: {_lock_text(arguments)} Nothing was changed.") from exc
             status = 500
             raise
-        except ToolError:
-            # Refused input (bad arguments, a missing filter ...): nothing ran, nothing to record.
+        except ToolError as exc:
+            # Refused input (bad arguments, a missing filter ...): nothing ran, nothing to record. But a real
+            # write whose only REST call was its own preview, refused with 409 (an approved, locked scenario),
+            # is a refused write: the middleware left the preview out, so it is recorded here.
             status = None
+            if writes[2] == 409 and writes[0] == 0 and not dry_run:
+                status = 409
+                result = str(exc)
             raise
         finally:
             _REST_WRITES.reset(token)
-            if writes[0] == 0 and status is not None:
+            # Recorded here only when the middleware saw no write: the bulk adjusters (no REST call at all)
+            # and the refused previews above. Dry runs change nothing and are never history.
+            direct = writes[0] == 0 and (writes[1] == 0 or status == 409)
+            if direct and status is not None and not dry_run and not _is_dry_run_result(result):
                 await self._record_direct_write(name, arguments, status, result, started)
 
     async def _record_direct_write(self, name: str, arguments: Dict[str, Any], status: int, result: Any,
@@ -353,8 +365,34 @@ class ForecastMCPServer(MCPServer):
             logging.getLogger(__name__).exception("Could not record MCP tool %s in the change history", name)
 
 
-#: Per tool call: how many REST writes (non-GET requests) it made through ``api``.
+#: Per tool call: [REST writes, REST previews / dry runs, HTTP status of a refused preview] made through ``api``.
 _REST_WRITES: contextvars.ContextVar = contextvars.ContextVar("forecast_mcp_rest_writes", default=None)
+
+
+def _is_preview_call(path: str, params: Optional[Dict[str, Any]], body: Any) -> bool:
+    """True for a REST call the change history leaves out (dry run / preview / simulate), by the middleware's rule."""
+    from urllib.parse import parse_qs
+    from services.governance import is_preview_request
+
+    route, _, query_text = str(path or "").partition("?")
+    query = {k: list(v) for k, v in parse_qs(query_text).items()}
+    for key, value in _clean_params(params).items():
+        query.setdefault(key, []).extend(value if isinstance(value, list) else [str(value)])
+    return is_preview_request(route, query, body)
+
+
+def _is_dry_run_call(arguments: Any) -> bool:
+    """The caller asked the tool for a dry run (``dry_run``: true)."""
+    if not isinstance(arguments, dict):
+        return False
+    value = arguments.get("dry_run")
+    return value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_dry_run_result(result: Any) -> bool:
+    """The tool reports it ran as a dry run (a tool whose dry_run defaults to true)."""
+    payload = _result_payload(result)
+    return isinstance(payload, dict) and payload.get("dry_run") is True
 
 
 def _is_lock_error(exc: BaseException) -> bool:
@@ -396,29 +434,26 @@ def _plain_adjustment(payload: Dict[str, Any]) -> Optional[str]:
     if "matched_lines" in payload:
         totals = payload.get("material_cost_total") or {}
         phrase = (payload.get("filters") or {}).get("material_contains")
-        verb = "would change" if payload.get("dry_run") else "changed"
         return (f"Material costs (company-wide{', ' + repr(phrase) if phrase else ''}): {payload.get('matched_lines')} BOM "
-                f"line(s) {verb}, material cost {money(totals.get('before'))} -> {money(totals.get('after'))}")
+                f"line(s) changed, material cost {money(totals.get('before'))} -> {money(totals.get('after'))}")
     if "matched_rows" in payload and "revenue_change" in payload:
-        verb = "would change" if payload.get("dry_run") else "changed"
         change = float(payload.get("revenue_change") or 0)
-        return (f"Sales of {payload.get('forecast_id')}: {payload.get('matched_rows')} row(s) {verb}, revenue "
+        return (f"Sales of {payload.get('forecast_id')}: {payload.get('matched_rows')} row(s) changed, revenue "
                 f"{'+' if change >= 0 else '-'}{money(abs(change))}")
     return None
 
 
 def _tool_summary(name: str, status: int, payload: Any) -> str:
+    """The history line of a tool call recorded at tool level (dry runs never are: they change nothing)."""
     plain = _plain_adjustment(payload) if isinstance(payload, dict) and status < 400 else None
     if plain:
-        return (("Dry run: " if payload.get("dry_run") is True else "") + plain)[:300]
+        return plain[:300]
     if isinstance(payload, dict):
         text = payload.get("message") or payload.get("summary")
         if not text:
             numbers = [f"{k}={v}" for k, v in payload.items()
                        if isinstance(v, (int, float)) and not isinstance(v, bool)][:5]
             text = ", ".join(numbers)
-        prefix = "Dry run: " if payload.get("dry_run") is True else ""
-        text = f"{prefix}{text}" if text else prefix.strip()
     else:
         text = str(payload or "")[:200]
     head = f"MCP tool {name}" + ("" if status < 400 else f" refused ({status})")
@@ -513,15 +548,20 @@ async def api(method: str, path: str, *, params: Optional[Dict[str, Any]] = None
     Sends ``X-Forecast-Client: mcp`` so the change history records the call
     as made by an MCP tool.
     """
-    if str(method).upper() not in ("GET", "HEAD", "OPTIONS"):
-        counter = _REST_WRITES.get()
-        if counter is not None:
-            counter[0] += 1
+    counter = _REST_WRITES.get()
+    preview = False
+    if str(method).upper() not in ("GET", "HEAD", "OPTIONS") and counter is not None:
+        # A dry run / preview is left out of the change history by the middleware: count it apart, so
+        # ForecastMCPServer.call_tool knows whether anything recorded the tool call.
+        preview = _is_preview_call(path, params, json)
+        counter[1 if preview else 0] += 1
     transport = httpx.ASGITransport(app=get_app())
     async with httpx.AsyncClient(transport=transport, base_url="http://forecast.internal",
                                  headers=CLIENT_HEADERS) as client:
         resp = await client.request(method, path, params=_clean_params(params), json=json)
     if resp.status_code >= 400:
+        if preview:
+            counter[2] = resp.status_code
         raise ToolError(f"{method} {path} failed with HTTP {resp.status_code}: {_error_detail(resp)}")
     if not resp.content:
         return {}

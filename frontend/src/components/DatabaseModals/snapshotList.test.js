@@ -17,6 +17,14 @@ describe('snapshotGroup', () => {
     expect(snapshotGroup(item('approved_s1_20261012_090000.db', { type: 'system_backup' }))).toBe('approvals');
   });
 
+  it("keeps a user's save named approved_... with the saves; only the approval copy itself is evidence", () => {
+    expect(snapshotGroup(item('approved_budget_v1.db', { type: 'manual_save', kind: 'manual_save' }))).toBe('saves');
+    expect(snapshotGroup(item('approved_budget_v1.db', { type: 'manual_save' }))).toBe('saves');
+    expect(snapshotGroup(item('approved_2027_final.db'))).toBe('saves');
+    expect(snapshotGroup(item('approved_F001_20261012_152151.db'))).toBe('approvals');
+    expect(snapshotGroup(item('approved_F001_20261012_152151_2.db', { type: 'system_backup' }))).toBe('approvals');
+  });
+
   it('falls back to the type and file name for older servers', () => {
     expect(snapshotGroup(item('start_clean_backup_20261012_081715_254.db', { type: 'system_backup' }))).toBe('start_clean');
     expect(snapshotGroup(item('current_backup_20261012_081832_982.db', { type: 'system_backup' }))).toBe('before_load');

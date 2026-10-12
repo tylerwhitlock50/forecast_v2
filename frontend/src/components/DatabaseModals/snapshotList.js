@@ -34,6 +34,9 @@ export const SNAPSHOT_GROUPS = [
 // File-name prefixes the server uses for the copies it makes on its own.
 const START_CLEAN_PREFIXES = ['start_clean_backup_', 'reset_backup_', 'clear_data_backup_'];
 const BEFORE_LOAD_PREFIXES = ['current_backup_', 'pre_revert_backup_', 'force_reload_backup_'];
+// The copy taken when a scenario is approved: approved_<id>_<YYYYMMDD_HHMMSS>[_n].db, exactly (as the server
+// matches it). A user's own save called 'approved_budget' is a save like any other.
+const APPROVAL_SNAPSHOT = /^approved_[a-z0-9_-]+_\d{8}_\d{6}(?:_\d+)?\.db$/;
 
 const lower = (value) => String(value ?? '').toLowerCase();
 
@@ -52,7 +55,7 @@ export const snapshotGroup = (item) => {
   }
   const file = fileOf(item);
   const type = lower(item?.type);
-  if (file.startsWith('approved_')) return 'approvals';
+  if (APPROVAL_SNAPSHOT.test(file)) return 'approvals';
   if (START_CLEAN_PREFIXES.some((p) => file.startsWith(p))) return 'start_clean';
   if (BEFORE_LOAD_PREFIXES.some((p) => file.startsWith(p))) return 'before_load';
   if (type === 'autosave' || file.startsWith('autosave_')) return 'autosaves';
