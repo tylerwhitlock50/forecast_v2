@@ -443,6 +443,7 @@ class DatabaseManager:
                 dpo_days REAL DEFAULT 30,
                 income_tax_rate REAL DEFAULT 0.21,
                 minimum_cash_balance REAL DEFAULT 0,
+                excise_payable_days REAL DEFAULT 30,
                 notes TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
@@ -487,12 +488,85 @@ class DatabaseManager:
                 UNIQUE(period, line_item, reference_id)
             )
         ''')
+        # Discounts and allowances off gross sales, embedded excise tax and
+        # commissions (see services.pricing for matching and precedence).
+        # forecast_id NULL = company-wide; NULL scope fields mean "any".
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sales_deduction_rules (
+                rule_id TEXT PRIMARY KEY,
+                forecast_id TEXT,
+                deduction_type TEXT NOT NULL CHECK (deduction_type IN
+                    ('terms_allowance', 'chargebacks', 'other_allowance', 'excise_tax', 'commission')),
+                name TEXT,
+                method TEXT NOT NULL DEFAULT 'percent_of_gross' CHECK (method IN
+                    ('percent_of_gross', 'percent_of_net', 'embedded_tax', 'per_unit')),
+                rate REAL DEFAULT 0,
+                amount_per_unit REAL DEFAULT 0,
+                customer_id TEXT,
+                customer_type TEXT,
+                unit_id TEXT,
+                unit_type TEXT,
+                start_period TEXT,
+                end_period TEXT,
+                is_active INTEGER DEFAULT 1,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_deduction_rules_type ON sales_deduction_rules (deduction_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_deduction_rules_forecast ON sales_deduction_rules (forecast_id)')
+
+        # Customer / customer-type price list: a fixed price or a discount off
+        # the product's base_price. unit_id NULL = every product.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS price_list (
+                price_id TEXT PRIMARY KEY,
+                forecast_id TEXT,
+                unit_id TEXT,
+                customer_id TEXT,
+                customer_type TEXT,
+                method TEXT NOT NULL DEFAULT 'fixed' CHECK (method IN ('fixed', 'discount_from_base')),
+                unit_price REAL,
+                discount_pct REAL,
+                start_period TEXT,
+                end_period TEXT,
+                is_active INTEGER DEFAULT 1,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_list_unit ON price_list (unit_id)')
+
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_actuals_period ON actuals (period)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sales_forecast_period ON sales (forecast_id, period)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_expense_alloc_period ON expense_allocations (period)')
 
         conn.commit()
         conn.close()
+
+    def migrate_financial_assumptions_table(self):
+        """Add excise_payable_days to financial_assumptions if missing (idempotent)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(financial_assumptions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'excise_payable_days' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE financial_assumptions ADD COLUMN excise_payable_days REAL DEFAULT 30")
+                except sqlite3.OperationalError as alter_err:
+                    if 'duplicate column name' not in str(alter_err).lower():
+                        raise
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating financial_assumptions table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
 
     def migrate_payroll_config_table(self):
         """Add pay_frequency to payroll_config if missing (idempotent)."""
@@ -1255,6 +1329,7 @@ class DatabaseManager:
         print("Forecast table migration completed")
         self.migrate_payroll_config_table()
         print("Payroll config migration completed")
+        self.migrate_financial_assumptions_table()
 
         # Check for force reload environment variable
         force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'

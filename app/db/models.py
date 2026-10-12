@@ -563,6 +563,9 @@ class FinancialAssumptionsBase(BaseModel):
     dpo_days: float = 30.0
     income_tax_rate: float = 0.21
     minimum_cash_balance: float = 0.0
+    # Days of excise tax (FET) owed to the government at month end. None on
+    # an update keeps the stored value (30 for a new row).
+    excise_payable_days: Optional[float] = None
     notes: Optional[str] = None
 
 

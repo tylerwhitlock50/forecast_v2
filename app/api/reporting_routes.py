@@ -337,6 +337,13 @@ async def save_assumptions(forecast_id: str = Query(...), payload: FinancialAssu
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
     data = payload.dict()
+    # Optional newer fields: leaving them out keeps the stored value, so an
+    # older client that does not know the field cannot reset it.
+    for optional_key in ("excise_payable_days",):
+        if data.get(optional_key) is None:
+            data.pop(optional_key, None)
+        elif float(data[optional_key]) < 0:
+            raise HTTPException(status_code=422, detail=f"{optional_key} must be zero or more")
     columns = list(data.keys())
     conn = db_manager.get_connection()
     try:

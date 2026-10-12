@@ -6,6 +6,10 @@ income statement, cash flow statement and balance sheet for one or more
 forecast scenarios, driven entirely by data already in the database:
 
   * revenue + product COGS   -> sales / units / bom / routers  (utils.cost_rollup)
+  * sales deductions         -> sales_deduction_rules (services.pricing): terms,
+                                chargebacks, other allowances and embedded excise
+                                tax take gross sales to net sales; commissions
+                                are a selling expense
   * payroll                  -> payroll / payroll_config, prorated to each month
   * overhead + opex          -> expense_allocations / expenses / expense_categories
   * interest + principal     -> loan_payments / loans
@@ -26,12 +30,18 @@ Conventions
 * Scenario scoping: rows whose forecast_id is in the selected set OR NULL are
   included. NULL means "company-wide" (shared by every scenario). Revenue is
   always scenario-specific so it is never NULL-scoped.
+* "revenue" on the income statement is NET sales: gross sales less the
+  contra-revenue deductions (terms allowance, chargebacks, other allowances,
+  excise tax). With no deduction rules net sales equal gross sales.
 * Working capital uses a simple days convention:
-      AR  = revenue_in_month      * dso_days / AVG_DAYS_PER_MONTH
-      INV = product_cogs_in_month * dio_days / AVG_DAYS_PER_MONTH
-      AP  = purchases_in_month    * dpo_days / AVG_DAYS_PER_MONTH
-  where purchases = materials + factory overhead + other COGS + admin +
-  operating expenses (payroll is assumed paid in-month).
+      AR  = (net sales + excise tax) * dso_days / AVG_DAYS_PER_MONTH
+      INV = product_cogs_in_month    * dio_days / AVG_DAYS_PER_MONTH
+      AP  = purchases_in_month       * dpo_days / AVG_DAYS_PER_MONTH
+      Excise tax payable = excise_in_month * excise_payable_days / AVG_DAYS_PER_MONTH
+  AR is what customers owe: the invoice (which includes the embedded excise)
+  less the allowances they deduct. Purchases = materials + factory overhead
+  + other COGS + admin + operating expenses + commissions (payroll is
+  assumed paid in-month).
 * Debt is rolled forward from the opening balance using scheduled principal
   payments and new-loan proceeds, which keeps the balance sheet identity exact.
 * Opening equity is plugged so the opening balance sheet balances unless the
@@ -41,9 +51,16 @@ from __future__ import annotations
 
 import calendar
 import json
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from services.pricing import (
+    CONTRA_REVENUE_TYPES,
+    DEDUCTION_TYPES,
+    DeductionResolver,
+    load_deduction_rules,
+)
 from utils.cost_rollup import calculate_unit_costs
 
 AVG_DAYS_PER_MONTH = 365.25 / 12
@@ -64,6 +81,7 @@ DEFAULT_ASSUMPTIONS: Dict[str, Any] = {
     "dpo_days": 30.0,
     "income_tax_rate": 0.21,
     "minimum_cash_balance": 0.0,
+    "excise_payable_days": 30.0,
     "notes": None,
 }
 
@@ -91,7 +109,9 @@ PAY_PERIODS_PER_YEAR = {
 #   direction = 'income'  -> actual above budget is favourable
 #   direction = 'expense' -> actual below budget is favourable
 VARIANCE_LINE_ITEMS: Dict[str, Dict[str, str]] = {
-    "revenue":            {"label": "Revenue",                 "direction": "income",  "statement": "income"},
+    "gross_sales":        {"label": "Gross Sales",             "direction": "income",  "statement": "income"},
+    "total_sales_deductions": {"label": "Sales Deductions",    "direction": "expense", "statement": "income"},
+    "revenue":            {"label": "Net Sales",               "direction": "income",  "statement": "income"},
     "cogs_materials":     {"label": "COGS - Materials",        "direction": "expense", "statement": "income"},
     "cogs_labor":         {"label": "COGS - Direct Labor",     "direction": "expense", "statement": "income"},
     "cogs_manufacturing": {"label": "COGS - Machine / Mfg",    "direction": "expense", "statement": "income"},
@@ -99,6 +119,7 @@ VARIANCE_LINE_ITEMS: Dict[str, Dict[str, str]] = {
     "other_cogs":         {"label": "COGS - Other",            "direction": "expense", "statement": "income"},
     "total_cogs":         {"label": "Total COGS",              "direction": "expense", "statement": "income"},
     "gross_profit":       {"label": "Gross Profit",            "direction": "income",  "statement": "income"},
+    "commissions":        {"label": "Sales Commissions",       "direction": "expense", "statement": "income"},
     "payroll":            {"label": "Payroll",                 "direction": "expense", "statement": "income"},
     "admin_expense":      {"label": "Admin Expenses",          "direction": "expense", "statement": "income"},
     "operating_expense":  {"label": "Operating Expenses",      "direction": "expense", "statement": "income"},
@@ -285,25 +306,35 @@ def load_payroll_config(cursor) -> Dict[str, Any]:
 # Revenue and product COGS
 # ---------------------------------------------------------------------------
 
-def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
-                               detail_periods: Optional[Sequence[str]] = None) -> Dict[str, Any]:
-    """
-    Revenue and BOM/routing-driven COGS per period for the selected scenarios.
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 
-    `periods` drives the per-period totals (every modelled month, including
-    months rolled forward before a report window); `detail_periods` limits the
-    product / customer breakdown and record count to the reported window.
+#: Statement line key for each deduction type (other_allowance rules sum into
+#: the plural "other_allowances" line).
+DEDUCTION_LINE_KEYS: Dict[str, str] = {k: v["statement_line"] for k, v in DEDUCTION_TYPES.items()}
+
+
+def load_sales_lines(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
+                     deduction_rules: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
-    out = {
-        "revenue": _zero_by_period(periods),
-        "quantity": _zero_by_period(periods),
-        "materials": _zero_by_period(periods),
-        "labor": _zero_by_period(periods),
-        "manufacturing": _zero_by_period(periods),
-        "by_product": {},
-        "by_customer": {},
+    Every sales row in the selected scenarios and months, enriched with the
+    numbers the rest of the model reports: gross sales, each sales deduction
+    and commission (services.pricing rules), net sales, per-unit BOM/routing
+    cost times quantity, contribution margin, and labor / machine minutes by
+    labor type / machine. The income statement, the COGS and labor forecasts
+    and the exports all aggregate these lines, so they always agree.
+
+    Returns {"lines", "unit_costs", "cost_warnings", "non_monthly_rows",
+    "deduction_rule_count", "rows_with_deductions"}. Rows whose period is not a
+    YYYY-MM month (quarters, weeks, junk) cannot be placed on the monthly
+    statements; they are counted in non_monthly_rows.
+    """
+    out: Dict[str, Any] = {
+        "lines": [],
+        "unit_costs": {},
         "cost_warnings": {},
-        "record_count": 0,
+        "non_monthly_rows": 0,
+        "deduction_rule_count": 0,
+        "rows_with_deductions": 0,
     }
     if not forecast_ids or not periods:
         return out
@@ -311,59 +342,179 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
     scope, params = _scope_clause("s.forecast_id", forecast_ids, include_null=False)
     cursor.execute(
         f"""
-        SELECT s.period, s.customer_id, s.unit_id, s.quantity, s.unit_price, s.total_revenue,
-               u.unit_name, u.bom_id, u.bom_version, u.router_id,
-               c.customer_name
+        SELECT COUNT(*) FROM sales s
+        WHERE {scope} AND (s.period IS NULL OR substr(s.period, 1, 7) NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]')
+        """,
+        params,
+    )
+    out["non_monthly_rows"] = int(cursor.fetchone()[0] or 0)
+
+    cursor.execute(
+        f"""
+        SELECT s.sale_id, s.forecast_id, s.period, s.customer_id, s.unit_id, s.quantity, s.unit_price, s.total_revenue,
+               u.unit_name, u.unit_type, u.bom_id, u.bom_version, u.router_id,
+               c.customer_name, c.customer_type
         FROM sales s
         LEFT JOIN units u ON s.unit_id = u.unit_id
         LEFT JOIN customers c ON s.customer_id = c.customer_id
-        WHERE {scope} AND s.period >= ? AND s.period <= ?
+        WHERE {scope} AND substr(s.period, 1, 7) >= ? AND substr(s.period, 1, 7) <= ?
+        ORDER BY s.period, s.customer_id, s.unit_id
         """,
         params + [periods[0], periods[-1]],
     )
     rows = cursor.fetchall()
-    period_set = set(periods)
-    detail_set = set(detail_periods) if detail_periods is not None else period_set
-    unit_cost_cache: Dict[Tuple, Dict[str, Any]] = {}
 
-    for (period, customer_id, unit_id, quantity, unit_price, total_revenue,
-         unit_name, bom_id, bom_version, router_id, customer_name) in rows:
+    if deduction_rules is None:
+        deduction_rules = load_deduction_rules(cursor, forecast_ids)
+    resolver = DeductionResolver(deduction_rules)
+    out["deduction_rule_count"] = len(resolver.rules)
+
+    period_set = set(periods)
+    unit_cost_cache: Dict[Tuple, Dict[str, Any]] = {}
+    zero_deductions = {dtype: 0.0 for dtype in DEDUCTION_TYPES}
+
+    for (sale_id, forecast_id, period, customer_id, unit_id, quantity, unit_price, total_revenue,
+         unit_name, unit_type, bom_id, bom_version, router_id, customer_name, customer_type) in rows:
         period = str(period)[:7] if period else None
-        if period not in period_set:
+        if not period or not _MONTH_RE.match(period) or period not in period_set:
             continue
         qty = float(quantity or 0)
-        revenue = float(total_revenue) if total_revenue is not None else qty * float(unit_price or 0)
+        gross = float(total_revenue) if total_revenue is not None else qty * float(unit_price or 0)
 
         key = (bom_id, bom_version, router_id)
         if key not in unit_cost_cache:
             unit_cost_cache[key] = calculate_unit_costs(cursor, bom_id, bom_version, router_id)
         uc = unit_cost_cache[key]
+        out["unit_costs"].setdefault(unit_id or "unknown", {
+            "unit_id": unit_id, "unit_name": unit_name, "unit_type": unit_type,
+            "bom_id": bom_id, "bom_version": bom_version, "router_id": router_id, **uc,
+        })
+        if uc["warnings"]:
+            out["cost_warnings"][unit_id or "unknown"] = sorted(set(uc["warnings"]))
+
+        line: Dict[str, Any] = {
+            "period": period,
+            "sale_id": sale_id,
+            "forecast_id": forecast_id,
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "customer_type": customer_type,
+            "unit_id": unit_id,
+            "unit_name": unit_name,
+            "unit_type": unit_type,
+            "quantity": qty,
+            "unit_price": float(unit_price) if unit_price is not None else (gross / qty if qty else 0.0),
+            "gross_sales": gross,
+        }
+        if resolver:
+            deductions = resolver.compute(line)
+            if deductions["applied_rules"]:
+                out["rows_with_deductions"] += 1
+        else:
+            deductions = {**zero_deductions, "total_sales_deductions": 0.0, "net_sales": gross, "applied_rules": {}}
+        for dtype in DEDUCTION_TYPES:
+            line[dtype] = deductions[dtype]
+        line["total_sales_deductions"] = deductions["total_sales_deductions"]
+        line["net_sales"] = deductions["net_sales"]
+        line["applied_rules"] = deductions["applied_rules"]
+
         materials = uc["material_per_unit"] * qty
         labor = uc["labor_per_unit"] * qty
         machine = uc["machine_per_unit"] * qty
+        line["materials"] = materials
+        line["labor"] = labor
+        line["machine"] = machine
+        line["product_cogs"] = materials + labor + machine
+        line["contribution_margin"] = line["net_sales"] - line["product_cogs"]
+        line["labor_minutes"] = uc.get("labor_minutes_per_unit", 0.0) * qty
+        line["machine_minutes"] = uc.get("machine_minutes_per_unit", 0.0) * qty
+        line["labor_by_type"] = {
+            t: {"minutes": v["minutes"] * qty, "cost": v["cost"] * qty}
+            for t, v in (uc.get("labor_by_type") or {}).items()
+        }
+        line["machine_by_id"] = {
+            m: {"minutes": v["minutes"] * qty, "cost": v["cost"] * qty}
+            for m, v in (uc.get("machine_by_id") or {}).items()
+        }
+        out["lines"].append(line)
 
-        out["revenue"][period] += revenue
-        out["quantity"][period] += qty
-        out["materials"][period] += materials
-        out["labor"][period] += labor
-        out["manufacturing"][period] += machine
-        if uc["warnings"]:
-            out["cost_warnings"][unit_id or "unknown"] = sorted(set(uc["warnings"]))
+    return out
+
+
+def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
+                               detail_periods: Optional[Sequence[str]] = None,
+                               sales_lines: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Gross sales, sales deductions, net sales ("revenue") and BOM/routing COGS
+    per period for the selected scenarios, aggregated from load_sales_lines.
+
+    `periods` drives the per-period totals (every modelled month, including
+    months rolled forward before a report window); `detail_periods` limits the
+    product / customer / customer-type breakdown and record count to the
+    reported window.
+    """
+    out: Dict[str, Any] = {
+        "gross_sales": _zero_by_period(periods),
+        "revenue": _zero_by_period(periods),
+        "quantity": _zero_by_period(periods),
+        "materials": _zero_by_period(periods),
+        "labor": _zero_by_period(periods),
+        "manufacturing": _zero_by_period(periods),
+        "deductions": {dtype: _zero_by_period(periods) for dtype in DEDUCTION_TYPES},
+        "by_product": {},
+        "by_customer": {},
+        "by_customer_type": {},
+        "cost_warnings": {},
+        "record_count": 0,
+        "non_monthly_rows": 0,
+        "deduction_rule_count": 0,
+        "rows_with_deductions": 0,
+    }
+    if not forecast_ids or not periods:
+        return out
+    loaded = sales_lines if sales_lines is not None else load_sales_lines(cursor, forecast_ids, periods)
+    for key in ("cost_warnings", "non_monthly_rows", "deduction_rule_count", "rows_with_deductions"):
+        out[key] = loaded[key]
+
+    period_set = set(periods)
+    detail_set = set(detail_periods) if detail_periods is not None else period_set
+
+    for line in loaded["lines"]:
+        period = line["period"]
+        if period not in period_set:
+            continue
+        out["gross_sales"][period] += line["gross_sales"]
+        out["revenue"][period] += line["net_sales"]
+        out["quantity"][period] += line["quantity"]
+        out["materials"][period] += line["materials"]
+        out["labor"][period] += line["labor"]
+        out["manufacturing"][period] += line["machine"]
+        for dtype in DEDUCTION_TYPES:
+            out["deductions"][dtype][period] += line[dtype]
         if period not in detail_set:
             continue
         out["record_count"] += 1
 
-        prod = out["by_product"].setdefault(unit_id or "unknown", {
-            "unit_id": unit_id, "unit_name": unit_name, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
+        prod = out["by_product"].setdefault(line["unit_id"] or "unknown", {
+            "unit_id": line["unit_id"], "unit_name": line["unit_name"], "unit_type": line["unit_type"],
+            "gross_sales": 0.0, "total_sales_deductions": 0.0, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
         })
-        prod["revenue"] += revenue
-        prod["cogs"] += materials + labor + machine
-        prod["quantity"] += qty
-
-        cust = out["by_customer"].setdefault(customer_id or "unknown", {
-            "customer_id": customer_id, "customer_name": customer_name, "revenue": 0.0,
+        cust = out["by_customer"].setdefault(line["customer_id"] or "unknown", {
+            "customer_id": line["customer_id"], "customer_name": line["customer_name"],
+            "customer_type": line["customer_type"],
+            "gross_sales": 0.0, "total_sales_deductions": 0.0, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
         })
-        cust["revenue"] += revenue
+        ctype = line["customer_type"] or "Unassigned"
+        ctype_entry = out["by_customer_type"].setdefault(ctype, {
+            "customer_type": ctype,
+            "gross_sales": 0.0, "total_sales_deductions": 0.0, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
+        })
+        for entry in (prod, cust, ctype_entry):
+            entry["gross_sales"] += line["gross_sales"]
+            entry["total_sales_deductions"] += line["total_sales_deductions"]
+            entry["revenue"] += line["net_sales"]
+            entry["cogs"] += line["product_cogs"]
+            entry["quantity"] += line["quantity"]
 
     return out
 
@@ -808,7 +959,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     all_periods = carry_periods + periods
     window_set = set(periods)
 
-    sales = revenue_and_cogs_by_period(cursor, forecast_ids, all_periods, detail_periods=periods)
+    sales_lines = load_sales_lines(cursor, forecast_ids, all_periods)
+    sales = revenue_and_cogs_by_period(cursor, forecast_ids, all_periods, detail_periods=periods,
+                                       sales_lines=sales_lines)
     payroll = payroll_by_period(cursor, forecast_ids, all_periods, include_raises=include_raises)
     expenses = expenses_by_period(cursor, forecast_ids, all_periods, detail_periods=periods)
     loans = loans_by_period(cursor, all_periods)
@@ -820,12 +973,30 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "message": f"{len(sales['cost_warnings'])} product(s) have incomplete BOM/routing data; their COGS may be understated.",
             "products": sales["cost_warnings"],
         })
+    if sales["non_monthly_rows"]:
+        warnings.append({
+            "code": "non_monthly_sales_periods",
+            "message": (
+                f"{sales['non_monthly_rows']} sales row(s) in the selected scenario(s) have a period that is not a "
+                f"YYYY-MM month (e.g. a quarter or week) and are left out of the monthly statements."
+            ),
+        })
+    window_gross = sum(sales["gross_sales"][p] for p in periods)
+    if window_gross and not sales["deduction_rule_count"]:
+        warnings.append({
+            "code": "no_deduction_rules",
+            "level": "info",
+            "message": "No discount, allowance, excise or commission rules are set up, so net sales equal gross sales. "
+                       "Add them under Pricing & Deductions.",
+        })
 
     tax_rate = float(assumptions.get("income_tax_rate") or 0)
     dso = float(assumptions.get("dso_days") or 0)
     dio = float(assumptions.get("dio_days") or 0)
     dpo = float(assumptions.get("dpo_days") or 0)
     min_cash = float(assumptions.get("minimum_cash_balance") or 0)
+    excise_days = assumptions.get("excise_payable_days")
+    excise_days = 30.0 if excise_days is None else float(excise_days)
 
     # Opening balance sheet, as at the end of the month before the first modelled month.
     opening_cash = float(assumptions.get("opening_cash") or 0)
@@ -864,6 +1035,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         "fixed_assets_net": opening_fa_gross - opening_acc_dep,
         "total_assets": opening_assets,
         "accounts_payable": opening_ap,
+        "excise_tax_payable": 0.0,
         "other_liabilities": opening_other,
         "total_current_liabilities": opening_ap + opening_other,
         "debt": opening_debt,
@@ -882,7 +1054,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     all_cash: List[Dict[str, Any]] = []
     all_balance: List[Dict[str, Any]] = []
 
-    prev_ar, prev_inv, prev_ap = opening_ar, opening_inv, opening_ap
+    prev_ar, prev_inv, prev_ap, prev_excise = opening_ar, opening_inv, opening_ap, 0.0
     cash = opening_cash
     fa_gross = opening_fa_gross
     acc_dep = opening_acc_dep
@@ -891,6 +1063,11 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     cash_shortfall_periods: List[str] = []
 
     for period in all_periods:
+        gross_sales = sales["gross_sales"][period]
+        deductions = {dtype: sales["deductions"][dtype][period] for dtype in DEDUCTION_TYPES}
+        total_deductions = sum(deductions[t] for t in CONTRA_REVENUE_TYPES)
+        excise = deductions["excise_tax"]
+        commissions = deductions["commission"]
         revenue = sales["revenue"][period]
         materials = sales["materials"][period]
         labor = sales["labor"][period]
@@ -904,7 +1081,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         admin = expenses["admin"][period]
         operating = expenses["operating"][period]
         dep = capex["depreciation"][period]
-        total_opex = payroll_cost + admin + operating + dep
+        total_opex = commissions + payroll_cost + admin + operating + dep
         operating_income = gross_profit - total_opex
 
         interest = loans["interest"][period]
@@ -915,6 +1092,12 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
 
         all_income.append({
             "period": period,
+            "gross_sales": gross_sales,
+            "terms_allowance": deductions["terms_allowance"],
+            "chargebacks": deductions["chargebacks"],
+            "other_allowances": deductions["other_allowance"],
+            "excise_tax": excise,
+            "total_sales_deductions": total_deductions,
             "revenue": revenue,
             "units_sold": sales["quantity"][period],
             "cogs_materials": materials,
@@ -925,6 +1108,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "total_cogs": total_cogs,
             "gross_profit": gross_profit,
             "gross_margin_pct": (gross_profit / revenue * 100) if revenue else 0.0,
+            "commissions": commissions,
             "payroll": payroll_cost,
             "admin_expense": admin,
             "operating_expense": operating,
@@ -941,15 +1125,19 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
 
         # Working capital balances at period end
         product_cogs = materials + labor + manufacturing
-        purchases = materials + factory_overhead + other_cogs + admin + operating
-        ar = revenue * dso / AVG_DAYS_PER_MONTH
+        purchases = materials + factory_overhead + other_cogs + admin + operating + commissions
+        # Customers owe the invoice (incl. the embedded excise) less the
+        # allowances they deduct; the excise is owed on to the government.
+        ar = (revenue + excise) * dso / AVG_DAYS_PER_MONTH
         inv = product_cogs * dio / AVG_DAYS_PER_MONTH
         ap = purchases * dpo / AVG_DAYS_PER_MONTH
+        excise_payable = excise * excise_days / AVG_DAYS_PER_MONTH
         delta_ar = ar - prev_ar
         delta_inv = inv - prev_inv
         delta_ap = ap - prev_ap
+        delta_excise = excise_payable - prev_excise
 
-        cfo = net_income + dep - delta_ar - delta_inv + delta_ap
+        cfo = net_income + dep - delta_ar - delta_inv + delta_ap + delta_excise
         capex_amt = capex["capex"][period]
         cfi = -capex_amt
         proceeds = loans["proceeds"][period]
@@ -968,6 +1156,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "change_in_accounts_receivable": -delta_ar,
             "change_in_inventory": -delta_inv,
             "change_in_accounts_payable": delta_ap,
+            "change_in_excise_tax_payable": delta_excise,
             "operating_cash_flow": cfo,
             "capex": -capex_amt,
             "investing_cash_flow": cfi,
@@ -986,7 +1175,8 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         debt = debt + proceeds - principal
         equity = opening_equity + cumulative_ni
         total_assets = cash + ar + inv + (fa_gross - acc_dep)
-        total_liabilities = ap + opening_other + debt
+        current_liabilities = ap + excise_payable + opening_other
+        total_liabilities = current_liabilities + debt
         all_balance.append({
             "period": period,
             "cash": cash,
@@ -998,8 +1188,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "fixed_assets_net": fa_gross - acc_dep,
             "total_assets": total_assets,
             "accounts_payable": ap,
+            "excise_tax_payable": excise_payable,
             "other_liabilities": opening_other,
-            "total_current_liabilities": ap + opening_other,
+            "total_current_liabilities": current_liabilities,
             "debt": debt,
             "total_liabilities": total_liabilities,
             "opening_equity": opening_equity,
@@ -1007,9 +1198,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "total_equity": equity,
             "total_liabilities_and_equity": total_liabilities + equity,
             "balance_check": total_assets - (total_liabilities + equity),
-            "working_capital": (cash + ar + inv) - (ap + opening_other),
+            "working_capital": (cash + ar + inv) - current_liabilities,
         })
-        prev_ar, prev_inv, prev_ap = ar, inv, ap
+        prev_ar, prev_inv, prev_ap, prev_excise = ar, inv, ap, excise_payable
 
     # Slice the window out of the modelled range. The opening column is the
     # balance sheet at the end of the month before the window: the carried
@@ -1098,6 +1289,20 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         "detail": {
             "revenue_by_product": _round_dict(sales["by_product"]),
             "revenue_by_customer": _round_dict(sales["by_customer"]),
+            "revenue_by_customer_type": _round_dict(sales["by_customer_type"]),
+            "sales_deductions": {
+                "rule_count": sales["deduction_rule_count"],
+                "rows_with_deductions": sales["rows_with_deductions"],
+                "by_type": {
+                    dtype: {
+                        "label": meta["label"],
+                        "treatment": meta["treatment"],
+                        "statement_line": meta["statement_line"],
+                        "total": round(sum(sales["deductions"][dtype][p] for p in periods), 2),
+                    }
+                    for dtype, meta in DEDUCTION_TYPES.items()
+                },
+            },
             "expenses_by_category": _round_dict(expenses["by_category"]),
             "payroll_by_department": _round_dict({d: _slice(v, periods) for d, v in payroll["by_department"].items()}),
             "payroll_by_business_unit": _round_dict({u: _slice(v, periods) for u, v in payroll["by_business_unit"].items()}),
