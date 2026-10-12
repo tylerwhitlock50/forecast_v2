@@ -63,6 +63,75 @@ GOVERNANCE_GUARD_TABLE = 'governance_guard'
 GOVERNANCE_TOKEN = 'SCENARIO_GOVERNED'
 
 
+#: Tables a replayed execution_log statement may never write (replay_execution_logs): the governance records
+#: (services.governance.GOVERNED_TABLES: change history, approvals, actuals and their batches / close), the
+#: approve / unlock switch and the internal log / cache tables.
+REPLAY_PROTECTED_TABLES = frozenset({
+    'audit_log', 'scenario_approvals', 'actuals', 'actuals_batches', 'actuals_batch_changes', 'actuals_periods',
+    GOVERNANCE_GUARD_TABLE, 'execution_log', 'forecast_results',
+})
+#: forecast columns a replay may never change: they move only through approve / unlock
+#: (services.governance.GOVERNED_FORECAST_COLUMNS).
+REPLAY_PROTECTED_FORECAST_COLUMNS = ('locked', 'status', 'approved_by', 'approved_at', 'approval_note')
+
+
+def replay_authorizer(denied: List[str]):
+    """
+    SQLite authorizer for replayed SQL: reads and plain row writes only. It
+    denies (and appends why to ``denied``) any write to
+    REPLAY_PROTECTED_TABLES or SQLite's own tables, any change to the forecast
+    approval columns, and everything that is not a row read or write: schema
+    changes (CREATE / DROP / ALTER of tables, triggers, views, indexes),
+    PRAGMA, ATTACH / DETACH, transaction control and savepoints.
+    """
+    reads = (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE)
+    writes = {sqlite3.SQLITE_INSERT: 'insert into', sqlite3.SQLITE_UPDATE: 'update',
+              sqlite3.SQLITE_DELETE: 'delete from'}
+
+    def authorize(action: int, arg1: Any, arg2: Any, _db: Any, _trigger: Any) -> int:
+        if action in reads:
+            return sqlite3.SQLITE_OK
+        if action in writes:
+            table = str(arg1 or '')
+            if table in REPLAY_PROTECTED_TABLES or table.lower().startswith('sqlite_'):
+                denied.append(f"{writes[action]} {table}")
+                return sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_UPDATE and table == 'forecast' and arg2 in REPLAY_PROTECTED_FORECAST_COLUMNS:
+                denied.append(f"change forecast.{arg2} (approve / unlock only)")
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        denied.append("schema change, PRAGMA, ATTACH or transaction control")
+        return sqlite3.SQLITE_DENY
+
+    return authorize
+
+
+def _approval_state(cursor) -> Dict[Any, Tuple]:
+    """forecast_id -> its approval columns (REPLAY_PROTECTED_FORECAST_COLUMNS)."""
+    cursor.execute(f"SELECT forecast_id, {', '.join(REPLAY_PROTECTED_FORECAST_COLUMNS)} FROM forecast")
+    return {row[0]: tuple(row[1:]) for row in cursor.fetchall()}
+
+
+def _approval_state_change(before: Dict[Any, Tuple], after: Dict[Any, Tuple]) -> Optional[str]:
+    """
+    Why a replayed statement's effect on the scenario approval columns is
+    refused, or None: an existing scenario's columns changed (INSERT OR
+    REPLACE re-creates a row without an UPDATE), or a new scenario was
+    created other than as a plain unlocked draft with no approver.
+    """
+    for forecast_id, values in after.items():
+        if forecast_id in before:
+            if values != before[forecast_id]:
+                return f"change the approval fields of scenario {forecast_id} (approve / unlock only)"
+            continue
+        locked, status, *approval = values
+        if str(locked if locked is not None else 0).strip() not in ('0', '') \
+                or str(status or 'draft').strip().lower() != 'draft' \
+                or any(v not in (None, '') for v in approval):
+            return f"create scenario {forecast_id} approved, locked or with an approver (approve / unlock only)"
+    return None
+
+
 def governance_guard_on(conn: sqlite3.Connection) -> None:
     """Let the forecast governance columns change in the CURRENT transaction (pair with governance_guard_off)."""
     conn.execute(f"INSERT INTO {GOVERNANCE_GUARD_TABLE} (active) VALUES (1)")
@@ -1981,12 +2050,29 @@ class DatabaseManager:
         
         return result
     
-    def replay_execution_logs(self, target_date: str = None, max_log_id: int = None, 
+    def replay_execution_logs(self, target_date: str = None, max_log_id: int = None,
                              user_id: str = None, session_id: str = None) -> Dict[str, Any]:
-        """Replay SQL statements from execution log up to a specific point in time"""
+        """
+        Replay SQL statements from execution log up to a specific point in time.
+
+        The statements run in ONE transaction under ``replay_authorizer``: a
+        replay never writes the governance records (change history,
+        approvals, actuals and their batches / close), the approve / unlock
+        switch, the internal log / cache tables or a scenario's approval
+        columns, never changes the schema (tables, triggers ...), and never
+        runs PRAGMA / ATTACH / transaction control. Recursive triggers are on,
+        so a REPLACE that deletes a locked scenario's row meets the lock
+        triggers, and the approval columns are compared after every
+        statement (a re-created or new scenario cannot arrive approved). If
+        any statement tries any of that, or hits an approved (locked)
+        scenario, the whole replay is refused (``status: 'refused'``,
+        ``code: 409``, ``refused: [{log_id, sql_statement, reason}]``) and
+        nothing is changed. Other failing statements are reported in
+        ``errors`` and the rest is committed.
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Build query to get logs to replay
             query = "SELECT * FROM execution_log WHERE execution_status = 'success'"
@@ -2017,31 +2103,83 @@ class DatabaseManager:
             cursor.execute("PRAGMA table_info(execution_log)")
             columns = [col[1] for col in cursor.fetchall()]
             
-            # Replay each SQL statement
+            # Replay each SQL statement, in one transaction, under the replay authorizer
             replayed_count = 0
             failed_count = 0
             errors = []
-            
-            for log_row in logs_to_replay:
-                log_entry = dict(zip(columns, log_row))
-                sql_statement = log_entry["sql_statement"]
-                
-                try:
-                    # Skip SELECT statements as they don't modify data
-                    if not sql_statement.strip().upper().startswith('SELECT'):
+            refused = []
+            denied: List[str] = []
+
+            # REPLACE deletes a conflicting row; only with recursive triggers do the lock triggers see that delete.
+            cursor.execute("PRAGMA recursive_triggers = ON")
+            if not conn.in_transaction:
+                cursor.execute("BEGIN")
+            approvals = _approval_state(cursor)
+            conn.set_authorizer(replay_authorizer(denied))
+            try:
+                for log_row in logs_to_replay:
+                    log_entry = dict(zip(columns, log_row))
+                    sql_statement = str(log_entry.get("sql_statement") or "")
+
+                    # Skip SELECT statements (and blanks) as they don't modify data
+                    if not sql_statement.strip() or sql_statement.strip().upper().startswith('SELECT'):
+                        continue
+                    denied.clear()
+                    try:
                         cursor.execute(sql_statement)
                         replayed_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    errors.append({
-                        "log_id": log_entry["log_id"],
-                        "sql_statement": sql_statement,
-                        "error": str(e)
-                    })
-            
+                        after = _approval_state(cursor)
+                        change = _approval_state_change(approvals, after)
+                        if change:
+                            refused.append({"log_id": log_entry.get("log_id"), "sql_statement": sql_statement,
+                                            "reason": change})
+                        approvals = after
+                    except Exception as e:
+                        text = str(e)
+                        if denied or GOVERNANCE_TOKEN in text or 'SCENARIO_LOCKED' in text:
+                            if denied:
+                                reason = "; ".join(dict.fromkeys(denied))
+                            elif GOVERNANCE_TOKEN in text:
+                                reason = "change a scenario's approval fields (approve / unlock only)"
+                            else:
+                                reason = "change rows of an approved (locked) scenario"
+                            refused.append({"log_id": log_entry.get("log_id"), "sql_statement": sql_statement,
+                                            "reason": reason})
+                            continue
+                        failed_count += 1
+                        errors.append({
+                            "log_id": log_entry.get("log_id"),
+                            "sql_statement": sql_statement,
+                            "error": text
+                        })
+            finally:
+                conn.set_authorizer(None)
+
+            if not refused:
+                cursor.execute(f"SELECT COUNT(*) FROM {GOVERNANCE_GUARD_TABLE}")
+                if cursor.fetchone()[0]:  # belt and braces: the approve / unlock switch is never left on
+                    refused.append({"log_id": None, "sql_statement": None,
+                                    "reason": f"leave {GOVERNANCE_GUARD_TABLE} set"})
+            if refused:
+                conn.rollback()
+                shown = "; ".join(f"log {r['log_id']}: would {r['reason']}" for r in refused[:10])
+                more = f"; and {len(refused) - 10} more" if len(refused) > 10 else ""
+                return {
+                    "status": "refused",
+                    "code": 409,
+                    "error": (f"Nothing replayed: {len(refused)} logged statement(s) would change the governance "
+                              f"records, the schema or an approved scenario ({shown}{more}). A replay only "
+                              f"re-applies plain data changes; approvals, the change history, actuals and "
+                              f"month-end close change only through their own endpoints. Nothing was changed."),
+                    "refused": refused,
+                    "replayed_count": 0,
+                    "failed_count": failed_count,
+                    "errors": errors,
+                }
+
             # Commit all changes
             conn.commit()
-            
+
             result = {
                 "status": "success",
                 "message": f"Replayed {replayed_count} SQL statements successfully",

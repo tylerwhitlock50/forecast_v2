@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
@@ -55,13 +55,20 @@ async def load_table_endpoint(
     """
     Load a CSV file into an existing table. The table is never dropped or
     recreated. Errors: 400 unknown table / mode / columns, 409 the load would
-    orphan rows of another table, 422 row errors (``row N: ...`` for every bad
-    row); nothing is written on error. See utils.data_loader for details.
+    orphan rows of another table or touch an approved scenario (the body's
+    ``forecast_id`` names it), 422 row errors (``row N: ...`` for every bad
+    row); nothing is written on error. ``data.forecast_id`` is the scenario
+    every loaded row belongs to (null when they differ or the table has
+    none). See utils.data_loader for details.
     """
     try:
         csv_bytes = await csv_file.read()
         result = load_csv_to_table(table_name, csv_bytes, if_exists=mode)
         if result["status"] == "error":
+            if result.get("forecast_id"):
+                # A refusal about a stored scenario names it (the change history files the load under it).
+                return JSONResponse(status_code=result.get("code", 500),
+                                    content={"detail": result["error"], "forecast_id": result["forecast_id"]})
             raise HTTPException(status_code=result.get("code", 500), detail=result["error"])
         if table_name == "forecast":
             # An uploaded scenario list may lack is_base; keep exactly one base.
@@ -129,7 +136,13 @@ async def replay_execution_logs_endpoint(
     session_id: Optional[str] = Query(None, description="Filter by session ID")
 ):
     """
-    Replay SQL statements from execution log up to a specific point in time
+    Replay SQL statements from execution log up to a specific point in time,
+    in one transaction. A replay re-applies plain data changes only: a
+    statement that would write the change history, approvals, actuals or
+    month-end close, change a scenario's approval fields or rows of an
+    approved scenario, change the schema (tables, triggers ...) or run
+    PRAGMA / ATTACH / transaction control refuses the whole replay with 409
+    and nothing is changed (see DatabaseManager.replay_execution_logs).
     """
     result = replay_execution_logs(
         target_date=target_date,
@@ -137,6 +150,8 @@ async def replay_execution_logs_endpoint(
         user_id=user_id,
         session_id=session_id
     )
+    if result["status"] == "refused":
+        raise HTTPException(status_code=409, detail=result["error"])
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
     

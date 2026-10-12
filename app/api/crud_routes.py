@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List, Tuple
 from db import get_forecast_data, get_saved_forecast_results
 from db.models import ForecastResponse, SQLApplyRequest
@@ -7,6 +8,7 @@ from api.import_routes import normalize_version
 from utils.period_normalizer import normalize_month
 from utils.data_loader import (
     ColumnValueError,
+    check_payroll_values,
     coerce_numeric,
     derive_bom_costs,
     describe_references,
@@ -350,6 +352,12 @@ def _refuse_governed_table(table_name: Any, record_id: Any = None) -> None:
         raise HTTPException(status_code=409, detail=f"{table_name} cannot be written here. {message}")
 
 
+def _scenario_refusal(detail: str, forecast_id: Any) -> JSONResponse:
+    """409 for a write a stored scenario's approval refuses: the body names that scenario (the change history
+    files the refusal under it)."""
+    return JSONResponse(status_code=409, content={"detail": detail, "forecast_id": forecast_id})
+
+
 def _primary_key(table_name: str, columns: List[Tuple]) -> str:
     pk = [col[1] for col in sorted(columns, key=lambda c: c[5]) if col[5]]
     if pk:
@@ -550,8 +558,12 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
       columns accept '$1,050.00' style text (422 naming the column when not a
       number); unknown references are a 422 naming them. The governance
       records (change history, approvals, actuals, their batches and
-      month-end close) are refused with 409 naming their own endpoint, and a
-      scenario cannot be created approved or locked. BOM lines get
+      month-end close) and the internal tables (execution_log,
+      forecast_results, sqlite_*) are refused with 409 naming their own
+      endpoint, and a scenario cannot be created approved or locked. A
+      payroll row follows the employee endpoints' rules (no negative pay or
+      hours, weekly hours up to 168, dates as YYYY-MM-DD, end_date not
+      before start_date; 422 naming the column). BOM lines get
       material_cost = qty x unit_price, a normalized version ('1' -> '1.0'),
       the next bom_line when none is given and a bom_definitions header (moved
       to the newest version). A bom_definitions row for an existing BOM with
@@ -610,6 +622,8 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
 
             try:
                 valid_data = _clean_values(table_name, columns, valid_data)
+                if table_name == "payroll":  # the employee endpoints' pay, hours and date rules
+                    check_payroll_values(valid_data)
             except ColumnValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
 
@@ -683,10 +697,12 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
     change; unknown columns are ignored and named in the message; numeric
     columns accept '$1,050.00' style text (422 naming the column otherwise).
     BOM lines keep material_cost = qty x unit_price; sales rows keep
-    total_revenue = quantity x unit_price unless it is given. 409 for the
-    governance records (see /forecast/create), for a scenario's status /
-    locked / approved_* (approve / unlock change those) and for the name,
-    description or notes of an approved scenario.
+    total_revenue = quantity x unit_price unless it is given. Payroll rows
+    keep the employee endpoints' rules (422). 409 for the governance records
+    (see /forecast/create), for a scenario's status / locked / approved_*
+    (approve / unlock change those) and for the name, description or notes
+    of an approved scenario; that 409 body carries the scenario's
+    ``forecast_id``.
     """
     conn = None
     try:
@@ -742,10 +758,16 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             merged = {**current, **updates}
             if merged.get("quantity") is not None and merged.get("unit_price") is not None:
                 updates["total_revenue"] = merged["quantity"] * merged["unit_price"]
+        elif table_name == "payroll":
+            try:  # the employee endpoints' rules; a change to one date is checked against the stored other
+                check_payroll_values(updates, current)
+            except ColumnValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
         elif table_name == "forecast":
             refusal = forecast_write_refusal(current, updates)
             if refusal:
-                raise HTTPException(status_code=409, detail=refusal)
+                conn.rollback()
+                return _scenario_refusal(refusal, current.get("forecast_id"))
             # Sent back unchanged (a form posting the whole row): nothing to write for these.
             updates = {k: v for k, v in updates.items() if k not in GOVERNED_FORECAST_COLUMNS}
             if not updates:
