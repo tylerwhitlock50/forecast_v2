@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ImportPreview from './ImportPreview';
 import { stepByKind, summarizeImportResult } from './importSteps';
@@ -55,13 +55,13 @@ describe('ImportPreview', () => {
     const result = salesDryRun({ mode: 'replace', deleted: 12, replace_blocked: false });
     expect(result).toMatchObject({ mode: 'replace', deleted: 12, replaceBlocked: false });
     render(<ImportPreview result={result} rows={[]} step={stepByKind('sales')} />);
-    expect(screen.getByText('Will remove 12 lines that are not in this file')).toBeInTheDocument();
+    expect(screen.getByText('Will remove 12 monthly rows that are not in this file')).toBeInTheDocument();
     expect(screen.getByText(/Only the months this file covers are touched/)).toBeInTheDocument();
   });
 
   it('says a whole-scenario replace removes lines in every month', () => {
     render(<ImportPreview result={salesDryRun({ mode: 'replace_all', deleted: 1 })} rows={[]} step={stepByKind('sales')} />);
-    expect(screen.getByText('Will remove 1 line that is not in this file')).toBeInTheDocument();
+    expect(screen.getByText('Will remove 1 monthly row that is not in this file')).toBeInTheDocument();
     expect(screen.getByText(/afterwards the scenario holds exactly the lines in this file/)).toBeInTheDocument();
   });
 
@@ -110,6 +110,63 @@ describe('ImportPreview', () => {
     expect(screen.getByTestId('error-column')).toHaveTextContent('Distributor column');
     expect(screen.getByText('Distributor: call us ·', { exact: false })).toBeInTheDocument();
     expect(screen.getByText(/1 row has a problem: fix it to import this file/)).toBeInTheDocument();
+  });
+
+  it('shows unchanged sales rows on their own and never as updated', () => {
+    const result = salesDryRun({ imported: 10, inserted: 2, updated: 3, unchanged: 5 });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('sales')} />);
+    const tiles = Object.fromEntries(screen.getAllByTestId('count-tile').map((t) => [t.firstChild.textContent, t.children[1].textContent]));
+    expect(tiles).toMatchObject({ 'New rows': '2', 'Updated rows': '3', Unchanged: '5' });
+  });
+
+  it('counts monthly rows and customer x product lines a sales replace removes, with the list behind a toggle', () => {
+    const result = salesDryRun({
+      mode: 'replace', deleted: 14, removed_line_count: 3,
+      removed_lines: [
+        { customer_id: 'C-001', customer_name: 'Big Sky Outdoors', unit_id: 'RF-100', unit_name: 'Ridgeline', months: ['2027-01', '2027-02', '2027-03'] },
+        { customer_id: 'C-002', customer_name: 'C-002', unit_id: 'PS-200', months: ['2027-05', '2027-07'] },
+      ],
+    });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('sales')} />);
+    expect(screen.getByText('Will remove 14 monthly rows (3 customer × product lines) that are not in this file')).toBeInTheDocument();
+    const list = screen.getByTestId('removed-lines');
+    expect(list.tagName).toBe('DETAILS');
+    expect(list).not.toHaveAttribute('open');
+    expect(within(list).getByText('Show the 3 lines that will be removed')).toBeInTheDocument();
+    expect(within(list).getByText('Big Sky Outdoors')).toBeInTheDocument();
+    expect(within(list).getByText('Jan – Mar 2027')).toBeInTheDocument();
+    expect(within(list).getByText('May 2027, Jul 2027')).toBeInTheDocument();
+    expect(within(list).getByText(/and 1 more line/)).toBeInTheDocument();
+  });
+
+  it('labels a BOM replace as BOMs replaced with the lines it deletes', () => {
+    const result = summarizeImportResult({
+      data: {
+        created: 64, updated: 0, replaced: 8, skipped: 0, mode: 'replace', errors: [], warnings: [], boms_replaced: 8,
+        boms: [], summary: { boms: 8, lines_written: 64, lines_deleted: 61 },
+      },
+    });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('boms')} />);
+    expect(screen.getByText('BOMs replaced')).toBeInTheDocument();
+    expect(screen.getByText('61 lines deleted first')).toBeInTheDocument();
+    expect(screen.queryByText('Replaced BOM lines')).not.toBeInTheDocument();
+  });
+
+  it('labels a routing replace as Routings replaced, from replaced when routings_replaced is missing', () => {
+    const result = summarizeImportResult({
+      data: { created: 35, updated: 0, replaced: 8, skipped: 0, mode: 'replace', errors: [], warnings: [], routings: [], summary: { operations_deleted: 33 } },
+    });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('routings')} />);
+    const tile = screen.getByText('Routings replaced').parentElement;
+    expect(tile).toHaveTextContent('8');
+    expect(tile).toHaveTextContent('33 operations deleted first');
+  });
+
+  it('shows unchanged records next to new and updated', () => {
+    const result = summarizeImportResult({ data: { created: 0, updated: 1, skipped: 0, errors: [], warnings: [], summary: { unchanged: 11 } } });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('customers')} />);
+    const tiles = Object.fromEntries(screen.getAllByTestId('count-tile').map((t) => [t.firstChild.textContent, t.children[1].textContent]));
+    expect(tiles).toMatchObject({ 'New customers': '0', 'Updated customers': '1', Unchanged: '11' });
   });
 
   it('keeps the deductions replace summary to its own noun', () => {

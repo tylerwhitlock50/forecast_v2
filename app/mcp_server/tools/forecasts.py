@@ -25,7 +25,8 @@ import db.database as dbmod
 from utils.period_normalizer import normalize_month
 from mcp_server.core import READ, UPSERT, call
 from mcp_server.tools._common import (
-    cap, clean_ids, compact_warnings, drop_empty, no_sales_hint, out, register, scenario_window, table,
+    cap, clean_ids, compact_warnings, drop_empty, no_sales_hint, out, register, report_totals_block, scenario_window,
+    table,
 )
 
 ForecastIds = Annotated[List[str], Field(description="Scenario ids, usually one, e.g. ['F001']", min_length=1)]
@@ -235,8 +236,10 @@ async def sales_detail(
     """Every sales line of the window as the statements engine sees it:
     gross sales, each deduction and the rules applied, net sales,
     commissions, material / labor / machine COGS, contribution margin and
-    hours. Paged table; totals cover all matching rows. For totals by
-    month / product / customer use forecast_cogs_forecast instead."""
+    hours. Paged table; totals cover all matching rows: `totals` add up the
+    rows as shown (cent-rounded lines), `report_totals` are the
+    statement-exact figures (see rounding_note). For totals by month /
+    product / customer use forecast_cogs_forecast instead."""
     ids = clean_ids(forecast_ids, "forecast_ids")
     if period is not None and str(period).strip():
         month = normalize_month(period)
@@ -257,11 +260,20 @@ async def sales_detail(
                    and k not in ("unit_price",)]
         totals = {k: sum(float(r.get(k) or 0) for r in rows) for k in numeric}
         page = rows[offset:offset + limit]
+        exact: Dict[str, Any] = {}
+        if rows:
+            # The API's statement-exact totals for the same lines (ids as stored: the tool matches any case).
+            api_filters = {k: (rows[0].get(k) if k in ("customer_id", "unit_id") else v) for k, v in active.items()}
+            check = await call("GET", "/reporting/sales-detail",
+                               params=_query(ids, start, end, limit=1, offset=0, **api_filters))
+            if check.get("total_count") == total_count:
+                exact = report_totals_block(check)
     else:
         body = await call("GET", "/reporting/sales-detail", params=_query(ids, start, end, limit=limit, offset=offset))
         page = body.get("rows") or []
         total_count = body.get("total_count") or 0
         totals = body.get("totals") or {}
+        exact = report_totals_block(body)
     available = [c.get("key") for c in body.get("columns") or []] or list(page[0].keys() if page else [])
     wanted = list(columns) if columns else [c for c in DEFAULT_DETAIL_COLUMNS if not available or c in available]
     if available:
@@ -274,6 +286,7 @@ async def sales_detail(
         "total_count": total_count, "returned": returned, "offset": offset,
         "next_offset": offset + returned if offset + returned < total_count else None,
         "totals": totals,
+        **exact,
         "rows": table(page, wanted),
     }
     if active:
@@ -282,6 +295,16 @@ async def sales_detail(
     if hint:
         result["hint"] = hint
     return out(result)
+
+
+def _scenario_names(ids: List[str]) -> Dict[str, str]:
+    from services.workbook_export import scenario_names
+
+    conn = dbmod.db_manager.get_connection()
+    try:
+        return scenario_names(conn.cursor(), ids)
+    finally:
+        dbmod.db_manager.close_connection(conn)
 
 
 def _write(path: str, ids: List[str], start: str, end: str, hours_per_fte: float) -> Dict[str, Any]:
@@ -300,7 +323,8 @@ async def export_workbook(
     start_period: Start = None,
     end_period: End = None,
     filename: Annotated[Optional[str], Field(
-        description="File name (letters, digits, . _ -; .xlsx added). Default forecast_<scenario>_<start>_<end>.xlsx. "
+        description="File name (letters, digits, . _ -; .xlsx added). Default forecast_<scenario name>_<start>_<end>"
+                    ".xlsx, e.g. forecast_2027-budget_2027-01_2027-12.xlsx. "
                     "An existing file of the same name is overwritten.")] = None,
     hours_per_fte: Annotated[float, Field(description="Paid hours per FTE per month for the labor sheet", gt=0)
                              ] = DEFAULT_HOURS_PER_FTE,
@@ -317,7 +341,8 @@ async def export_workbook(
     ids = clean_ids(forecast_ids, "forecast_ids")
     start, end, sales_window = await scenario_window(ids, start_period, end_period)
     data_dir = dbmod.db_manager.data_dir
-    path = export_path(data_dir, ids, start, end, filename)
+    names = None if filename else await anyio.to_thread.run_sync(_scenario_names, ids)
+    path = export_path(data_dir, ids, start, end, filename, names)
     try:
         saved = await anyio.to_thread.run_sync(_write, path, ids, start, end, float(hours_per_fte))
     except ValueError as exc:

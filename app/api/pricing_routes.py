@@ -659,6 +659,73 @@ def _request_duplicates(kind: str, cleaned: Sequence[Tuple[int, Dict[str, Any]]]
 
 
 # ---------------------------------------------------------------------------
+# Overlapping months (non-blocking warnings)
+# ---------------------------------------------------------------------------
+
+def months_text(rule: Dict[str, Any]) -> str:
+    """'2027-01..open' for a rule's start / end months."""
+    return f"{rule.get('start_period') or 'open'}..{rule.get('end_period') or 'open'}"
+
+
+def scope_slot(kind: str, rule: Dict[str, Any]) -> Tuple:
+    """A rule's slot WITHOUT its months: rules in the same scope slot compete month by month."""
+    key_fn = price_rule_key if kind == "price" else deduction_rule_key
+    return key_fn({**rule, "start_period": None, "end_period": None})
+
+
+def _overlap(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """(first, last) month both windows cover ('' / '9999-99' for open ends), or None."""
+    start = max(a.get("start_period") or "", b.get("start_period") or "")
+    end = min(a.get("end_period") or "9999-99", b.get("end_period") or "9999-99")
+    return (start, end) if start <= end else None
+
+
+def overlap_message(kind: str, clean: Dict[str, Any], other: Dict[str, Any], other_ref: str, label: str) -> str:
+    """'price: overlaps PRC-1A2B (2027-01..open) for the same scope ...; the later start month wins ...'."""
+    what = "price" if kind == "price" else "rule"
+    start, end = _overlap(clean, other) or ("", "")
+    window = f"{start or 'open'}..{'open' if end == '9999-99' else end}"
+    wins = precedence_key(clean, kind) > precedence_key(other, kind)
+    tie = (clean.get("start_period") or "") == (other.get("start_period") or "")
+    rule_text = "the bounded (earlier-ending) one wins" if tie else "the later start month wins"
+    winner = f"this {what}" if wins else other_ref
+    return (f"{label}: overlaps {other_ref} ({months_text(other)}) for the same scope with different months "
+            f"(this {what}: {months_text(clean)}); {rule_text}, so {winner} applies in {window}")
+
+
+def overlap_warnings(kind: str, cleaned: Sequence[Tuple[int, Dict[str, Any]]], active: List[Dict[str, Any]],
+                     bulk: bool, exclude_id: Optional[str] = None) -> List[str]:
+    """
+    Non-blocking warnings for active rules (and other items of the same
+    request) with the same type / scope (and other_allowance program name)
+    whose DIFFERENT month range overlaps an item's: both are kept and, month
+    by month, the later start month wins (see TIE_BREAK_TEXT).
+    """
+    id_col = "price_id" if kind == "price" else "rule_id"
+    what = "price" if kind == "price" else "rule"
+    stored: Dict[Tuple, List[Dict[str, Any]]] = {}
+    for rule in active:
+        if rule.get(id_col) != exclude_id:
+            stored.setdefault(scope_slot(kind, rule), []).append(rule)
+    warnings: List[str] = []
+    seen: Dict[Tuple, List[Tuple[int, Dict[str, Any]]]] = {}
+    for index, clean in cleaned:
+        if clean.get("is_active", 1) in (0, False):
+            continue
+        label = f"{what} {index}" if bulk else what
+        slot = scope_slot(kind, clean)
+        months = (clean.get("start_period"), clean.get("end_period"))
+        for rule in stored.get(slot, []):
+            if (rule.get("start_period"), rule.get("end_period")) != months and _overlap(clean, rule):
+                warnings.append(overlap_message(kind, clean, rule, str(rule.get(id_col)), label))
+        for other_index, other in seen.get(slot, []):
+            if (other.get("start_period"), other.get("end_period")) != months and _overlap(clean, other):
+                warnings.append(overlap_message(kind, clean, other, f"{what} {other_index} of this request", label))
+        seen.setdefault(slot, []).append((index, clean))
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Presentation
 # ---------------------------------------------------------------------------
 
@@ -800,7 +867,10 @@ async def create_deduction_rules(payload: Any = Body(...)):
     lists every problem. Rates are fractions (0.02 = 2%). A rule whose
     deduction_type, scenario, scope fields, start/end months (and, for
     other_allowance, program name) equal an existing ACTIVE rule's is
-    refused with 409 and a detail naming that rule: update it instead.
+    refused with 409 and a detail naming that rule: update it instead. A
+    rule whose months DIFFER from but OVERLAP an active rule of the same
+    type and scope is created with a warning ('overlaps DED-... (2027-01..
+    open) ...; the later start month wins ...').
     """
     items, bulk = _body_items(payload, "rules")
     conn = db_manager.get_connection()
@@ -825,6 +895,7 @@ async def create_deduction_rules(payload: Any = Body(...)):
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
         _refuse_duplicates(cursor, "deduction", cleaned, bulk)
+        warnings.extend(overlap_warnings("deduction", cleaned, _active_rules(cursor, "deduction"), bulk))
         ids = [insert_deduction_rule(cursor, clean) for _index, clean in cleaned]
         conn.commit()
         created = [describe_deduction_rule(get_deduction_rule(cursor, rid)) for rid in ids]
@@ -1174,6 +1245,8 @@ async def update_deduction(rule_id: str, payload: Dict[str, Any] = Body(...)):
                 check_duplicate_rule(cursor, "deduction", clean, exclude_id=rule_id)
             except DuplicateRuleError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
+            warnings.extend(overlap_warnings("deduction", [(1, clean)], _active_rules(cursor, "deduction"), False,
+                                             exclude_id=rule_id))
         unknown = _unknown_keys(payload, DEDUCTION_FIELDS)
         if unknown:
             warnings.append(f"ignored unknown fields {', '.join(unknown)}")
@@ -1265,7 +1338,10 @@ async def create_prices(payload: Any = Body(...)):
     All-or-nothing; the 422 lists every invalid rule. A rule whose scenario,
     scope fields (unit_id, customer_id, customer_type, unit_type) and
     start/end months equal an existing ACTIVE rule's is refused with 409 and
-    a detail naming that rule: update it instead.
+    a detail naming that rule: update it instead. A price whose months
+    DIFFER from but OVERLAP an active price of the same scope is created
+    with a warning ('overlaps PRC-... (2027-01..open) ...; the later start
+    month wins ...').
     """
     items, bulk = _body_items(payload, "prices")
     conn = db_manager.get_connection()
@@ -1290,6 +1366,7 @@ async def create_prices(payload: Any = Body(...)):
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
         _refuse_duplicates(cursor, "price", cleaned, bulk)
+        warnings.extend(overlap_warnings("price", cleaned, _active_rules(cursor, "price"), bulk))
         ids = [insert_price_rule(cursor, clean) for _index, clean in cleaned]
         conn.commit()
         units, customers = _master_maps(cursor)
@@ -1575,6 +1652,8 @@ async def update_price(price_id: str, payload: Dict[str, Any] = Body(...)):
                 check_duplicate_rule(cursor, "price", clean, exclude_id=price_id)
             except DuplicateRuleError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
+            warnings.extend(overlap_warnings("price", [(1, clean)], _active_rules(cursor, "price"), False,
+                                             exclude_id=price_id))
         unknown = _unknown_keys(payload, PRICE_FIELDS)
         if unknown:
             warnings.append(f"ignored unknown fields {', '.join(unknown)}")

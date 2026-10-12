@@ -267,6 +267,46 @@ const toError = (e) => {
   };
 };
 
+const toRemovedLine = (line) => {
+  if (!line || typeof line !== 'object') return null;
+  const customerId = line.customer_id ?? line.customer ?? null;
+  const unitId = line.unit_id ?? line.product_id ?? line.product ?? null;
+  const rawMonths = line.months ?? line.periods ?? null;
+  const months = Array.isArray(rawMonths) ? rawMonths.map(String) : [];
+  const monthCount = Array.isArray(rawMonths) ? rawMonths.length : num(rawMonths ?? line.month_count ?? line.rows);
+  return {
+    customerId,
+    customerName: line.customer_name && line.customer_name !== customerId ? line.customer_name : null,
+    unitId,
+    unitName: line.unit_name && line.unit_name !== unitId ? line.unit_name : (line.product_name || null),
+    months,
+    monthCount,
+    quantity: line.quantity ?? line.total_quantity ?? null,
+    revenue: line.revenue ?? line.total_revenue ?? null,
+  };
+};
+
+/**
+ * What a checked file would change: rows written (new + updated, never the
+ * unchanged ones), rows removed by a replace, and customers / products a
+ * sales import would create. `nothing` is true when the import would change
+ * nothing at all.
+ */
+export const plannedChanges = (result, kind) => {
+  if (!result) return { writes: 0, removals: 0, created: 0, nothing: false };
+  const isSales = kind === 'sales';
+  let writes;
+  if (isSales) {
+    // With an unchanged count the server splits the rows: new + updated are the real writes.
+    writes = result.inserted !== null && result.unchanged !== null ? result.inserted + result.updated : result.imported;
+  } else {
+    writes = result.created + result.updated;
+  }
+  const removals = result.replaceBlocked ? 0 : (isSales ? result.deleted : 0);
+  const created = isSales ? result.createdCustomers.length + result.createdProducts.length : 0;
+  return { writes, removals, created, nothing: writes + removals + created === 0 };
+};
+
 /**
  * A column map from the server, if it sends one, -> [{column, field}].
  * Accepts {file column: field} or a list of {column|source|file, field|target}.
@@ -296,6 +336,11 @@ export const summarizeImportResult = (payload) => {
   const data = payload?.data ?? payload ?? {};
   const summary = data.summary && typeof data.summary === 'object' ? data.summary : {};
   const pick = (key) => (data[key] !== undefined ? data[key] : summary[key]);
+  // Counts newer servers add: null when the server did not send them.
+  const optional = (...keys) => {
+    const key = keys.find((k) => pick(k) !== undefined && pick(k) !== null);
+    return key ? num(pick(key)) : null;
+  };
 
   const created = num(pick('created'));
   const updated = num(pick('updated'));
@@ -333,7 +378,17 @@ export const summarizeImportResult = (payload) => {
     createdMachines: asArray(pick('created_machines')),
     createdLaborTypes: asArray(pick('created_labor_types') || pick('created_labor_rates')),
     inserted: pick('inserted') !== undefined ? num(pick('inserted')) : null,
-    unchanged: num(summary.unchanged),
+    // Rows that match what is already saved (not counted as updated).
+    unchanged: optional('unchanged'),
+    // BOM / routing replace: how many BOMs or routings were rebuilt, and the
+    // lines / operations deleted first.
+    bomsReplaced: optional('boms_replaced'),
+    routingsReplaced: optional('routings_replaced'),
+    linesDeleted: optional('lines_deleted'),
+    operationsDeleted: optional('operations_deleted'),
+    // Sales replace: the customer x product lines behind the removed monthly rows.
+    removedLineCount: optional('removed_line_count'),
+    removedLines: asArray(pick('removed_lines')).map(toRemovedLine).filter(Boolean),
     startPeriod: data.start_period || null,
     endPeriod: data.end_period || null,
     totalQuantity: data.total_quantity ?? null,

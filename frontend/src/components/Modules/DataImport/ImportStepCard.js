@@ -7,7 +7,7 @@ import { Button } from '../../ui/button';
 import ImportPreview from './ImportPreview';
 import ColumnMapping from './ColumnMapping';
 import { describeHeaderRow, isTotalHeader, prepareSalesRows, readImportFile, salesFieldFor } from './fileParsing';
-import { describeColumnMapping, errorMessage, ignoredColumnsFromWarnings, plural, summarizeImportResult } from './importSteps';
+import { describeColumnMapping, errorMessage, ignoredColumnsFromWarnings, plannedChanges, plural, summarizeImportResult } from './importSteps';
 import { formatPeriod } from '../ReportingAnalysis/utils/formatters';
 
 const IMPORT_TIMEOUT_MS = 180000;
@@ -194,12 +194,65 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
     }
   };
 
-  // What the server says it would write: sales rows, or new + updated rows / lines / operations / rules.
-  const importCount = preview ? (isSales ? preview.imported : preview.created + preview.updated) : 0;
-  const nothingToChange = Boolean(preview) && importCount === 0 && preview.errors.length === 0;
+  // What the server says it would write (new + updated rows / lines / operations / rules, never the
+  // unchanged ones) and, for a sales replace, remove.
+  const planned = plannedChanges(preview, step.kind);
+  const importCount = planned.writes;
+  const toRemove = planned.removals;
+  const nothingToChange = Boolean(preview) && planned.nothing && preview.errors.length === 0;
   // A replace (sales, prices, deductions) refuses the whole file while any row has an error.
   const replaceBlocked = Boolean(preview?.replaceBlocked);
-  const toRemove = isSales && preview && !replaceBlocked ? preview.deleted : 0;
+  const rowNoun = step.rowNoun || ['row', 'rows'];
+  let confirmLabel;
+  if (preview && planned.nothing) {
+    confirmLabel = preview.errors.length > 0 && !preview.unchanged ? 'Nothing to import' : 'Nothing to change';
+  } else if (importCount === 0 && toRemove > 0) {
+    confirmLabel = `Remove ${plural(toRemove, ['monthly row', 'monthly rows'])}`;
+  } else {
+    confirmLabel = `Import ${plural(importCount, rowNoun)}${toRemove > 0 ? ` and remove ${plural(toRemove, ['monthly row', 'monthly rows'])}` : ''}`;
+  }
+
+  // The headline once the import is done.
+  const doneHeadline = (() => {
+    if (!result) return '';
+    const done = plannedChanges(result, step.kind);
+    const unchangedNote = result.unchanged ? ` (${plural(result.unchanged, ['row', 'rows'])} unchanged)` : '';
+    if (isSales) {
+      const where = scenario?.name || 'the scenario';
+      const lineCount = result.removedLineCount ?? (result.removedLines.length || null);
+      const removedRows = result.deleted
+        ? `${plural(result.deleted, ['monthly row', 'monthly rows'])}`
+          + `${lineCount ? ` (${plural(lineCount, ['customer × product line', 'customer × product lines'])})` : ''}`
+        : '';
+      const notInFile = `that ${result.deleted === 1 ? 'was' : 'were'} not in the file`;
+      if (done.writes === 0 && result.deleted) {
+        // Only removals: every row of the file was already saved.
+        return `Removed ${removedRows} from ${where} ${notInFile}`
+          + `${result.unchanged ? `; ${plural(result.unchanged, ['row', 'rows'])} unchanged` : ''}.`;
+      }
+      return `Imported ${plural(done.writes, ['sales row', 'sales rows'])} into ${where}${unchangedNote}`
+        + `${removedRows ? ` and removed ${removedRows} ${notInFile}` : ''}.`;
+    }
+    let replacedText = null;
+    if (result.replaced) {
+      if (step.kind === 'boms' || step.kind === 'routings') {
+        const isBoms = step.kind === 'boms';
+        const count = (isBoms ? result.bomsReplaced : result.routingsReplaced) ?? result.replaced;
+        const deleted = isBoms ? result.linesDeleted : result.operationsDeleted;
+        replacedText = `${plural(count, isBoms ? ['BOM', 'BOMs'] : ['routing', 'routings'])} replaced`
+          + (deleted ? ` (${plural(deleted, isBoms ? ['line', 'lines'] : ['operation', 'operations'])} deleted first)` : '');
+      } else {
+        replacedText = `${result.replaced.toLocaleString('en-US')} replaced`;
+      }
+    }
+    const parts = [
+      result.created ? `${result.created.toLocaleString('en-US')} added` : null,
+      result.updated ? `${result.updated.toLocaleString('en-US')} updated` : null,
+      replacedText,
+      result.unchanged ? `${result.unchanged.toLocaleString('en-US')} unchanged` : null,
+    ].filter(Boolean);
+    return `Import finished: ${parts.join(', ') || 'no changes'}.`;
+  })();
   const busy = phase === 'reading' || phase === 'checking' || phase === 'importing';
   const modeInfo = step.modes?.find((m) => m.value === mode);
   const headerNote = describeHeaderRow(parsed?.header);
@@ -442,11 +495,10 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                   <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
                     <Button
                       onClick={confirmImport}
-                      disabled={importCount === 0 || replaceBlocked}
+                      disabled={planned.nothing || replaceBlocked}
                       className="bg-orange-600 text-white hover:bg-orange-700"
                     >
-                      Import {plural(importCount, step.rowNoun || ['row', 'rows'])}
-                      {toRemove > 0 ? ` and remove ${plural(toRemove, ['line', 'lines'])}` : ''}
+                      {confirmLabel}
                     </Button>
                     <Button variant="outline" onClick={reset}>Cancel</Button>
                     {replaceBlocked && (
@@ -458,11 +510,15 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                     {!replaceBlocked && preview.errors.length > 0 && importCount > 0 && (
                       <span className="text-xs text-gray-500">Rows with problems are skipped. Fix the file and upload it again to include them.</span>
                     )}
-                    {!replaceBlocked && importCount === 0 && !nothingToChange && (
-                      <span className="text-xs text-red-700">Nothing can be imported. Fix the problems above and upload the file again.</span>
+                    {!replaceBlocked && planned.nothing && !nothingToChange && (
+                      <span className="text-xs text-red-700">
+                        {preview.unchanged
+                          ? 'The valid rows are already saved exactly like this. Fix the problems above and upload the file again to change the others.'
+                          : 'Nothing can be imported. Fix the problems above and upload the file again.'}
+                      </span>
                     )}
                     {nothingToChange && (
-                      <span className="text-xs text-gray-600">Nothing to change: everything in this file is already saved.</span>
+                      <span className="text-xs text-gray-600">Everything in this file is already saved exactly like this.</span>
                     )}
                   </div>
                 </>
@@ -478,13 +534,7 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 text-sm font-medium text-green-800">
                     <CheckCircle2 className="h-5 w-5" />
-                    {isSales
-                      ? `Imported ${plural(result.imported, ['sales row', 'sales rows'])} into ${scenario?.name || 'the scenario'}${result.deleted ? ` and removed ${plural(result.deleted, ['line', 'lines'])} that ${result.deleted === 1 ? 'was' : 'were'} not in the file` : ''}.`
-                      : `Import finished: ${[
-                        result.created ? `${result.created.toLocaleString('en-US')} added` : null,
-                        result.updated ? `${result.updated.toLocaleString('en-US')} updated` : null,
-                        result.replaced ? `${result.replaced.toLocaleString('en-US')} replaced` : null,
-                      ].filter(Boolean).join(', ') || 'no changes'}.`}
+                    {doneHeadline}
                   </div>
                   <ImportPreview result={result} rows={rowsToSend()} step={step} done sourceRowFor={parsed?.sales?.layout === 'wide' ? parsed.sales.sourceRowFor : null} />
                   <div className="flex flex-wrap gap-2">

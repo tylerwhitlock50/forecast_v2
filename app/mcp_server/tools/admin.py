@@ -19,14 +19,39 @@ async def save_database(
     return await call("POST", "/database/save", json={"name": name or ""})
 
 
+#: Snapshot fields kept in forecast_list_saved_databases (the API's list repeats each file in two lists).
+SNAPSHOT_FIELDS = ("filename", "kind", "saved_at", "size", "contents", "contents_error")
+
+
+def _compact_snapshot(item: Dict[str, Any]) -> Dict[str, Any]:
+    entry = {k: item.get(k) for k in SNAPSHOT_FIELDS if item.get(k) is not None}
+    contents = entry.get("contents")
+    if isinstance(contents, dict) and len(contents.get("scenarios") or []) > 10:
+        entry["contents"] = {**contents, "scenarios": contents["scenarios"][:10]}
+    return entry
+
+
 @mcp.tool(name="forecast_list_saved_databases", annotations=READ)
-async def list_saved_databases() -> Dict[str, Any]:
+async def list_saved_databases(
+    limit: Annotated[int, Field(description="Newest snapshots to list", ge=1, le=200)] = 50,
+) -> Dict[str, Any]:
     """List saved database snapshots (filename, size, timestamp) and which
-    database is active."""
+    database is active. Each snapshot has `kind` (manual_save | autosave |
+    start_clean_backup | before_load_backup | before_revert_backup |
+    system_backup) and `contents` ({scenarios: [names], customers, products,
+    sales_rows, empty}) so you can tell the user what each one holds."""
     saved = await call("GET", "/database/list")
     current = await call("GET", "/database/current")
-    saved["current"] = current
-    return saved
+    newest_first = sorted(saved.get("databases") or [], key=lambda s: s.get("modified") or "", reverse=True)
+    result: Dict[str, Any] = {
+        "count": len(newest_first),
+        "databases": [_compact_snapshot(s) for s in newest_first[:limit]],
+        "snapshot_dir": saved.get("snapshot_dir"),
+        "current": current,
+    }
+    if len(newest_first) > limit:
+        result["omitted"] = len(newest_first) - limit
+    return result
 
 
 @mcp.tool(name="forecast_load_database", annotations=DESTRUCTIVE)
@@ -34,7 +59,11 @@ async def load_database(
     filename: Annotated[str, Field(description="A filename from forecast_list_saved_databases")],
 ) -> Dict[str, Any]:
     """Restore a snapshot over the active database. The current state is
-    autosaved first, but everything since the snapshot is replaced."""
+    saved first as a current_backup_ snapshot (backup_created), unless the
+    active database is empty (backup_skipped: nothing to protect);
+    everything since the snapshot is replaced. Each listed snapshot has a
+    `kind` and `contents` (scenario names, customer / product / sales-row
+    counts, empty) to pick the right one."""
     return await call("POST", "/database/load", json={"filename": require(filename, "filename")})
 
 
@@ -42,7 +71,8 @@ async def load_database(
 async def revert_to_last_save() -> Dict[str, Any]:
     """Restore the newest named save or autosave (system backups such as
     pre-load / pre-revert copies are skipped). The state it replaces is kept
-    as a pre_revert_backup_ snapshot, which forecast_load_database can restore."""
+    as a pre_revert_backup_ snapshot, which forecast_load_database can
+    restore (none is taken when the active database is empty)."""
     return await call("POST", "/database/revert-to-last-save")
 
 

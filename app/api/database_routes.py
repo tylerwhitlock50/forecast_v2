@@ -4,11 +4,13 @@ Database management and utility API routes
 
 import os
 import tempfile
+import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 # Import database functions and models
@@ -19,7 +21,15 @@ from db import (
     switch_database,
     get_current_database_path
 )
-from db.database import is_sqlite_file, snapshot_kind, timestamp_slug
+from db.database import (
+    SNAPSHOT_KIND_LABELS,
+    database_contents,
+    is_sqlite_file,
+    snapshot_contents,
+    snapshot_detail_kind,
+    snapshot_kind,
+    timestamp_slug,
+)
 
 # Import utilities
 from utils.data_loader import load_csv_to_table
@@ -203,28 +213,57 @@ def take_system_snapshot(prefix: str) -> Dict[str, Any]:
     return {"filename": os.path.basename(path), "path": path, "size": info["size"]}
 
 
-def _snapshot_info(path: str) -> Dict[str, Any]:
+#: Snapshot contents by (path, mtime_ns, size): reading a file's counts is cheap but the list is polled.
+_CONTENTS_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_CONTENTS_LOCK = threading.Lock()
+
+
+def _cached_contents(path: str, stat_info: os.stat_result) -> Dict[str, Any]:
+    """``snapshot_contents`` of a file, cached until the file changes; None + error when unreadable."""
+    wal = path + "-wal"
+    wal_stamp = os.stat(wal).st_mtime_ns if os.path.exists(wal) else 0   # the live file after /switch
+    key = (os.path.abspath(path), stat_info.st_mtime_ns + wal_stamp, stat_info.st_size)
+    cached = _CONTENTS_CACHE.get(key)
+    if cached is None:
+        try:
+            cached = {"contents": snapshot_contents(path), "contents_error": None}
+        except Exception as exc:  # not a database, corrupt, locked: list it anyway
+            cached = {"contents": None, "contents_error": str(exc)}
+        with _CONTENTS_LOCK:
+            for stale in [k for k in _CONTENTS_CACHE if k[0] == key[0]]:
+                _CONTENTS_CACHE.pop(stale, None)
+            _CONTENTS_CACHE[key] = cached
+    return cached
+
+
+def _snapshot_info(path: str, with_contents: bool = False) -> Dict[str, Any]:
     stat_info = os.stat(path)
     filename = os.path.basename(path)
     saved_at = datetime.fromtimestamp(stat_info.st_mtime).isoformat(timespec="seconds")
-    return {
+    kind = snapshot_detail_kind(filename)
+    info = {
         "filename": filename,
         "name": filename[:-3],
         "type": snapshot_kind(filename),
+        "kind": kind,
+        "kind_label": SNAPSHOT_KIND_LABELS.get(kind, kind),
         "size": stat_info.st_size,
         "saved_at": saved_at,
         "created": datetime.fromtimestamp(stat_info.st_ctime).isoformat(),
         "modified": datetime.fromtimestamp(stat_info.st_mtime).isoformat(),
         "_mtime_ns": stat_info.st_mtime_ns,
     }
+    if with_contents:
+        info.update(_cached_contents(path, stat_info))
+    return info
 
 
-def _list_snapshots() -> List[Dict[str, Any]]:
-    """Every saved snapshot, newest first."""
+def _list_snapshots(with_contents: bool = False) -> List[Dict[str, Any]]:
+    """Every saved snapshot, newest first (``with_contents``: plus what each one holds)."""
     directory = _manager().snapshot_dir
     if not os.path.isdir(directory):
         return []
-    snapshots = [_snapshot_info(os.path.join(directory, f))
+    snapshots = [_snapshot_info(os.path.join(directory, f), with_contents)
                  for f in os.listdir(directory) if f.endswith('.db') and not f.startswith('.')]
     snapshots.sort(key=lambda s: (s["_mtime_ns"], s["filename"]), reverse=True)
     return snapshots
@@ -337,10 +376,17 @@ async def list_saved_databases():
     """
     Saved snapshots, newest first. ``type`` is manual_save (POST /save),
     autosave (POST /save-current) or system_backup (taken automatically
-    before a load, revert, reset or start-clean).
+    before a load, revert, reset or start-clean). ``kind`` is finer:
+    manual_save | autosave | start_clean_backup | before_load_backup |
+    before_revert_backup | system_backup (reset / clear / force-reload
+    backups), with a readable ``kind_label``. ``contents`` is what the file
+    holds, read without opening it for writing: ``{scenarios: [names],
+    scenario_count, customers, products, sales_rows, total_rows, empty}``
+    (``empty``: no model data, scenario names alone count as empty); null
+    with ``contents_error`` when the file cannot be read.
     """
     try:
-        snapshots = [_public(s) for s in _list_snapshots()]
+        snapshots = [_public(s) for s in await run_in_threadpool(_list_snapshots, True)]
         manual_saves = [s for s in snapshots if s["type"] == "manual_save"]
         autosaves = [s for s in snapshots if s["type"] != "manual_save"]
         all_databases = manual_saves + autosaves
@@ -361,10 +407,27 @@ async def list_saved_databases():
         raise HTTPException(status_code=500, detail=f"Failed to list databases: {str(e)}")
 
 
-def _restore(snapshot_path: str, backup_prefix: str) -> Dict[str, Any]:
-    """Snapshot the live database, then restore ``snapshot_path`` into it."""
+def live_database_is_empty() -> bool:
+    """True when the live database holds no model data (scenario names alone, logs ignored)."""
+    try:
+        with _manager().connection() as conn:
+            return bool(database_contents(conn)["empty"])
+    except Exception:
+        return False          # when in doubt, protect it
+
+
+#: Why a load / revert took no backup (the live database had nothing to protect).
+NO_BACKUP_REASON = "the live database was empty (no model data), so there was nothing to back up"
+
+
+def _restore(snapshot_path: str, backup_prefix: str) -> Optional[Dict[str, Any]]:
+    """
+    Snapshot the live database, then restore ``snapshot_path`` into it.
+    No snapshot is taken when the live database is empty (nothing to
+    protect; e.g. right after Start clean): returns None then.
+    """
     mgr = _manager()
-    backup = take_system_snapshot(backup_prefix)
+    backup = None if live_database_is_empty() else take_system_snapshot(backup_prefix)
     try:
         mgr.restore_from(snapshot_path)
     except ValueError as e:
@@ -377,8 +440,10 @@ async def load_database(request: dict):
     """
     Restore a saved snapshot INTO the live database. Body: ``{"filename":
     "before-june-cut.db"}`` (the .db is optional). The live state is first
-    saved as ``current_backup_<timestamp>.db``; afterwards the schema is
-    migrated, so a snapshot from an older version loads cleanly.
+    saved as ``current_backup_<timestamp>.db`` unless the live database is
+    empty (then ``backup_created`` is null and ``backup_skipped`` true);
+    afterwards the schema is migrated, so a snapshot from an older version
+    loads cleanly.
     """
     try:
         mgr = _manager()
@@ -387,12 +452,19 @@ async def load_database(request: dict):
         if not os.path.exists(snapshot_path):
             raise HTTPException(status_code=404, detail=f"Database file {filename} not found")
         backup = _restore(snapshot_path, "current_backup_")
+        if backup:
+            message = (f"Database loaded from {filename}. The state before the load was kept as "
+                       f"{backup['filename']}.")
+        else:
+            message = f"Database loaded from {filename}. No backup was taken: {NO_BACKUP_REASON}."
         return {
             "status": "success",
-            "message": f"Database loaded from {filename}",
+            "message": message,
             "data": {
                 "loaded_filename": filename,
-                "backup_created": backup["filename"],
+                "backup_created": backup["filename"] if backup else None,
+                "backup_skipped": backup is None,
+                "backup_skipped_reason": None if backup else NO_BACKUP_REASON,
                 "current_db_path": mgr.database_path,
             }
         }
@@ -470,10 +542,11 @@ async def revert_to_last_save():
     taken automatically before a load, revert, reset or start-clean
     (current_backup_*, pre_revert_backup_*, reset_backup_*, ...) are never
     picked, so reverting twice restores the same save instead of toggling
-    back. The live state is first saved as ``pre_revert_backup_<timestamp>.db``;
-    to undo a revert, load that file with POST /database/load.
-    ``data.reverted_from`` names the file restored. 404 when there is no
-    named save or autosave.
+    back. The live state is first saved as ``pre_revert_backup_<timestamp>.db``
+    (unless the live database is empty: then ``backup_created`` is null and
+    ``backup_skipped`` true); to undo a revert, load that file with POST
+    /database/load. ``data.reverted_from`` names the file restored. 404 when
+    there is no named save or autosave.
     """
     try:
         snapshots = [s for s in _list_snapshots() if s["type"] in USER_SNAPSHOT_KINDS]
@@ -486,15 +559,19 @@ async def revert_to_last_save():
         path = os.path.join(_manager().snapshot_dir, latest["filename"])
         print(f"Reverting to latest snapshot: {latest['filename']}")
         backup = _restore(path, "pre_revert_backup_")
+        kept = (f"The state before the revert was kept as {backup['filename']}." if backup
+                else f"No backup was taken: {NO_BACKUP_REASON}.")
         return {
             "status": "success",
             "message": f"Reverted to {latest['filename']} ({latest['type'].replace('_', ' ')}, saved "
-                       f"{latest['saved_at']}). The state before the revert was kept as {backup['filename']}.",
+                       f"{latest['saved_at']}). {kept}",
             "data": {
                 "reverted_from": latest["filename"],
                 "snapshot_type": latest["type"],
                 "saved_at": latest["saved_at"],
-                "backup_created": backup["filename"],
+                "backup_created": backup["filename"] if backup else None,
+                "backup_skipped": backup is None,
+                "backup_skipped_reason": None if backup else NO_BACKUP_REASON,
                 "reverted_time": datetime.fromtimestamp(latest["_mtime_ns"] / 1e9).strftime('%Y-%m-%d %H:%M:%S')
             }
         }

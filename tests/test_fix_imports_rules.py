@@ -113,7 +113,7 @@ def test_other_allowance_programs_with_different_names_are_both_kept(env):
     assert (data["created"], data["updated"], data["errors"]) == (2, 0, [])
     assert q(mgr, "SELECT COUNT(*) FROM sales_deduction_rules WHERE deduction_type = 'other_allowance'") == [(2,)]
     again = post(client, "/import/deductions", {"rows": rows})                 # re-import is idempotent
-    assert (again["created"], again["updated"]) == (0, 2)
+    assert (again["created"], again["updated"], again["unchanged"]) == (0, 0, 2)
     assert q(mgr, "SELECT COUNT(*) FROM sales_deduction_rules") == [(2,)]
 
 

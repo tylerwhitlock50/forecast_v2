@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 from typing import Dict, Any, Iterator, List, Optional, Tuple
@@ -24,6 +25,94 @@ def snapshot_kind(filename: str) -> str:
     if filename.startswith(SYSTEM_BACKUP_PREFIXES):
         return 'system_backup'
     return 'manual_save'
+
+
+#: Finer snapshot kinds by file-name prefix, for /database/list ``kind``.
+#: Other system backups (reset_backup_, clear_data_backup_, ...) are 'system_backup'.
+SNAPSHOT_KIND_PREFIXES = (
+    ('autosave_', 'autosave'),
+    ('start_clean_backup_', 'start_clean_backup'),
+    ('current_backup_', 'before_load_backup'),
+    ('pre_revert_backup_', 'before_revert_backup'),
+)
+SNAPSHOT_KIND_LABELS = {
+    'manual_save': 'Named save',
+    'autosave': 'Autosave',
+    'start_clean_backup': 'Automatic backup taken before Start clean',
+    'before_load_backup': 'Automatic backup taken before a load',
+    'before_revert_backup': 'Automatic backup taken before a revert',
+    'system_backup': 'Automatic backup taken before a reset or clear',
+}
+#: Tables that hold logs or caches, not model data: ignored when deciding whether a database is empty.
+NON_DATA_TABLES = ('execution_log', 'forecast_results')
+
+
+def snapshot_detail_kind(filename: str) -> str:
+    """manual_save / autosave / start_clean_backup / before_load_backup / before_revert_backup / system_backup."""
+    for prefix, kind in SNAPSHOT_KIND_PREFIXES:
+        if filename.startswith(prefix):
+            return kind
+    return 'system_backup' if snapshot_kind(filename) == 'system_backup' else 'manual_save'
+
+
+def database_contents(conn: sqlite3.Connection, scenario_limit: int = 50) -> Dict[str, Any]:
+    """
+    What a database holds, for the snapshot list and the "is there anything
+    to protect" check: scenario names (base first), customer / product /
+    sales-row counts, the rows of every data table, and ``empty`` - no model
+    data at all (scenario names alone, as right after Start clean, count as
+    empty; logs are ignored). Missing tables (an old schema) count as 0.
+    Read-only.
+    """
+    names = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+    counts: Dict[str, int] = {}
+    for name in names:
+        try:
+            counts[name] = int(conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0] or 0)
+        except sqlite3.Error:
+            counts[name] = 0
+    scenarios: List[str] = []
+    if 'forecast' in counts:
+        try:
+            columns = {r[1] for r in conn.execute('PRAGMA table_info("forecast")')}
+            order = "is_base DESC, forecast_id" if 'is_base' in columns else "forecast_id"
+            select = "forecast_id, name" if 'name' in columns else "forecast_id, NULL"
+            for fid, name in conn.execute(f"SELECT {select} FROM forecast ORDER BY {order}"):
+                scenarios.append(str(name).strip() if name is not None and str(name).strip() else str(fid))
+        except sqlite3.Error:
+            pass
+    data_rows = sum(n for name, n in counts.items() if name not in NON_DATA_TABLES)
+    return {
+        "scenarios": scenarios[:scenario_limit],
+        "scenario_count": len(scenarios),
+        "customers": counts.get('customers', 0),
+        "products": counts.get('units', 0),
+        "sales_rows": counts.get('sales', 0),
+        "total_rows": data_rows,
+        "empty": data_rows - counts.get('forecast', 0) == 0,
+    }
+
+
+def snapshot_contents(path: str) -> Dict[str, Any]:
+    """
+    ``database_contents`` of a snapshot file, opened read-only (never
+    written; a WAL-mode file without a -wal sidecar is opened immutable so
+    no -wal / -shm files are created next to it). Raises ValueError when the
+    file is not a SQLite database, sqlite3.Error when it cannot be read.
+    """
+    if not is_sqlite_file(path):
+        raise ValueError(f"{os.path.basename(path)} is not a SQLite database")
+    with open(path, 'rb') as handle:
+        header = handle.read(20)
+    wal_mode = len(header) >= 20 and header[18] == 2
+    uri = Path(os.path.abspath(path)).as_uri()
+    uri += "?immutable=1" if wal_mode and not os.path.exists(path + '-wal') else "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+    try:
+        return database_contents(conn)
+    finally:
+        conn.close()
 
 
 def timestamp_slug() -> str:

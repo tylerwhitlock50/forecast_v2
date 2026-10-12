@@ -46,6 +46,7 @@ from services.workbook_export import (
     XLSX_MEDIA_TYPE,
     sales_detail_columns,
     statement_lines,
+    scenario_names,
     workbook_bytes,
     workbook_filename,
 )
@@ -322,7 +323,8 @@ async def download_workbook(
     _check_window(start_period, end_period)
     hours = _check_hours_per_fte(hours_per_fte)
     content = await _build_report("forecast workbook", workbook_bytes, ids, start_period, end_period, hours_per_fte=hours)
-    filename = workbook_filename(ids, start_period, end_period)
+    names = await _build_report("workbook file name", scenario_names, ids)
+    filename = workbook_filename(ids, start_period, end_period, names)
     return StreamingResponse(
         iter([content]),
         media_type=XLSX_MEDIA_TYPE,

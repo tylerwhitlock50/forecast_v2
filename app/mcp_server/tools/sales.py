@@ -9,6 +9,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 import db.database as dbmod
 from services.model_adjustments import AdjustmentError, adjust_sales
 from services.workbook_export import sales_detail_totals
+from mcp_server.tools._common import report_totals_block
 from utils.period_normalizer import month_from_name, normalize_month
 from mcp_server.core import (
     DESTRUCTIVE, READ, UPSERT, as_table, call, check_row_keys, error_list, format_row_errors, mcp, page,
@@ -41,10 +42,16 @@ async def _scenario(forecast_id: str) -> Dict[str, Any]:
     return await call("GET", f"/forecast/scenario/{forecast_id}")
 
 
-async def _sales_detail(forecast_id: str, start: str, end: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Every sales-detail row of the window (paged through the endpoint) and the endpoint's totals."""
+async def _sales_detail(forecast_id: str, start: str, end: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any],
+                                                                        Dict[str, Any]]:
+    """
+    Every sales-detail row of the window (paged through the endpoint), the
+    endpoint's per-line totals and its report_totals block (statement-exact
+    totals, non-zero rounding and the rounding note; see report_totals_block).
+    """
     rows: List[Dict[str, Any]] = []
     totals: Dict[str, Any] = {}
+    exact: Dict[str, Any] = {}
     offset = 0
     while True:
         body = await call("GET", "/reporting/sales-detail", params={
@@ -53,9 +60,28 @@ async def _sales_detail(forecast_id: str, start: str, end: str) -> Tuple[List[Di
         chunk = body.get("rows") or []
         rows.extend(chunk)
         totals = body.get("totals") or totals
+        exact = report_totals_block(body) or exact
         if not body.get("has_more") or not chunk:
-            return rows, totals
+            return rows, totals, exact
         offset += len(chunk)
+
+
+async def _filtered_report_totals(forecast_id: str, start: str, end: str, filters: Dict[str, Any],
+                                  expected_rows: int) -> Dict[str, Any]:
+    """
+    The API's statement-exact totals for the filtered lines (one 1-row call
+    with the same filters). Empty when the API matched a different number of
+    lines than the tool did (so the two could disagree).
+    """
+    if not expected_rows:
+        return {}
+    body = await call("GET", "/reporting/sales-detail", params={
+        "forecast_ids": [forecast_id], "start_period": start, "end_period": end, "limit": 1, "offset": 0,
+        **{k: v for k, v in filters.items() if v},
+    })
+    if body.get("total_count") != expected_rows:
+        return {}
+    return report_totals_block(body)
 
 
 @mcp.tool(name="forecast_list_sales", annotations=READ)
@@ -77,7 +103,10 @@ async def list_sales(
     month) with gross sales, sales deductions, net sales and product COGS,
     computed exactly as the statements compute them. Filter by window,
     customer, customer type or product. `totals` always cover ALL matching
-    rows (not just the page), so limit=0 answers "how much" without rows.
+    rows (not just the page), so limit=0 answers "how much" without rows
+    (has_more false). `totals` add up the rows as shown (cent-rounded
+    lines); `report_totals` are the statement-exact figures to quote, and
+    `rounding` is the difference (see rounding_note).
     For totals by month, product, customer or customer type use
     forecast_revenue_summary (or forecast_cogs_forecast) rather than paging
     through rows; a full year of a real forecast is thousands of rows."""
@@ -95,7 +124,7 @@ async def list_sales(
                     "next_offset": None, "totals": {},
                     "message": f"Scenario {fid} has no monthly sales rows yet; import them with forecast_import_sales"})
         return out
-    rows, totals = await _sales_detail(fid, start, end)
+    rows, totals, exact = await _sales_detail(fid, start, end)
     filtered = bool(customer_id or unit_id or customer_type)
     if customer_id:
         rows = [r for r in rows if r.get("customer_id") == customer_id]
@@ -106,8 +135,14 @@ async def list_sales(
         rows = [r for r in rows if (r.get("customer_type") or "").strip().lower() == wanted]
     if filtered:
         totals = sales_detail_totals(rows)
+        exact = await _filtered_report_totals(
+            fid, start, end, {"customer_id": customer_id, "unit_id": unit_id, "customer_type": customer_type},
+            len(rows))
     totals = {"rows": len(rows), **totals}
     paged = page(rows, limit, offset)
+    if limit == 0:            # totals only: there is no next page to ask for
+        paged["has_more"] = False
+        paged.pop("next_offset", None)
     if not fields:
         keep: Optional[Tuple[str, ...]] = COMPACT_SALES_FIELDS
     elif "all" in fields:
@@ -119,7 +154,7 @@ async def list_sales(
     if layout == "table":
         shaped = as_table(paged["rows"], list(keep) if keep is not None else None)
         paged["columns"], paged["rows"] = shaped["columns"], shaped["rows"]
-    out.update({"start_period": start, "end_period": end, **paged, "totals": totals})
+    out.update({"start_period": start, "end_period": end, **paged, "totals": totals, **exact})
     if paged["has_more"] and limit:
         out["hint"] = ("More rows match; page with offset=next_offset, narrow the filters, or use "
                        "forecast_revenue_summary for grouped totals")
@@ -262,7 +297,8 @@ async def upsert_sales(
         return {
             "operation": "replace", "dry_run": dry_run,
             "updated_count": result.get("imported", 0), "inserted": result.get("inserted", 0),
-            "updated": result.get("updated", 0), "price_sources": result.get("price_sources", {}),
+            "updated": result.get("updated", 0), "unchanged": result.get("unchanged", 0),
+            "price_sources": result.get("price_sources", {}),
             "start_period": result.get("start_period"), "end_period": result.get("end_period"),
             "total_quantity": result.get("total_quantity"), "total_revenue": result.get("total_revenue"),
             "warnings": result.get("warnings") or [],

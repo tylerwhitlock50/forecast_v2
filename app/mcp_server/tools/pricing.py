@@ -137,6 +137,15 @@ def _changes_for_existing(item: Dict[str, Any], existing: Dict[str, Any], kind: 
     return changes
 
 
+def _has_months(item: Dict[str, Any]) -> bool:
+    """Whether the caller gave a start_period or end_period (a non-blank value)."""
+    return any(item.get(k) not in (None, "") and str(item.get(k)).strip() for k in ("start_period", "end_period"))
+
+
+def _months_text(rule: Dict[str, Any]) -> str:
+    return f"{rule.get('start_period') or 'open'}..{rule.get('end_period') or 'open'}"
+
+
 def _conflict_ids(detail: str, prefix: str, sent: int) -> Dict[int, str]:
     """
     {1-based position in the bulk request: existing rule id} from the API's
@@ -169,6 +178,13 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
     rule listing and again from the API's 409 answer (which names the
     existing rule), so a retried or repeated call never stacks rules. The
     creates are one all-or-nothing call.
+
+    An item with NO months (no start_period / end_period) and no exact slot
+    match updates the one active rule of the same type / scope (any months),
+    keeping that rule's months; with several such rules it is refused
+    (nothing written) and the rules are listed. Overlap warnings from the
+    API (same scope, different but overlapping months) are repeated in
+    ``note``.
     """
     kind, slot_of, prefix = _RULE_KINDS[id_key]
     for index, item in enumerate(items):
@@ -184,16 +200,23 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
         (i, {k: v for k, v in item.items() if k != id_key}, str(item[id_key]).strip(), False)
         for i, item in enumerate(items) if item.get(id_key)]
     result: Dict[str, Any] = {"created": [], "updated": [], "warnings": []}
+    kept_months: List[Dict[str, Any]] = []
 
     if creates:
         listing = await call("GET", path, params={"include_inactive": False})
         active = [r for r in (listing.get(bulk_key) or []) if r.get("is_active") is not False and r.get("is_active") != 0]
         by_id = {r.get(id_key): r for r in active}
         by_slot: Dict[Tuple, Dict[str, Any]] = {}
+        rules_by_scope: Dict[Tuple, List[Dict[str, Any]]] = {}
+
+        def scope_of(rule: Dict[str, Any]) -> Tuple:
+            return slot_of({**rule, "start_period": None, "end_period": None})
+
         for rule in active:
             slot = slot_of(rule)
             if slot not in by_slot or precedence_key(rule, kind) > precedence_key(by_slot[slot], kind):
                 by_slot[slot] = rule
+            rules_by_scope.setdefault(scope_of(rule), []).append(rule)
         first_in_request: Dict[Tuple, int] = {}
         pending: List[Tuple[int, Dict[str, Any]]] = []
         for index, item in creates:
@@ -206,8 +229,21 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
                                 f"written.")
             first_in_request[slot] = index
             existing = by_slot.get(slot)
+            same_scope = [] if existing or _has_months(item) else rules_by_scope.get(scope_of(_slot_view(item)), [])
             if existing:
                 updates.append((index, _changes_for_existing(item, existing, kind), existing[id_key], True))
+            elif len(same_scope) == 1:
+                # No months given and one active rule holds this scope: change it, keep its months.
+                target = same_scope[0]
+                changes = {k: v for k, v in _changes_for_existing(item, target, kind).items()
+                           if k not in ("start_period", "end_period")}
+                updates.append((index, changes, target[id_key], True))
+                kept_months.append({"index": index, id_key: target[id_key], "months": _months_text(target)})
+            elif len(same_scope) > 1:
+                listed = ", ".join(f"{r[id_key]} ({_months_text(r)})" for r in same_scope[:10])
+                raise ToolError(f"{label} {index} gives no months, and {len(same_scope)} active rules have the same "
+                                f"type and scope with different months: {listed}. Pass {id_key} to change one of "
+                                f"them, or give start_period / end_period. Nothing was written.")
             else:
                 pending.append((index, item))
 
@@ -253,11 +289,30 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
         result[key] = kept
         if omitted:
             result[f"{key}_omitted"] = omitted
+    notes: List[str] = []
+    done = {m["index"] for m in matched}
+    kept_months = [k for k in kept_months if k["index"] in done]
     if matched:
         put_capped(result, "matched_existing", matched, UPSERT_LIST_LIMIT)
-        result["note"] = (f"{len(matched)} {label} without {id_key} had the same scope and months as an active "
-                          f"rule{'' if kind == 'price' else ' (and, for other_allowance, the same name)'}, so that "
-                          f"rule was updated instead of adding a duplicate.")
+        by_months = len(matched) - len(kept_months)
+        if by_months:
+            notes.append(f"{by_months} {label} without {id_key} had the same scope and months as an active "
+                         f"rule{'' if kind == 'price' else ' (and, for other_allowance, the same name)'}, so that "
+                         f"rule was updated instead of adding a duplicate.")
+    if kept_months:
+        put_capped(result, "kept_months", kept_months, UPSERT_LIST_LIMIT)
+        shown = ", ".join(f"{k[id_key]} ({k['months']})" for k in kept_months[:10])
+        notes.append(f"{len(kept_months)} {label} gave no months and matched the only active rule with the same "
+                     f"scope, so that rule was updated and kept its months: {shown}.")
+    overlaps = [w for w in result["warnings"] if "overlaps " in str(w)]
+    if overlaps:
+        result["overlaps"] = compact_warnings(overlaps, 20)
+        notes.append(f"IMPORTANT: {len(overlaps)} overlap(s) with an active rule of the same scope and different "
+                     f"months; both rules are kept and, in the overlapping months, the later start month wins "
+                     f"(tell the user, or end the older rule with end_period): "
+                     + " | ".join(str(w) for w in overlaps[:5]))
+    if notes:
+        result["note"] = " ".join(notes)
     if errors:
         result["errors"] = errors
         result["status"] = "partial"
@@ -326,10 +381,15 @@ async def upsert_deduction_rules(
     product type) and months equal an active rule's UPDATES that rule
     (only the fields sent change) instead of adding a duplicate, so sending
     'dealer terms are now 3%' twice is safe; matches are listed in
-    matched_existing. other_allowance rules are separate programs keyed by
-    name ('Co-op advertising', 'Freight allowance'): every matching program
-    applies and they add up, and the same name + scope updates that
-    program. Creations are all-or-nothing (any invalid rule -> nothing
+    matched_existing. Without start_period / end_period, the one active
+    rule of the same type and scope (whatever its months) is updated and
+    keeps its months (kept_months); with several, give months or rule_id.
+    Months that overlap a same-scope rule with other months create a new
+    rule and `note` says so (the later start month wins). other_allowance
+    rules are separate programs keyed by name ('Co-op advertising',
+    'Freight allowance'): every matching program applies and they add up,
+    and the same name + scope updates that program. Creations are
+    all-or-nothing (any invalid rule -> nothing
     created, every problem listed); updates are applied rule by rule and
     failures are reported. Examples: dealer terms 2% => {deduction_type:
     terms_allowance, customer_type: Dealer, rate: 0.02}; FET =>
@@ -518,8 +578,13 @@ async def upsert_prices(
     product, product type, customer, customer type) and months equal an
     active rule's UPDATES that rule (only the fields sent change) instead of
     adding a duplicate, so re-sending a changed price is safe; matches are
-    listed in matched_existing. Creations are all-or-nothing; updates are
-    applied one by one with failures reported. Example: dealers pay 1199 for
+    listed in matched_existing. Without start_period / end_period, the one
+    active price of the same scope (whatever its months) is updated and
+    keeps its months (kept_months); with several, give months or price_id.
+    Months that overlap a same-scope price with other months create a new
+    price and `note` says so (the later start month wins). Creations are
+    all-or-nothing; updates are applied one by one with failures reported.
+    Example: dealers pay 1199 for
     RFL-308 in 2027 => {unit_id: RFL-308, customer_type: Dealer, unit_price:
     1199, start_period: 2027-01, end_period: 2027-12}. New sales rows without
     a price use this list; run forecast_apply_price_list to re-price existing

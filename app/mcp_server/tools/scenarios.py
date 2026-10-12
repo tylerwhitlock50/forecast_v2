@@ -142,8 +142,10 @@ async def create_scenario(
     notes: Annotated[Optional[str], Field(description="Free-text planning notes (assumptions, rationale)")] = None,
     is_base: Annotated[bool, Field(description="Mark as the base scenario (exactly one scenario is base)")] = False,
 ) -> Dict[str, Any]:
-    """Create an empty scenario with an auto-generated FXXX id. To copy an
-    existing scenario's data use forecast_branch_scenario instead."""
+    """Create an empty scenario with an auto-generated FXXX id. Names are
+    unique (trimmed, case-insensitive): a name another scenario has is
+    refused and the error names that scenario's id (use it instead). To
+    copy an existing scenario's data use forecast_branch_scenario instead."""
     body = strip_none({"name": require(name, "name"), "description": description, "notes": notes, "is_base": is_base})
     return await call("POST", "/forecast/scenario", json=body)
 
@@ -167,7 +169,8 @@ async def update_scenario(
 @mcp.tool(name="forecast_branch_scenario", annotations=WRITE)
 async def branch_scenario(
     forecast_id: Annotated[str, Field(description="Scenario to copy from")],
-    name: Annotated[Optional[str], Field(description="Name for the copy; defaults to '<original> Copy'")] = None,
+    name: Annotated[Optional[str], Field(description="Name for the copy; defaults to '<original> Copy' ('<original> Copy 2' "
+                                                     "... when taken). A name another scenario has is refused")] = None,
     description: Optional[str] = None,
     notes: Optional[str] = None,
     price_multiplier: Annotated[Optional[float], Field(description=(

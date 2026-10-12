@@ -434,7 +434,7 @@ def test_export_workbook_writes_to_data_exports(env):
     client, mgr, data_dir, _tmp = env
     fid = _build_model(client, mgr, data_dir)
     saved = ok(client, "forecast_export_workbook", {"forecast_ids": [fid]})
-    expected = os.path.join(os.path.realpath(data_dir), "exports", f"forecast_{fid}_2027-01_2027-12.xlsx")
+    expected = os.path.join(os.path.realpath(data_dir), "exports", "forecast_budget-2027_2027-01_2027-12.xlsx")
     assert os.path.realpath(saved["path"]) == expected and os.path.getsize(expected) == saved["bytes"]
     assert "host_path_hint" not in saved            # only when the data folder is the Docker volume /data
     for sheet in ("Read Me", "Gross Margin", "Income Statement", "By Customer Type", "Labor Forecast",

@@ -350,3 +350,233 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ------------------------------------------------------------------------
+   Load Database dialog: header and footer stay put, the grouped list
+   scrolls inside the dialog so nothing hides below the fold.
+   ------------------------------------------------------------------------ */
+.database-load-modal {
+  display: flex;
+  flex-direction: column;
+  max-width: 760px;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+/* index.css gives every .modal-header / .modal-footer an outer margin; not here. */
+.database-load-modal .modal-header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 1rem 1.5rem;
+}
+
+.database-load-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 1rem 1.5rem 0;
+}
+
+.database-load-modal .modal-footer {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 1rem 1.5rem;
+}
+
+.database-load-modal .list-header {
+  flex-shrink: 0;
+  margin-bottom: 0.75rem;
+}
+
+.database-load-modal .list-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.database-load-modal .btn-refresh {
+  padding: 0.35rem 0.85rem;
+}
+
+.database-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 0.25rem 1rem 0;
+  overscroll-behavior: contain;
+}
+
+.database-group + .database-group {
+  margin-top: 1.25rem;
+}
+
+.database-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  padding: 0.35rem 0 0.5rem;
+  background: #fff;
+}
+
+.database-group-header h4 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #374151;
+}
+
+.database-group-count {
+  font-weight: 500;
+  color: #9ca3af;
+}
+
+.database-group-help {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.database-load-modal .database-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 0.5rem;
+}
+
+.database-load-modal .database-item {
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: 0;
+  border-width: 1px;
+  border-color: #e5e7eb;
+  border-radius: 8px;
+}
+
+.database-load-modal .database-item:hover {
+  border-color: #93c5fd;
+  background: #f9fafb;
+}
+
+.database-load-modal .database-item.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 1px #2563eb;
+}
+
+/* The start-clean safety copy just made: the way back. */
+.database-load-modal .database-item.restore-point {
+  border-color: #ea580c;
+  background: #fff7ed;
+  box-shadow: 0 0 0 2px #fdba74;
+}
+
+.database-item-select {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.65rem 0 0.65rem 0.85rem;
+  cursor: pointer;
+}
+
+.database-item-radio {
+  flex-shrink: 0;
+  margin-top: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  accent-color: #2563eb;
+}
+
+.database-load-modal .database-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.database-title {
+  font-weight: 600;
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+.database-contents {
+  font-size: 0.875rem;
+  color: #374151;
+  overflow-wrap: anywhere;
+}
+
+.database-contents.is-empty {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.database-meta {
+  font-size: 0.75rem;
+  color: #6b7280;
+  overflow-wrap: anywhere;
+}
+
+.restore-hint {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c2410c;
+}
+
+.restore-banner {
+  flex-shrink: 0;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid #fdba74;
+  border-radius: 6px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.875rem;
+}
+
+.database-load-modal .database-actions {
+  align-items: center;
+}
+
+.database-load-modal .btn-delete {
+  align-self: center;
+  flex-shrink: 0;
+  margin-right: 0.75rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid #fca5a5;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.database-load-modal .btn-delete:hover {
+  background: #fef2f2;
+  transform: none;
+}
+
+.database-load-modal .btn-delete:disabled,
+.database-load-modal .btn-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.database-load-modal .loading-state,
+.database-load-modal .empty-state {
+  padding: 2rem 1rem;
+}
+
+@media (max-width: 768px) {
+  .database-load-modal .database-item {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+}

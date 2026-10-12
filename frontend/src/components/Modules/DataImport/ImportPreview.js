@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import { describePriceSources, plural } from './importSteps';
 import { describeRow } from './fileParsing';
-import { formatPeriod } from '../ReportingAnalysis/utils/formatters';
+import { formatPeriod, formatPeriodRanges } from '../ReportingAnalysis/utils/formatters';
 
 const money = (value) => {
   if (value === null || value === undefined || value === '') return '—';
@@ -15,7 +15,7 @@ const num2 = (value) => (value === null || value === undefined ? '—' : Number(
 
 const money0 = (value) => (Number(value) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
-const Tile = ({ label, value, tone = 'gray', hint }) => {
+const Tile = ({ label, value, tone = 'gray', hint, sub = null }) => {
   const tones = {
     gray: 'border-gray-200 bg-white text-gray-900',
     green: 'border-green-200 bg-green-50 text-green-800',
@@ -24,16 +24,134 @@ const Tile = ({ label, value, tone = 'gray', hint }) => {
     red: 'border-red-200 bg-red-50 text-red-700',
   };
   return (
-    <div className={`rounded-md border px-3 py-2 ${tones[tone]}`} title={hint}>
+    <div className={`rounded-md border px-3 py-2 ${tones[tone]}`} title={hint} data-testid="count-tile">
       <div className="text-[11px] font-medium uppercase tracking-wide opacity-80">{label}</div>
       <div className="text-lg font-semibold tabular-nums">{Number(value || 0).toLocaleString('en-US')}</div>
+      {sub && <div className="text-xs opacity-80">{sub}</div>}
     </div>
+  );
+};
+
+// Tailwind needs the literal class names.
+const GRID_COLS = { 3: 'sm:grid-cols-3', 4: 'sm:grid-cols-4', 5: 'sm:grid-cols-5' };
+
+/**
+ * The count tiles for a checked (or imported) file. Unchanged rows are never
+ * counted as updated; a BOM / routing replace counts the BOMs / routings it
+ * rebuilds and says how many lines / operations it deletes first.
+ */
+const countTiles = (result, step, noun, isRecords, errorCount) => {
+  const tiles = [];
+  if (step.kind === 'sales') {
+    const inserted = result.inserted ?? result.imported;
+    const created = result.createdCustomers.length + result.createdProducts.length;
+    tiles.push({ label: 'New rows', value: inserted, tone: inserted ? 'green' : 'gray', hint: 'Sales rows added to the scenario.' });
+    tiles.push({
+      label: 'Updated rows',
+      value: result.inserted === null ? 0 : result.updated,
+      tone: result.updated ? 'blue' : 'gray',
+      hint: 'Rows for the same customer, product and month that already existed and get a new quantity or price.',
+    });
+    if (result.unchanged !== null) {
+      tiles.push({ label: 'Unchanged', value: result.unchanged, hint: 'Rows that already have exactly this quantity and price; they are left as they are.' });
+    }
+    tiles.push({ label: 'New customers / products', value: created, tone: created ? 'blue' : 'gray' });
+  } else {
+    tiles.push({ label: `New ${noun}`, value: result.created, tone: result.created ? 'green' : 'gray' });
+    tiles.push({ label: `Updated ${noun}`, value: result.updated, tone: result.updated ? 'blue' : 'gray' });
+    if (isRecords || result.unchanged !== null) {
+      tiles.push({
+        label: 'Unchanged',
+        value: (result.unchanged || 0) + (isRecords ? result.skipped : 0),
+        hint: isRecords
+          ? "Rows that match what is already saved, or existing rows left alone in 'Add new only' mode."
+          : 'Rows that match what is already saved; they are left as they are.',
+      });
+    }
+    if (!isRecords) {
+      if (step.kind === 'boms' || step.kind === 'routings') {
+        const isBoms = step.kind === 'boms';
+        const value = (isBoms ? result.bomsReplaced : result.routingsReplaced) ?? result.replaced;
+        const deleted = isBoms ? result.linesDeleted : result.operationsDeleted;
+        const deletedNoun = isBoms ? ['line', 'lines'] : ['operation', 'operations'];
+        tiles.push({
+          label: isBoms ? 'BOMs replaced' : 'Routings replaced',
+          value,
+          tone: value ? 'amber' : 'gray',
+          sub: deleted ? `${plural(deleted, deletedNoun)} deleted first` : null,
+          hint: isBoms
+            ? 'BOMs in the file that already exist: their saved lines are deleted, then rebuilt from the file.'
+            : 'Routings in the file that already exist: their saved operations are deleted, then rebuilt from the file.',
+        });
+      } else {
+        tiles.push({
+          label: `Replaced ${noun}`,
+          value: result.replaced,
+          tone: result.replaced ? 'amber' : 'gray',
+          hint: 'Existing rows removed because the file replaces them (replace mode).',
+        });
+      }
+    }
+  }
+  tiles.push({ label: 'Rows with errors', value: errorCount, tone: errorCount ? 'red' : 'gray' });
+  return tiles;
+};
+
+/** "Jan – Mar 2027" for a removed line's months, or "3 months" when only the count is known. */
+const removedMonths = (line) => {
+  if (line.months.length) return formatPeriodRanges(line.months);
+  return line.monthCount ? plural(line.monthCount, ['month', 'months']) : '—';
+};
+
+const REMOVED_SHOWN = 200;
+
+/** The customer x product lines a sales replace removes, behind a disclosure. */
+const RemovedLines = ({ result }) => {
+  const list = result.removedLines;
+  if (!list.length) return null;
+  const total = Math.max(result.removedLineCount || 0, list.length);
+  const shown = list.slice(0, REMOVED_SHOWN);
+  return (
+    <details className="mt-2 rounded border border-amber-200 bg-white text-gray-800" data-testid="removed-lines">
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-sm font-medium text-amber-900">
+        Show the {plural(total, ['line', 'lines'])} that will be removed
+      </summary>
+      <div className="max-h-64 overflow-y-auto border-t border-amber-100">
+        <table className="min-w-full text-sm">
+          <thead className="sticky top-0 bg-white text-left text-xs font-medium uppercase tracking-wide text-gray-500 shadow-[0_1px_0_#e5e7eb]">
+            <tr>
+              <th className="px-3 py-1.5">Customer</th>
+              <th className="px-3 py-1.5">Product</th>
+              <th className="px-3 py-1.5">Months removed</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {shown.map((line, i) => (
+              <tr key={`${line.customerId}-${line.unitId}-${i}`}>
+                <td className="px-3 py-1.5">
+                  {line.customerName || line.customerId || '—'}
+                  {line.customerName && line.customerId && <span className="ml-1 text-xs text-gray-500">{line.customerId}</span>}
+                </td>
+                <td className="px-3 py-1.5">
+                  {line.unitId || line.unitName || '—'}
+                  {line.unitName && line.unitId && <span className="ml-1 text-xs text-gray-500">{line.unitName}</span>}
+                </td>
+                <td className="px-3 py-1.5 text-gray-700">{removedMonths(line)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {total > shown.length && (
+          <div className="border-t border-gray-100 px-3 py-1.5 text-xs text-gray-500">…and {plural(total - shown.length, ['more line', 'more lines'])}</div>
+        )}
+      </div>
+    </details>
   );
 };
 
 const ERROR_LIMIT = 50;
 
-const lines = (n) => plural(n, ['line', 'lines']);
+const monthlyRows = (n) => plural(n, ['monthly row', 'monthly rows']);
 
 /** "Nothing will be changed": a replace import refused because some rows have errors. */
 const ReplaceBlocked = ({ children }) => (
@@ -90,10 +208,19 @@ const ReplaceSummary = ({ result, done, errorCount }) => {
   // After the import the step's headline already says what was removed.
   if (done) return null;
   if (result.deleted > 0) {
+    const lineCount = result.removedLineCount ?? (result.removedLines.length || null);
     return (
       <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status" data-testid="replace-summary">
-        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Will remove {lines(result.deleted)} that {result.deleted === 1 ? 'is' : 'are'} not in this file</div>
+        <div className="flex items-center gap-2 font-medium">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>
+            Will remove {monthlyRows(result.deleted)}
+            {lineCount ? ` (${plural(lineCount, ['customer × product line', 'customer × product lines'])})` : ''}
+            {' '}that {result.deleted === 1 ? 'is' : 'are'} not in this file
+          </span>
+        </div>
         <div className="mt-0.5 text-amber-800">{where}</div>
+        <RemovedLines result={result} />
       </div>
     );
   }
@@ -121,6 +248,7 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
   // Price matrix files: errors name the customer-type column of the cell.
   const hasColumns = errors.some((e) => e.column);
   const sources = describePriceSources(result.priceSources);
+  const tiles = countTiles(result, step, noun, isRecords, errors.length);
 
   const rowFor = (n) => {
     const idx = Number(n) - 1;
@@ -130,35 +258,8 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {isSales ? (
-          <>
-            <Tile label={done ? 'New rows' : 'New rows'} value={result.inserted ?? result.imported} tone={(result.inserted ?? result.imported) ? 'green' : 'gray'} hint="Sales rows added to the scenario." />
-            <Tile label="Updated rows" value={result.inserted === null ? 0 : result.updated} tone={result.updated ? 'blue' : 'gray'} hint="Rows for the same customer, product and month that already existed get the new quantity and price." />
-            <Tile label="New customers / products" value={result.createdCustomers.length + result.createdProducts.length} tone={(result.createdCustomers.length + result.createdProducts.length) ? 'blue' : 'gray'} />
-            <Tile label="Rows with errors" value={errors.length} tone={errors.length ? 'red' : 'gray'} />
-          </>
-        ) : (
-          <>
-            <Tile label={`New ${noun}`} value={result.created} tone={result.created ? 'green' : 'gray'} />
-            <Tile label={`Updated ${noun}`} value={result.updated} tone={result.updated ? 'blue' : 'gray'} />
-            {isRecords ? (
-              <Tile
-                label="Unchanged"
-                value={result.unchanged + result.skipped}
-                hint="Rows that match what is already saved, or existing rows left alone in 'Add new only' mode."
-              />
-            ) : (
-              <Tile
-                label={`Replaced ${noun}`}
-                value={result.replaced}
-                tone={result.replaced ? 'amber' : 'gray'}
-                hint="Existing rows removed because the file replaces them (replace mode)."
-              />
-            )}
-            <Tile label="Rows with errors" value={errors.length} tone={errors.length ? 'red' : 'gray'} />
-          </>
-        )}
+      <div className={`grid grid-cols-2 gap-2 ${GRID_COLS[tiles.length] || 'sm:grid-cols-4'}`}>
+        {tiles.map((tile) => <Tile key={tile.label} {...tile} />)}
       </div>
 
       {isSales && result.startPeriod && (

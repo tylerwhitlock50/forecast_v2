@@ -116,8 +116,8 @@ def test_repeated_customer_product_month_rows_are_combined(env):
     stored = q(mgr, "SELECT SUM(quantity), SUM(total_revenue) FROM sales WHERE forecast_id = ?", (F,))[0]
     assert stored[0] == data["total_quantity"] and stored[1] == pytest.approx(data["total_revenue"])
 
-    again = post(client, "/forecast/smart_import_sales", body)                  # re-import: same totals, updated
-    assert (again["inserted"], again["updated"]) == (0, 2)
+    again = post(client, "/forecast/smart_import_sales", body)                  # re-import: same values, unchanged
+    assert (again["inserted"], again["updated"], again["unchanged"]) == (0, 0, 2)
     assert _sales(mgr)[("CUST-001", "RFL-308", "2027-01")][0] == 15
 
 

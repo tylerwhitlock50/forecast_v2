@@ -364,7 +364,8 @@ async def load_rows_async(rows: Optional[List[Dict[str, Any]]], file_path: Optio
 def _summarize(body: Dict[str, Any], source: Optional[Dict[str, Any]], detail: bool) -> Dict[str, Any]:
     """The import endpoint's counts, errors and warnings, capped for the model's context."""
     result: Dict[str, Any] = {"message": body.get("message")}
-    for key in ("kind", "table", "dry_run", "mode", "rows", "created", "updated", "replaced", "skipped"):
+    for key in ("kind", "table", "dry_run", "mode", "rows", "created", "updated", "unchanged", "replaced",
+                "boms_replaced", "lines_deleted", "routings_replaced", "operations_deleted", "skipped"):
         if body.get(key) not in (None, ""):
             result[key] = body[key]
     if source:

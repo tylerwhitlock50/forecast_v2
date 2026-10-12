@@ -349,7 +349,7 @@ class TestSalesDetailRoute:
 class TestWorkbookRoute:
     def test_download_headers(self, workbook_response):
         assert workbook_response.headers["content-type"] == wx.XLSX_MEDIA_TYPE
-        assert 'filename="forecast_F-OPS_2027-01_2027-03.xlsx"' in workbook_response.headers["content-disposition"]
+        assert 'filename="forecast_budget-2027_2027-01_2027-03.xlsx"' in workbook_response.headers["content-disposition"]
         assert workbook_response.headers["content-disposition"].startswith("attachment")
 
     def test_has_every_sheet_in_order(self, wb):

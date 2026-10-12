@@ -581,8 +581,11 @@ def _finish(conn, dry_run: bool) -> None:
         conn.commit()
 
 
-def _message(kind: str, dry_run: bool, created: int, updated: int, replaced: int, skipped: int, errors: int) -> str:
+def _message(kind: str, dry_run: bool, created: int, updated: int, replaced: int, skipped: int, errors: int,
+             unchanged: int = 0) -> str:
     parts = [f"{created} created", f"{updated} updated"]
+    if unchanged:
+        parts.append(f"{unchanged} unchanged")
     if replaced:
         parts.append(f"{replaced} replaced")
     if skipped:
@@ -777,6 +780,9 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
     product's id links that product when it has no BOM yet. A BOM with any
     row error is skipped as a whole so it is never half-replaced. The
     bom_definitions header only ever moves to a newer version.
+    ``boms_replaced`` (= ``replaced``) counts whole BOMs + versions replaced
+    and ``lines_deleted`` their old lines; ``created`` / ``updated`` count
+    the file's lines.
     """
     from utils.data_loader import version_sort_key  # data_loader imports this module
 
@@ -795,7 +801,8 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
     mapped, unknown, blank_rows = _map_rows(rows, BOM_FIELDS, prepare=_prepare, skipped=notes)
     problem = _header_problem(rows, BOM_FIELDS, mapped, ("bom_id", "material_description", "qty", "unit_price"))
     if problem:
-        return _header_problem_result(problem, "boms", rows, mode, dry_run, unknown, boms=[])
+        return _header_problem_result(problem, "boms", rows, mode, dry_run, unknown, boms=[], boms_replaced=0,
+                                      lines_deleted=0)
     mapped, filled = _fill_down(mapped, "bom_id", _BOM_PARENT_FIELDS, _BOM_CHILD_FIELDS)
     errors: List[Dict[str, Any]] = []
     warnings: List[str] = _ignored_columns_warning(unknown) + _skipped_rows_warning(notes)
@@ -999,15 +1006,20 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
 
     data = _result(
         kind="boms", dry_run=dry_run, mode=mode, rows=len(rows), created=created, updated=updated,
-        replaced=replaced, skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=_dedupe(warnings),
+        replaced=replaced, boms_replaced=replaced, lines_deleted=lines_deleted,
+        skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=_dedupe(warnings),
         boms=boms,
-        summary={"boms": len(boms), "lines_written": created + updated, "lines_deleted": lines_deleted,
+        summary={"boms": len(boms), "boms_replaced": replaced, "lines_written": created + updated,
+                 "lines_deleted": lines_deleted,
                  "products_linked": sum(len(v) for v in linked.values()), "blank_rows": blank_rows,
                  "auto_linked_products": auto_linked, "continuation_rows": len(filled),
                  "material_cost_by_bom": {f"{b['bom_id']} v{b['version']}": b["material_cost_per_unit"] for b in boms}},
     )
-    return ForecastResponse(status="success", data=data,
-                            message=_message("BOM lines", dry_run, created, updated, replaced, skipped, len(errors)))
+    message = _message("BOM lines", dry_run, created, updated, 0, skipped, len(errors))
+    if replaced:
+        message += (f"; {replaced} existing BOM{'s' if replaced != 1 else ''} replaced as a whole ({lines_deleted} old "
+                    f"line{'s' if lines_deleted != 1 else ''} deleted)")
+    return ForecastResponse(status="success", data=data, message=message)
 
 
 def _row_list(rows: Sequence[int], limit: int = 12) -> str:
@@ -1101,7 +1113,8 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
     problem = _header_problem(rows, ROUTING_FIELDS, mapped, ("router_id", "machine_id", "machine_minutes",
                                                              "labor_minutes"))
     if problem:
-        return _header_problem_result(problem, "routings", rows, mode, dry_run, unknown, routings=[])
+        return _header_problem_result(problem, "routings", rows, mode, dry_run, unknown, routings=[],
+                                      routings_replaced=0, operations_deleted=0)
     mapped, filled = _fill_down(mapped, "router_id", _ROUTING_PARENT_FIELDS, _ROUTING_CHILD_FIELDS)
     errors: List[Dict[str, Any]] = []
     warnings: List[str] = _routing_column_warnings(unknown, mapped) + _skipped_rows_warning(notes)
@@ -1332,14 +1345,19 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
 
     data = _result(
         kind="routings", dry_run=dry_run, mode=mode, rows=len(rows), created=created, updated=updated,
-        replaced=replaced, skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=warnings,
+        replaced=replaced, routings_replaced=replaced, operations_deleted=ops_deleted,
+        skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=warnings,
         routings=routings, created_machines=created_machines, created_labor_types=created_labor,
-        summary={"routings": len(routings), "operations_written": created + updated, "operations_deleted": ops_deleted,
+        summary={"routings": len(routings), "routings_replaced": replaced, "operations_written": created + updated,
+                 "operations_deleted": ops_deleted,
                  "products_linked": sum(len(v) for v in linked.values()), "blank_rows": blank_rows,
                  "auto_linked_products": auto_linked, "continuation_rows": len(filled)},
     )
-    return ForecastResponse(status="success", data=data,
-                            message=_message("routing operations", dry_run, created, updated, replaced, skipped, len(errors)))
+    message = _message("routing operations", dry_run, created, updated, 0, skipped, len(errors))
+    if replaced:
+        message += (f"; {replaced} existing routing{'s' if replaced != 1 else ''} replaced as a whole ({ops_deleted} "
+                    f"old operation{'s' if ops_deleted != 1 else ''} deleted)")
+    return ForecastResponse(status="success", data=data, message=message)
 
 
 # ---------------------------------------------------------------------------
@@ -1836,8 +1854,9 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
     errors: List[Dict[str, Any]] = []
     warnings: List[str] = _skipped_rows_warning(notes)
     results: List[Dict[str, Any]] = []
-    created = updated = replaced = 0
+    created = updated = replaced = unchanged = 0
     replace_blocked = False
+    editable = pricing_routes.PRICE_FIELDS if is_price else pricing_routes.DEDUCTION_FIELDS
 
     conn = db_manager.get_connection()
     try:
@@ -1853,7 +1872,7 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
         if problem:
             conn.rollback()
             return _header_problem_result(problem, kind, rows, mode, dry_run, unknown, records=[],
-                                          replace_blocked=False,
+                                          replace_blocked=False, unchanged=0,
                                           summary={"blank_rows": blank_rows, "rules_written": 0, "rules_deleted": 0})
         ignored = [c for c in unknown if c not in matrix]
         warnings.extend(_ignored_columns_warning(ignored))
@@ -1957,6 +1976,13 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
                                                f"with mode upsert to update it"})
                 continue
             if target:
+                cursor.execute(f"SELECT * FROM {table} WHERE {id_col} = ?", (target,))
+                stored_row = cursor.fetchone()
+                stored = dict(zip([d[0] for d in cursor.description], stored_row)) if stored_row else {}
+                if stored and _same_rule(stored, clean, editable):
+                    unchanged += 1           # the file repeats what is stored: nothing to write
+                    results.append({**ref, id_col: target, "action": "unchanged", **_echo(clean, is_price)})
+                    continue
                 update_fn(cursor, target, clean)
                 updated += 1
                 results.append({**ref, id_col: target, "action": "updated", **_echo(clean, is_price)})
@@ -1986,19 +2012,43 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
 
     data = _result(
         kind=kind, dry_run=dry_run, mode=mode, rows=len(rows), created=created, updated=updated, replaced=replaced,
+        unchanged=unchanged,
         skipped=0, errors=sorted(errors, key=lambda e: e["row"]), warnings=_dedupe(warnings), records=results,
         replace_blocked=replace_blocked,
         summary={"blank_rows": blank_rows, "rules_written": created + updated, "rules_deleted": replaced,
-                 "matrix_columns": matrix},
+                 "unchanged": unchanged, "matrix_columns": matrix},
     )
     label = "price rules" if is_price else "deduction rules"
-    message = _message(label, dry_run, created, updated, replaced, 0, len(errors))
+    message = _message(label, dry_run, created, updated, replaced, 0, len(errors), unchanged)
     if replace_blocked:
         message = (f"Nothing was changed: {len(errors)} row{'s' if len(errors) != 1 else ''} had errors, and a replace "
                    f"import only runs when every row is valid. Fix the rows (or import with mode=upsert) and try again.")
         if dry_run:
             message = "Dry run, nothing written: " + message
     return ForecastResponse(status="success", data=data, message=message)
+
+
+def _same_rule(stored: Dict[str, Any], clean: Dict[str, Any], fields: Sequence[str]) -> bool:
+    """True when writing ``clean`` over ``stored`` would change no editable column (numbers to a millionth)."""
+    for field in fields:
+        old, new = stored.get(field), clean.get(field)
+        if field == "is_active":
+            old = 1 if old is None else int(bool(old))
+            new = 1 if new is None else int(bool(new))
+        if isinstance(old, str):
+            old = old.strip() or None
+        if isinstance(new, str):
+            new = new.strip() or None
+        if old is None or new is None:
+            if old is not new:
+                return False
+            continue
+        if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+            if abs(float(old) - float(new)) > 1e-6 * max(1.0, abs(float(old)), abs(float(new))):
+                return False
+        elif str(old) != str(new):
+            return False
+    return True
 
 
 def _id_free(cursor, table: str, id_col: str, value: str) -> bool:
@@ -2036,7 +2086,8 @@ async def import_prices(payload: Dict[str, Any] = Body(...)):
     Distributor | ...: columns named after existing customer types) makes
     one rule per filled cell (records / errors carry the ``column``). The
     same scope twice in one file is a row error. Customers / products may
-    be given by name.
+    be given by name. A row identical to the stored rule is counted as
+    ``unchanged`` (records action 'unchanged') and not rewritten.
     """
     return _import_rules(payload, "prices")
 
@@ -2058,7 +2109,8 @@ async def import_deductions(payload: Dict[str, Any] = Body(...)):
     also the program name, so 'Co-op' and 'Freight allowance' are separate
     programs that both apply). The same slot twice in one file is a row
     error; in append mode a row that would duplicate an active rule is a
-    row error.
+    row error. A row identical to the stored rule is counted as
+    ``unchanged``, not ``updated``.
     """
     return _import_rules(payload, "deductions")
 

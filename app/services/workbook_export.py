@@ -1267,21 +1267,45 @@ def write_workbook(path: str, cursor, forecast_ids: Sequence[str], start_period:
     }
 
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_UNSAFE = re.compile(r"[^A-Za-z0-9._+-]+")
 
 
-def workbook_filename(forecast_ids: Sequence[str], start_period: str, end_period: str) -> str:
-    """forecast_<first scenario id>_<start>_<end>.xlsx, with unsafe characters replaced."""
-    first = next((str(f).strip() for f in forecast_ids if f and str(f).strip()), "forecast")
-    stem = f"forecast_{first}_{start_period}_{end_period}"
+def scenario_names(cursor, forecast_ids: Sequence[str]) -> Dict[str, str]:
+    """{forecast_id: name} of the given scenarios (unknown ids are left out)."""
+    ids = [str(f).strip() for f in forecast_ids if f and str(f).strip()]
+    if not ids:
+        return {}
+    cursor.execute(f"SELECT forecast_id, name FROM forecast WHERE forecast_id IN ({','.join('?' for _ in ids)})", ids)
+    return {fid: name for fid, name in cursor.fetchall() if name is not None and str(name).strip()}
+
+
+def _slug(text: Any, limit: int = 40) -> str:
+    """'2027 Budget (v2)' -> '2027-budget-v2': lower-case letters and digits joined by '-'."""
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")[:limit].strip("-")
+
+
+def workbook_filename(forecast_ids: Sequence[str], start_period: str, end_period: str,
+                      names: Optional[Dict[str, str]] = None) -> str:
+    """
+    forecast_<scenario name slug>_<start>_<end>.xlsx, e.g.
+    forecast_2027-budget_2027-01_2027-12.xlsx. Each scenario is named by
+    the slug of its name (``names``: {forecast_id: name}), falling back to
+    its id; several scenarios are joined with '+' (at most three, then
+    '+N-more'). Unsafe characters are replaced.
+    """
+    ids = [str(f).strip() for f in forecast_ids if f and str(f).strip()] or ["forecast"]
+    parts = [_slug((names or {}).get(fid)) or fid for fid in ids]
+    label = "+".join(parts[:3]) + (f"+{len(parts) - 3}-more" if len(parts) > 3 else "")
+    stem = f"forecast_{label}_{start_period}_{end_period}"
     return _UNSAFE.sub("_", stem).strip("._") + ".xlsx"
 
 
 def export_path(data_dir: str, forecast_ids: Sequence[str], start_period: str, end_period: str,
-                filename: Optional[str] = None) -> str:
+                filename: Optional[str] = None, names: Optional[Dict[str, str]] = None) -> str:
     """
     Where to save an export: <data_dir>/exports/<filename>. A caller-supplied
-    filename is reduced to a safe base name (no folders) ending in .xlsx.
+    filename is reduced to a safe base name (no folders) ending in .xlsx;
+    without one it is ``workbook_filename`` (``names``: {forecast_id: name}).
     """
     if filename:
         base = os.path.basename(str(filename).replace("\\", "/"))
@@ -1289,5 +1313,5 @@ def export_path(data_dir: str, forecast_ids: Sequence[str], start_period: str, e
         stem = _UNSAFE.sub("_", stem).strip("._")
         name = (stem or "forecast") + ".xlsx"
     else:
-        name = workbook_filename(forecast_ids, start_period, end_period)
+        name = workbook_filename(forecast_ids, start_period, end_period, names)
     return os.path.join(data_dir, "exports", name)

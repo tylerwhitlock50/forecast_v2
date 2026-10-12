@@ -497,7 +497,7 @@ def test_price_import_aliases_percent_and_upsert(env):
     assert stored[("PST-9C", None, "Dealer")][:3] == ("discount_from_base", None, 0.15)
 
     again = post(client, "/import/prices", {"rows": rows[:4]})
-    assert (again["created"], again["updated"]) == (0, 4)                                 # same scope -> update
+    assert (again["created"], again["updated"], again["unchanged"]) == (0, 0, 4)          # same scope, same values
     assert q(mgr, "SELECT COUNT(*) FROM price_list") == [(4,)]
     # append never stacks a second active rule on a stored rule's scope (it could never apply)
     appended = post(client, "/import/prices", {"rows": rows[:1] + [
@@ -617,7 +617,7 @@ def test_sales_import_zero_price_rules_and_auto_create(env):
 
     data = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "sales": rows,
                                                          "options": {"allowZeroPrice": True}})
-    assert data["imported"] == 2 and data["updated"] == 1 and data["price_sources"]["zero_price"] == 1
+    assert data["imported"] == 2 and data["unchanged"] == 1 and data["price_sources"]["zero_price"] == 1
     assert _sales(mgr)[("CUST-900", "ACC-1", "2027-01")] == (5, 0.0, 0.0)
 
     no_create = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "options": {"autoCreate": False}, "sales": [

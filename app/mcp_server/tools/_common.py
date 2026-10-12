@@ -212,3 +212,26 @@ def no_sales_hint(sales_lines: Any, start: str, end: str, sales_window: Optional
     if sales_window:
         return f"No sales rows in {start}..{end}; this scenario's sales run {sales_window}."
     return "This scenario has no sales rows yet: import the forecast with forecast_import_sales."
+
+
+# ---------------------------------------------------------------------------
+# Sales detail totals: per-line (rounded) vs statement-exact
+# ---------------------------------------------------------------------------
+
+ROUNDING_NOTE = ("totals add up the rows as shown (each line rounded to the cent, = SUM in Excel); report_totals "
+                 "add up the unrounded lines and match the income statement / COGS forecast exactly; rounding = "
+                 "report_totals - totals (per-line cent rounding, usually a few cents). Quote report_totals as "
+                 "the scenario's figures.")
+
+
+def report_totals_block(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ``report_totals`` (statement-exact) and the non-zero ``rounding`` of a
+    /reporting/sales-detail answer, with ``rounding_note``; {} when the
+    answer has no report_totals (no rows).
+    """
+    report = body.get("report_totals")
+    if not report:
+        return {}
+    rounding = {k: v for k, v in (body.get("rounding") or {}).items() if isinstance(v, (int, float)) and v}
+    return {"report_totals": report, "rounding": rounding, "rounding_note": ROUNDING_NOTE}

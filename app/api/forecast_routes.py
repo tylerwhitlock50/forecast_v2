@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Sequence, Tuple
 from db import get_forecast_data, get_saved_forecast_results
 from db.models import ForecastResponse, SQLApplyRequest
 from db import execute_sql
@@ -104,6 +104,42 @@ def _add_months(period: str, months: int) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def _name_key(name: Any) -> str:
+    """Scenario names compare trimmed and case-insensitively ('2027 Budget' == ' 2027 budget ')."""
+    return " ".join(str(name or "").split()).casefold()
+
+
+def _scenario_with_name(cursor, name: Any, exclude_id: Optional[str] = None) -> Optional[str]:
+    """The id of another scenario already called ``name`` (trimmed, case-insensitive), or None."""
+    wanted = _name_key(name)
+    cursor.execute("SELECT forecast_id, name FROM forecast ORDER BY forecast_id")
+    for fid, existing in cursor.fetchall():
+        if fid != exclude_id and _name_key(existing) == wanted:
+            return fid
+    return None
+
+
+def _refuse_taken_name(cursor, name: str, exclude_id: Optional[str] = None) -> None:
+    """409 naming the scenario that already has this name."""
+    existing = _scenario_with_name(cursor, name, exclude_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A scenario named '{name}' already exists ({existing}). Choose another name, or open {existing} "
+                   f"instead.",
+        )
+
+
+def _unique_name(cursor, stem: str) -> str:
+    """``stem``, or ``stem 2``, ``stem 3`` ... - the first name no scenario has yet."""
+    if not _scenario_with_name(cursor, stem):
+        return stem
+    n = 2
+    while _scenario_with_name(cursor, f"{stem} {n}"):
+        n += 1
+    return f"{stem} {n}"
+
+
 def _set_base(cursor, forecast_id: str) -> None:
     cursor.execute("UPDATE forecast SET is_base = 0")
     cursor.execute("UPDATE forecast SET is_base = 1 WHERE forecast_id = ?", (forecast_id,))
@@ -163,11 +199,16 @@ async def get_forecast_scenario(forecast_id: str):
 
 @router.post("/scenario", response_model=ForecastResponse)
 async def create_forecast_scenario(scenario_data: Dict[str, Any]):
-    """Create an empty scenario with an auto-generated FXXX id."""
+    """
+    Create an empty scenario with an auto-generated FXXX id. A name another
+    scenario already has (trimmed, case-insensitive) is refused with 409
+    naming that scenario's id; without a name the scenario is called 'New
+    Scenario' ('New Scenario 2', ... when taken).
+    """
     try:
         from db.database import db_manager
 
-        name = (scenario_data.get('name') or '').strip() or 'New Scenario'
+        name = str(scenario_data.get('name') or '').strip()
         description = scenario_data.get('description') or ''
         notes = scenario_data.get('notes') or ''
         make_base = bool(scenario_data.get('is_base'))
@@ -175,6 +216,10 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         try:
+            if name:
+                _refuse_taken_name(cursor, name)
+            else:
+                name = _unique_name(cursor, 'New Scenario')
             forecast_id = _next_forecast_id(cursor)
             # First scenario in an empty database becomes the base automatically.
             cursor.execute("SELECT COUNT(*) FROM forecast")
@@ -192,13 +237,19 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
             db_manager.close_connection(conn)
 
         return ForecastResponse(status="success", data=record, message=f"Forecast scenario {forecast_id} created successfully")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating forecast scenario: {str(e)}")
 
 
 @router.put("/scenario/{forecast_id}", response_model=ForecastResponse)
 async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, Any]):
-    """Rename, edit description / notes, or mark as the base scenario."""
+    """
+    Rename, edit description / notes, or mark as the base scenario. A new
+    name another scenario already has (trimmed, case-insensitive) is refused
+    with 409 naming that scenario's id.
+    """
     from db.database import db_manager
 
     conn = db_manager.get_connection()
@@ -212,8 +263,11 @@ async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, An
         for field in ("name", "description", "notes"):
             if field in scenario_data:
                 value = scenario_data[field]
-                if field == "name" and not (value or '').strip():
-                    raise HTTPException(status_code=422, detail="name cannot be empty")
+                if field == "name":
+                    if not str(value or '').strip():
+                        raise HTTPException(status_code=422, detail="name cannot be empty")
+                    value = str(value).strip()
+                    _refuse_taken_name(cursor, value, exclude_id=forecast_id)
                 updates.append(f"{field} = ?")
                 params.append(value)
         if updates:
@@ -257,6 +311,10 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
     * extend_periods       - adds N monthly periods after the last sales
                              month, repeating each customer/product line from
                              that month (after the multipliers)
+
+    An explicit ``name`` another scenario already has (trimmed,
+    case-insensitive) is refused with 409 naming that scenario's id; without
+    a name the copy is called '<name> Copy' ('<name> Copy 2', ... when taken).
     """
     try:
         from db.database import db_manager
@@ -297,8 +355,12 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
                 raise HTTPException(status_code=404, detail="Forecast scenario not found")
             original_name, original_description, original_notes = row
 
+            name = str(body.get('name') or '').strip()
+            if name:
+                _refuse_taken_name(cursor, name)
+            else:
+                name = _unique_name(cursor, f"{original_name} Copy")
             new_forecast_id = _next_forecast_id(cursor)
-            name = (body.get('name') or '').strip() or f"{original_name} Copy"
             description = body.get('description') or original_description
             notes = body.get('notes') or original_notes
 
@@ -853,6 +915,18 @@ async def bulk_create_products(products_data: Dict[str, Any]):
     message = result.pop("message")
     return ForecastResponse(status="success", data=result, message=message)
 
+def _same_numbers(stored: Sequence[Any], new: Sequence[Any]) -> bool:
+    """True when every stored number equals the new one (to a millionth, relative), so a re-import is a no-op."""
+    for old, value in zip(stored, new):
+        try:
+            a, b = float(old if old is not None else 0.0), float(value if value is not None else 0.0)
+        except (TypeError, ValueError):
+            return False
+        if abs(a - b) > 1e-6 * max(1.0, abs(a), abs(b)):
+            return False
+    return True
+
+
 class _HeaderProblem(Exception):
     """No column of a sales file was recognised (smart_import_sales answers with one file-level error)."""
 
@@ -944,6 +1018,9 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         blank_rows = 0
         missing_year_rows: List[int] = []
         note_rows: List[Tuple[int, str]] = []
+        # Every month COLUMN of a wide file, even one left blank on every row: mode=replace treats the
+        # file as covering those months, so a blank December column clears December's stale rows.
+        column_months: set = set()
         for row_no, raw in enumerate(sales, start=1):
             note = note_or_total_row(raw)
             if note is not None:                 # a 'Total' line or a footnote, not a customer
@@ -971,6 +1048,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 continue
             if month_columns and _blank(data.get('period')):
                 wide_format = True
+                column_months.update(m for _k, m in month_columns)
                 filled = [(k, m) for k, m in month_columns if not _blank(raw.get(k))]
                 if not filled:
                     blank_rows += 1
@@ -1070,7 +1148,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
 
         # --- 3. Validate and price every row; combine repeats of one customer / product / month --------
         price_rules = load_price_rules(cursor, [forecast_id])
-        imported_count = inserted = updated = 0
+        imported_count = inserted = updated = unchanged = 0
         errors: List[Dict[str, Any]] = [
             {'row': r, 'error': "Month columns (Jan, Feb, ...) have no year: add a Year column or send year with the request"}
             for r in missing_year_rows
@@ -1185,10 +1263,14 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 combined.append(f"Rows {rows_text} ({customer_id} / {product_id} / {period}) combined: "
                                 f"{quantity:,.4g} units, {total:,.2f}")
             cursor.execute(
-                "SELECT sale_id FROM sales WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?",
+                "SELECT quantity, unit_price, total_revenue FROM sales "
+                "WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?",
                 (customer_id, product_id, period, forecast_id),
             )
-            if cursor.fetchone():
+            stored = cursor.fetchall()
+            if len(stored) == 1 and _same_numbers(stored[0], (quantity, price, total)):
+                unchanged += 1                     # already stored with these values: nothing to write
+            elif stored:
                 cursor.execute(
                     """UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
                        WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?""",
@@ -1216,6 +1298,8 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
 
         deleted = 0
         replace_blocked = False
+        covered = set(months) | column_months
+        removed: Dict[Tuple[str, str], List[str]] = {}
         if mode != 'upsert':
             if errors:
                 # Never delete a scenario's rows on the strength of a file that did not fully import.
@@ -1225,15 +1309,21 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                     "SELECT sale_id, customer_id, unit_id, substr(period, 1, 7) FROM sales WHERE forecast_id = ?",
                     (forecast_id,),
                 )
-                covered = set(months)
-                stale = [
-                    sale_id for sale_id, c, u, p in cursor.fetchall()
-                    if (c, u, p) not in seen and (mode == 'replace_all' or p in covered)
-                ]
+                stale = []
+                for sale_id, c, u, p in cursor.fetchall():
+                    if (c, u, p) not in seen and (mode == 'replace_all' or p in covered):
+                        stale.append(sale_id)
+                        removed.setdefault((c, u), []).append(p)
                 for i in range(0, len(stale), 500):
                     chunk = stale[i:i + 500]
                     cursor.execute(f"DELETE FROM sales WHERE sale_id IN ({','.join('?' for _ in chunk)})", chunk)
                 deleted = len(stale)
+        removed_lines = [
+            {"customer_id": c, "customer_name": customers.get(c, {}).get("name"),
+             "unit_id": u, "unit_name": products.get(u, {}).get("name"),
+             "months": sorted({str(p) for p in ps if p is not None})}
+            for (c, u), ps in sorted(removed.items(), key=lambda item: (str(item[0][0]), str(item[0][1])))
+        ]
 
         warnings.extend(_skipped_rows_warning(note_rows))
         if no_quantity:
@@ -1256,9 +1346,10 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         conn.rollback()
         return ForecastResponse(
             status="success",
-            data={'imported': 0, 'inserted': 0, 'updated': 0, 'created_customers': [], 'created_products': [],
-                  'errors': [problem.error], 'warnings': [], 'price_sources': {}, 'dry_run': dry_run, 'mode': mode,
-                  'deleted': 0, 'replace_blocked': mode != 'upsert', 'rows': len(sales), 'records': 0,
+            data={'imported': 0, 'inserted': 0, 'updated': 0, 'unchanged': 0, 'created_customers': [],
+                  'created_products': [], 'errors': [problem.error], 'warnings': [], 'price_sources': {},
+                  'dry_run': dry_run, 'mode': mode, 'deleted': 0, 'removed_line_count': 0, 'removed_lines': [],
+                  'covered_months': [], 'replace_blocked': mode != 'upsert', 'rows': len(sales), 'records': 0,
                   'blank_rows': 0, 'wide_format': False, 'start_period': None, 'end_period': None,
                   'total_quantity': 0, 'total_revenue': 0},
             message=f"Nothing imported: {problem.error['error']}",
@@ -1272,12 +1363,13 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
     finally:
         db_manager.close_connection(conn)
 
-    message = (f"Imported {imported_count} sales records. Created {len(created_customers)} customers and "
-               f"{len(created_products)} products.")
+    message = (f"Imported {imported_count} sales records ({inserted} new, {updated} updated, {unchanged} "
+               f"unchanged). Created {len(created_customers)} customers and {len(created_products)} products.")
     if errors:
         message += f" {len(errors)} rows had errors."
     if deleted:
-        message += f" Removed {deleted} rows of the scenario that the file no longer contains."
+        message += (f" Removed {deleted} monthly rows ({len(removed_lines)} customer x product lines) of the "
+                    f"scenario that the file no longer contains.")
     if replace_blocked:
         message = (f"Nothing was changed: {len(errors)} rows had errors, and a replace import only runs when every "
                    f"row is valid. Fix the rows (or import with mode=upsert) and try again.")
@@ -1290,6 +1382,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             'imported': imported_count,
             'inserted': inserted,
             'updated': updated,
+            'unchanged': unchanged,
             'created_customers': created_customers,
             'created_products': created_products,
             'errors': sorted(errors, key=lambda e: e['row']),
@@ -1298,6 +1391,9 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             'dry_run': dry_run,
             'mode': mode,
             'deleted': deleted,
+            'removed_line_count': len(removed_lines),
+            'removed_lines': removed_lines[:50],
+            'covered_months': sorted(covered) if mode == 'replace' else [],
             'replace_blocked': replace_blocked,
             'rows': len(sales),
             'records': len(entries),
