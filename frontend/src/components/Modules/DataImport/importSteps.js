@@ -148,7 +148,26 @@ export const IMPORT_STEPS = [
     noun: ['sales row', 'sales rows'],
     purpose: 'Units by customer, product and month. Leave the price blank to use the price list.',
     endpoint: '/forecast/smart_import_sales',
-    modes: null,
+    // Shown one per line with their help: two of them delete rows.
+    modesLayout: 'stacked',
+    modes: [
+      {
+        value: 'upsert',
+        label: 'Add / update rows',
+        help: 'Rows for the same customer, product and month get the new quantity and price; new rows are added. Nothing is removed.',
+      },
+      {
+        value: 'replace',
+        label: "Replace this scenario's months in the file",
+        help: 'For each month that appears in the file, lines the file no longer has are removed (for example a customer or product dropped from the plan). Months that are not in the file are left exactly as they are.',
+      },
+      {
+        value: 'replace_all',
+        label: 'Replace the whole scenario forecast',
+        help: 'Afterwards the scenario holds exactly this file: every line that is not in the file is removed, in every month.',
+      },
+    ],
+    replaceNote: 'Replacing only runs when every row in the file is valid. If any row has a problem, nothing is changed.',
     options: [
       { key: 'autoCreate', label: 'Create customers and products that are not set up yet', default: false },
       { key: 'allowZeroPrice', label: 'Import rows that have no price at $0 (otherwise they are reported as errors)', default: false },
@@ -237,7 +256,8 @@ const toError = (e) => {
 /**
  * Any /import response (or the sales import response) -> one summary shape:
  * {created, updated, replaced, skipped, imported, errors, warnings, boms,
- *  priceSources, createdCustomers, createdProducts, total}.
+ *  priceSources, createdCustomers, createdProducts, total, mode, deleted,
+ *  replaceBlocked}.
  */
 export const summarizeImportResult = (payload) => {
   const data = payload?.data ?? payload ?? {};
@@ -287,6 +307,11 @@ export const summarizeImportResult = (payload) => {
     totalRevenue: data.total_revenue ?? null,
     wideFormat: Boolean(data.wide_format),
     dryRun: Boolean(pick('dry_run')),
+    // Sales import modes: rows removed (or that a dry run would remove), and
+    // whether a replace was refused because some rows have errors.
+    mode: pick('mode') || null,
+    deleted: num(pick('deleted')),
+    replaceBlocked: Boolean(pick('replace_blocked')),
     message: payload?.message || null,
   };
 };

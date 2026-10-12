@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import api, { showErrorToast } from '../../../lib/apiClient';
-import { goToImportStep } from '../../Common/importLink';
+import { goToImport } from '../../Common/importLink';
 import { bomDeleteImpact, cloneRows, linesOf, nextBomId, versionOf } from './bomHelpers';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
@@ -281,7 +281,7 @@ const BOMManagement = () => {
   const headerActions = [
     {
       label: 'Import from file',
-      onClick: () => goToImportStep(navigate, 'boms'),
+      onClick: () => goToImport(navigate, 'boms'),
       variant: 'outline'
     },
     {
@@ -390,7 +390,7 @@ const BOMManagement = () => {
                   <div className="space-y-3">
                     <p>No BOMs yet. Import them from a spreadsheet, or add one by hand.</p>
                     <div className="flex justify-center gap-2">
-                      <Button variant="outline" onClick={() => goToImportStep(navigate, 'boms')}>Import from file</Button>
+                      <Button variant="outline" onClick={() => goToImport(navigate, 'boms')}>Import from file</Button>
                       <Button className="bg-orange-600 text-white hover:bg-orange-700" onClick={() => { setEditingBOM(null); setShowBOMModal(true); }}>Add BOM</Button>
                     </div>
                   </div>

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import api from '../../../lib/apiClient';
 import { useForecast } from '../../../context/ForecastContext';
@@ -7,12 +7,15 @@ import { Card } from '../../ui/card';
 import ImportStepCard from './ImportStepCard';
 import { IMPORT_STEPS, normalizeTemplateDocs, plural } from './importSteps';
 import { extractList } from '../Pricing/pricingUtils';
+import { scrollToImportStep, stepFromHash } from '../../Common/importLink';
 
 const NEXT_STEPS = [
   { to: '/pricing', title: 'Pricing & deductions', text: 'Check prices by customer type and the terms, chargebacks and excise tax rules.' },
   { to: '/reporting/cogs-labor', title: 'COGS & labor forecast', text: 'Gross sales → net sales → COGS → gross profit, plus labor hours by month. Export to Excel.' },
   { to: '/reporting', title: 'Financial statements', text: 'Income statement, cash flow and balance sheet for the scenario.' },
 ];
+
+const HIGHLIGHT_MS = 2500;
 
 const distinctCount = (rows, field) => new Set((rows || []).map((r) => r?.[field]).filter(Boolean)).size;
 
@@ -22,8 +25,25 @@ const distinctCount = (rows, field) => new Set((rows || []).map((r) => r?.[field
  */
 const DataImportPage = () => {
   const { data, scenarios, activeScenario, actions } = useForecast();
+  const location = useLocation();
   const [docs, setDocs] = useState({});
   const [ruleCounts, setRuleCounts] = useState({ prices: null, deductions: null });
+  const [highlighted, setHighlighted] = useState(null);
+
+  // Deep links (/import#sales, #boms, #labor_rates ...): on load and on every
+  // navigation to a hash, even the same one again, scroll to that step and
+  // highlight it briefly.
+  const targetStep = stepFromHash(location.hash);
+  useEffect(() => {
+    if (!targetStep) return undefined;
+    setHighlighted(targetStep);
+    const stopScrolling = scrollToImportStep(targetStep);
+    const timer = window.setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
+    return () => {
+      stopScrolling();
+      window.clearTimeout(timer);
+    };
+  }, [targetStep, location.key]);
 
   const scenario = activeScenario ? scenarios?.[activeScenario] || null : null;
   const noScenarios = Object.keys(scenarios || {}).length === 0;
@@ -119,6 +139,7 @@ const DataImportPage = () => {
             scenario={scenario}
             noScenarios={noScenarios}
             onImported={handleImported}
+            highlighted={highlighted === step.kind}
           />
         ))}
       </div>

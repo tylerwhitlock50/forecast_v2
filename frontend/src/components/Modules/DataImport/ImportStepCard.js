@@ -34,7 +34,7 @@ const ColumnChips = ({ required, optional, docs }) => (
  * result. The server validates and reports per-row errors; nothing is saved
  * until the user confirms.
  */
-const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noScenarios, onImported }) => {
+const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noScenarios, onImported, highlighted = false }) => {
   const fileInput = useRef(null);
   const [file, setFile] = useState(null);
   const [parsed, setParsed] = useState(null); // {rows, headers, sheetName, sales?}
@@ -68,6 +68,7 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
       return {
         forecast_id: scenario.id,
         sales: rows,
+        mode: currentMode || 'upsert',
         dry_run: dryRun,
         options: { autoCreate: Boolean(currentOptions.autoCreate), allowZeroPrice: Boolean(currentOptions.allowZeroPrice), dry_run: dryRun },
       };
@@ -150,6 +151,14 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
     setError(null);
     try {
       const summary = await send(parsed, false);
+      if (summary.replaceBlocked) {
+        // The file changed meaning since the check (for example a customer was
+        // deleted meanwhile): the server refused to replace and saved nothing.
+        setPreview(summary);
+        setError(summary.message || 'Nothing was changed: some rows have problems, and replacing only runs when every row is valid.');
+        setPhase('preview');
+        return;
+      }
       setResult(summary);
       setPhase('done');
       if (onImported) await onImported(step, summary);
@@ -184,11 +193,18 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
   // What the server says it would write: sales rows, or new + updated rows / lines / operations / rules.
   const importCount = preview ? (isSales ? preview.imported : preview.created + preview.updated) : 0;
   const nothingToChange = Boolean(preview) && importCount === 0 && preview.errors.length === 0;
+  // A sales replace refuses the whole file while any row has an error.
+  const replaceBlocked = Boolean(isSales && preview?.replaceBlocked);
+  const toRemove = isSales && preview && !replaceBlocked ? preview.deleted : 0;
   const busy = phase === 'reading' || phase === 'checking' || phase === 'importing';
   const modeInfo = step.modes?.find((m) => m.value === mode);
 
   return (
-    <Card className={`overflow-hidden ${phase !== 'idle' || error ? 'ring-1 ring-orange-200' : ''}`} data-testid={`import-step-${step.kind}`}>
+    <Card
+      className={`overflow-hidden transition-shadow duration-500 ${highlighted ? 'ring-2 ring-orange-400 ring-offset-2' : (phase !== 'idle' || error ? 'ring-1 ring-orange-200' : '')}`}
+      data-testid={`import-step-${step.kind}`}
+      data-highlighted={highlighted ? 'true' : undefined}
+    >
       <div className="flex gap-4 p-5">
         <div className="flex-shrink-0">
           {hasData ? (
@@ -229,7 +245,7 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                       {scenario.start_period && (
                         <span className="text-gray-500"> · currently {formatPeriod(scenario.start_period)} – {formatPeriod(scenario.end_period)}</span>
                       )}
-                      <span className="text-gray-500">. Rows for the same customer, product and month are updated; other rows are kept.</span>
+                      <span className="text-gray-500">. After the file is checked you choose to add / update rows or to replace the scenario&apos;s lines.</span>
                     </>
                   ) : (
                     <span className="text-amber-700">
@@ -303,7 +319,35 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
 
               {phase !== 'done' && (step.modes || step.options) && (
                 <div className="space-y-2">
-                  {step.modes && (
+                  {step.modes && step.modesLayout === 'stacked' && (
+                    <fieldset>
+                      <legend className="mb-1.5 text-sm font-medium text-gray-900">How should this file change {scenario ? scenario.name : 'the scenario'}?</legend>
+                      <div className="space-y-1.5" role="radiogroup" aria-label="Import mode">
+                        {step.modes.map((m) => (
+                          <label
+                            key={m.value}
+                            className={`flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 text-sm ${mode === m.value ? 'border-orange-500 bg-orange-50' : 'border-gray-200 bg-white hover:border-gray-300'} ${busy ? 'cursor-wait opacity-70' : ''}`}
+                          >
+                            <input
+                              type="radio"
+                              name={`mode-${step.kind}`}
+                              value={m.value}
+                              checked={mode === m.value}
+                              onChange={() => changeMode(m.value)}
+                              disabled={busy}
+                              className="mt-0.5 h-4 w-4 flex-shrink-0 accent-orange-600"
+                            />
+                            <span className="min-w-0">
+                              <span className={`block font-medium ${mode === m.value ? 'text-orange-900' : 'text-gray-900'}`}>{m.label}</span>
+                              <span className="block text-xs text-gray-600">{m.help}</span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      {step.replaceNote && <p className="mt-1.5 text-xs text-gray-500">{step.replaceNote}</p>}
+                    </fieldset>
+                  )}
+                  {step.modes && step.modesLayout !== 'stacked' && (
                     <div>
                       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Import mode">
                         {step.modes.map((m) => (
@@ -334,7 +378,7 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                         checked={Boolean(options[o.key])}
                         onChange={(e) => changeOption(o.key, e.target.checked)}
                         disabled={busy}
-                        className="h-4 w-4 rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                        className="h-4 w-4 rounded border-gray-300 accent-orange-600"
                       />
                       {o.needsScenario && scenario ? o.label.replace('the active scenario', `${scenario.name}`) : o.label}
                     </label>
@@ -367,16 +411,23 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                   <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3">
                     <Button
                       onClick={confirmImport}
-                      disabled={importCount === 0}
+                      disabled={importCount === 0 || replaceBlocked}
                       className="bg-orange-600 text-white hover:bg-orange-700"
                     >
                       Import {plural(importCount, step.rowNoun || ['row', 'rows'])}
+                      {toRemove > 0 ? ` and remove ${plural(toRemove, ['line', 'lines'])}` : ''}
                     </Button>
                     <Button variant="outline" onClick={reset}>Cancel</Button>
-                    {preview.errors.length > 0 && importCount > 0 && (
+                    {replaceBlocked && (
+                      <span className="text-xs text-red-700">
+                        Replacing is blocked while any row has a problem. Fix the file and upload it again, or choose
+                        {' '}<span className="font-medium">“{step.modes?.[0]?.label}”</span> to import only the valid rows.
+                      </span>
+                    )}
+                    {!replaceBlocked && preview.errors.length > 0 && importCount > 0 && (
                       <span className="text-xs text-gray-500">Rows with problems are skipped. Fix the file and upload it again to include them.</span>
                     )}
-                    {importCount === 0 && !nothingToChange && (
+                    {!replaceBlocked && importCount === 0 && !nothingToChange && (
                       <span className="text-xs text-red-700">Nothing can be imported. Fix the problems above and upload the file again.</span>
                     )}
                     {nothingToChange && (
@@ -397,7 +448,7 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                   <div className="flex items-center gap-2 text-sm font-medium text-green-800">
                     <CheckCircle2 className="h-5 w-5" />
                     {isSales
-                      ? `Imported ${plural(result.imported, ['sales row', 'sales rows'])} into ${scenario?.name || 'the scenario'}.`
+                      ? `Imported ${plural(result.imported, ['sales row', 'sales rows'])} into ${scenario?.name || 'the scenario'}${result.deleted ? ` and removed ${plural(result.deleted, ['line', 'lines'])} that ${result.deleted === 1 ? 'was' : 'were'} not in the file` : ''}.`
                       : `Import finished: ${[
                         result.created ? `${result.created.toLocaleString('en-US')} added` : null,
                         result.updated ? `${result.updated.toLocaleString('en-US')} updated` : null,

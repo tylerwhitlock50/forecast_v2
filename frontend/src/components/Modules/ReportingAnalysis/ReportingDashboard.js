@@ -30,7 +30,7 @@ const TABS = [
 const HIDDEN_WARNINGS = ['no_deduction_rules'];
 
 const ReportingDashboard = () => {
-  const { state, activeScenario } = useForecast();
+  const { state, activeScenario, actions } = useForecast();
   const { statements, loading, error, fetchStatements } = useReporting();
 
   const [selectedForecasts, setSelectedForecasts] = useState([]);
@@ -58,6 +58,18 @@ const ReportingDashboard = () => {
   // years), following the scenario until the user picks a window by hand.
   const selectedScenarios = useMemo(() => selectedForecasts.map(id => scenarios[id]).filter(Boolean), [selectedForecasts, scenarios]);
   const { period: reportingPeriod, setPeriod: setReportingPeriod, defaultWindow } = useReportWindow(selectedScenarios);
+
+  // Not consolidating, the page shows the active scenario: picking another
+  // one here switches the active scenario (as the scenario bar does), so the
+  // statements and the bar never disagree.
+  const handlePickScenarios = (ids) => {
+    if (consolidate) {
+      setSelectedForecasts(ids);
+      return;
+    }
+    const id = ids[0];
+    if (id && id !== activeScenario) actions.switchScenario(id);
+  };
 
   const handleConsolidateChange = (value) => {
     setConsolidate(value);
@@ -106,8 +118,9 @@ const ReportingDashboard = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-3xl font-bold text-gray-900">Reporting &amp; Analysis</h1>
           <p className="mt-1 max-w-3xl text-gray-600">
-            Month-by-month income statement, balance sheet and cash flow for a scenario. Margins by product and customer and the
-            labor plan are on <Link to="/reporting/cogs-labor" className="font-medium text-orange-700 hover:underline">COGS &amp; Labor Forecast</Link>.
+            Month-by-month income statement, balance sheet and cash flow for the active scenario, or for several scenarios added
+            together. Margins by product and customer and the labor plan are
+            on <Link to="/reporting/cogs-labor" className="font-medium text-orange-700 hover:underline">COGS &amp; Labor Forecast</Link>.
           </p>
         </div>
         <div className="flex flex-none items-center gap-2">
@@ -133,11 +146,16 @@ const ReportingDashboard = () => {
       <Card className="p-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div>
-            <h3 className="text-base font-semibold text-gray-900 mb-3">Scenario</h3>
+            <h3 className="text-base font-semibold text-gray-900 mb-1">Scenario</h3>
+            <p className="mb-3 text-xs text-gray-500" data-testid="statements-scope-help">
+              {consolidate
+                ? 'Consolidating: the statements add up the scenarios ticked below and no longer follow the active scenario. Untick “Consolidate several scenarios” to go back to it.'
+                : 'The statements follow the active scenario in the bar above. Choosing a different one here switches the active scenario. Tick “Consolidate several scenarios” to add several together.'}
+            </p>
             <ScenarioPicker
               scenarios={scenarios}
               selected={selectedForecasts}
-              onChange={setSelectedForecasts}
+              onChange={handlePickScenarios}
               mode="single"
               consolidate={consolidate}
               onConsolidateChange={handleConsolidateChange}

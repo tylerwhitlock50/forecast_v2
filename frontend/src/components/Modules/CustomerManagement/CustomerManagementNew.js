@@ -15,7 +15,7 @@ import { DataTable } from '../../ui/data-table';
 import CustomerModal from './CustomerModal';
 import CustomerSummary from './CustomerSummary';
 import CustomerValidation from './CustomerValidation';
-import { goToImport } from '../RevenueForecasting/importNavigation';
+import { goToImport } from '../../Common/importLink';
 import { DependencyList, fetchSalesDependencies } from '../RevenueForecasting/salesDependencies';
 
 const EXPORT_COLUMNS = ['customer_id', 'customer_name', 'customer_type', 'region'];

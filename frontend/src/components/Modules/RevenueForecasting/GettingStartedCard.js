@@ -4,7 +4,7 @@ import { ArrowRight, Check } from 'lucide-react';
 import { useForecast } from '../../../context/ForecastContext';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
-import { goToImport } from './importNavigation';
+import { goToImport } from '../../Common/importLink';
 
 /**
  * The setup path for a sales forecast that costs out: customers (with their

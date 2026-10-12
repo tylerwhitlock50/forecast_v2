@@ -33,6 +33,46 @@ const Tile = ({ label, value, tone = 'gray', hint }) => {
 
 const ERROR_LIMIT = 50;
 
+const lines = (n) => plural(n, ['line', 'lines']);
+
+/**
+ * Sales replace modes: what the import removes from the scenario, or why it
+ * will not run. Nothing for an add / update import.
+ */
+const ReplaceSummary = ({ result, done, errorCount }) => {
+  const mode = result.mode;
+  if (mode !== 'replace' && mode !== 'replace_all') return null;
+  const where = mode === 'replace'
+    ? 'Only the months this file covers are touched; other months stay as they are.'
+    : 'In every month: afterwards the scenario holds exactly the lines in this file.';
+  if (result.replaceBlocked) {
+    return (
+      <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="status" data-testid="replace-summary">
+        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Nothing will be changed</div>
+        <div className="mt-0.5">
+          {plural(errorCount, ['row has a problem', 'rows have problems'])}. Replacing only runs when every row is valid,
+          so no lines are added, updated or removed until the file is fixed.
+        </div>
+      </div>
+    );
+  }
+  // After the import the step's headline already says what was removed.
+  if (done) return null;
+  if (result.deleted > 0) {
+    return (
+      <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status" data-testid="replace-summary">
+        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Will remove {lines(result.deleted)} that {result.deleted === 1 ? 'is' : 'are'} not in this file</div>
+        <div className="mt-0.5 text-amber-800">{where}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700" role="status" data-testid="replace-summary">
+      Nothing will be removed: every line of the scenario {mode === 'replace' ? 'in the months this file covers ' : ''}is in the file.
+    </div>
+  );
+};
+
 /**
  * What a dry run (or a finished import) found: counts, row errors, warnings,
  * per-BOM material cost and, for sales, where each price came from.
@@ -94,6 +134,8 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
           {result.totalRevenue !== null && <> · <span className="font-medium tabular-nums">{money0(result.totalRevenue)}</span> gross sales</>}
         </p>
       )}
+
+      {isSales && <ReplaceSummary result={result} done={done} errorCount={errors.length} />}
 
       {result.skipped > 0 && !isRecords && (
         <p className="text-sm text-gray-600">{plural(result.skipped, ['row was', 'rows were'])} skipped.</p>
@@ -219,7 +261,7 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
           <div className="flex items-center gap-2 bg-red-50 px-3 py-2 text-sm font-medium text-red-800">
             <AlertTriangle className="h-4 w-4" />
             {plural(errors.length, ['row has a problem', 'rows have problems'])}
-            {done ? ' and were not imported' : ' and will be skipped'}
+            {done ? ' and were not imported' : (result.replaceBlocked ? `: fix ${errors.length === 1 ? 'it' : 'them'} to import this file` : ' and will be skipped')}
           </div>
           <div className="max-h-72 overflow-y-auto">
             <table className="min-w-full text-sm">

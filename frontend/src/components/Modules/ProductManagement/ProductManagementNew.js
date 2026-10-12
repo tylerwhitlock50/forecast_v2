@@ -16,7 +16,7 @@ import { DataTable } from '../../ui/data-table';
 import ProductModal from './ProductModal';
 import ProductSummary from './ProductSummary';
 import ProductValidation from './ProductValidation';
-import { goToImport } from '../RevenueForecasting/importNavigation';
+import { goToImport } from '../../Common/importLink';
 import { DependencyList, fetchSalesDependencies } from '../RevenueForecasting/salesDependencies';
 
 const EXPORT_COLUMNS = ['unit_id', 'unit_name', 'unit_type', 'base_price', 'bom_id', 'bom_version', 'router_id', 'unit_description'];

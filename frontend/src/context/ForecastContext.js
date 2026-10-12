@@ -887,53 +887,43 @@ export const ForecastProvider = ({ children }) => {
     },
 
     // Customer Management Functions
-    createCustomer: async (customerData) => {
+    createCustomer: async (customerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
+        const record = { ...customerData };
+
         // Generate a unique customer ID if not provided
-        if (!customerData.customer_id) {
+        if (!record.customer_id) {
           const customers = Array.isArray(state.data.customers) ? state.data.customers : [];
           const maxId = Math.max(...customers.map(c => {
             const id = c.customer_id?.replace('CUST-', '') || '0';
-            return parseInt(id) || 0;
+            return parseInt(id, 10) || 0;
           }), 0);
-          customerData.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
+          record.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
         }
 
-        await api.post('/forecast/create', { 
-          table: 'customers',
-          data: customerData 
-        });
-        
-        // API client already handles response format
-        toast.success('Customer created successfully');
+        // One toast per action: this one, not the API client's as well.
+        await api.post('/forecast/create', { table: 'customers', data: record }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Customer ${record.customer_name || record.customer_id} added`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error creating customer:', error);
-        toast.error('Failed to create customer');
+        console.error('Could not create customer:', error);
+        if (!silent) showErrorToast(error, 'Could not create customer');
         throw error;
       } finally {
         actions.setLoading(false);
       }
     },
 
-    updateCustomer: async (customerId, customerData) => {
+    updateCustomer: async (customerId, customerData, { silent = false } = {}) => {
       try {
         actions.setLoading(true);
-        
-        await api.post('/forecast/update', {
-          table: 'customers',
-          id: customerId,
-          updates: customerData
-        });
-        
-        // API client already handles response format
-        toast.success('Customer updated successfully');
+        await api.post('/forecast/update', { table: 'customers', id: customerId, updates: customerData }, { suppressSuccessToast: true, suppressErrorToast: true });
+        if (!silent) showSuccessToast(`Customer ${customerData?.customer_name || customerId} saved`);
         await actions.fetchAllData();
       } catch (error) {
-        console.error('Error updating customer:', error);
-        toast.error('Failed to update customer');
+        console.error('Could not update customer:', error);
+        if (!silent) showErrorToast(error, 'Could not update customer');
         throw error;
       } finally {
         actions.setLoading(false);

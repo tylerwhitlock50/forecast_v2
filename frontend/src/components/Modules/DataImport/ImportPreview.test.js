@@ -43,4 +43,48 @@ describe('ImportPreview', () => {
     expect(screen.getByText('RFL-308')).toBeInTheDocument();
     expect(screen.getByText(/Every row was imported/)).toBeInTheDocument();
   });
+
+  const salesDryRun = (extra) => summarizeImportResult({
+    data: {
+      imported: 3, inserted: 0, updated: 3, dry_run: true, created_customers: [], created_products: [],
+      errors: [], warnings: [], price_sources: { explicit: 3 }, start_period: '2027-01', end_period: '2027-03', ...extra,
+    },
+  });
+
+  it('says how many lines a replace import will remove', () => {
+    const result = salesDryRun({ mode: 'replace', deleted: 12, replace_blocked: false });
+    expect(result).toMatchObject({ mode: 'replace', deleted: 12, replaceBlocked: false });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('sales')} />);
+    expect(screen.getByText('Will remove 12 lines that are not in this file')).toBeInTheDocument();
+    expect(screen.getByText(/Only the months this file covers are touched/)).toBeInTheDocument();
+  });
+
+  it('says a whole-scenario replace removes lines in every month', () => {
+    render(<ImportPreview result={salesDryRun({ mode: 'replace_all', deleted: 1 })} rows={[]} step={stepByKind('sales')} />);
+    expect(screen.getByText('Will remove 1 line that is not in this file')).toBeInTheDocument();
+    expect(screen.getByText(/afterwards the scenario holds exactly the lines in this file/)).toBeInTheDocument();
+  });
+
+  it('says nothing changes when a replace is blocked by row errors', () => {
+    const result = salesDryRun({
+      mode: 'replace', deleted: 0, replace_blocked: true,
+      errors: [{ row: 2, error: 'Customer CUST-999 does not exist' }],
+    });
+    render(<ImportPreview result={result} rows={[]} step={stepByKind('sales')} />);
+    expect(screen.getByText('Nothing will be changed')).toBeInTheDocument();
+    expect(screen.getByText(/Replacing only runs when every row is valid/)).toBeInTheDocument();
+    expect(screen.getByText(/1 row has a problem: fix it to import this file/)).toBeInTheDocument();
+    expect(screen.queryByText(/will be skipped/)).not.toBeInTheDocument();
+  });
+
+  it('shows nothing about removals for an add / update import', () => {
+    render(<ImportPreview result={salesDryRun({ mode: 'upsert', deleted: 0 })} rows={[]} step={stepByKind('sales')} />);
+    expect(screen.queryByTestId('replace-summary')).not.toBeInTheDocument();
+  });
+
+  it('leaves the removed-lines count to the headline after the import', () => {
+    render(<ImportPreview result={salesDryRun({ mode: 'replace', deleted: 4, dry_run: false })} rows={[]} step={stepByKind('sales')} done />);
+    expect(screen.queryByTestId('replace-summary')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Will remove/)).not.toBeInTheDocument();
+  });
 });

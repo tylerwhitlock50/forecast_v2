@@ -19,7 +19,7 @@ import DateRangeModal from './DateRangeModal';
 import KeyboardShortcutsModal from './KeyboardShortcutsModal';
 import NewScenarioModal from './NewScenarioModal';
 import GettingStartedCard from './GettingStartedCard';
-import { goToImport } from './importNavigation';
+import { goToImport } from '../../Common/importLink';
 import {
   buildLines,
   buildPeriods,

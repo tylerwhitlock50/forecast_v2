@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import api, { showErrorToast } from '../../../lib/apiClient';
-import { goToImportStep } from '../../Common/importLink';
+import { goToImport } from '../../Common/importLink';
 import { cloneRoutingRows, nextRouterId, routerDeleteImpact } from './routerHelpers';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
@@ -270,7 +270,7 @@ const RouterManagement = () => {
   const headerActions = [
     {
       label: 'Import from file',
-      onClick: () => goToImportStep(navigate, 'routings'),
+      onClick: () => goToImport(navigate, 'routings'),
       variant: 'outline'
     },
     {
@@ -379,7 +379,7 @@ const RouterManagement = () => {
                   <div className="space-y-3">
                     <p>No routings yet. Import them from a spreadsheet, or add one by hand.</p>
                     <div className="flex justify-center gap-2">
-                      <Button variant="outline" onClick={() => goToImportStep(navigate, 'routings')}>Import from file</Button>
+                      <Button variant="outline" onClick={() => goToImport(navigate, 'routings')}>Import from file</Button>
                       <Button className="bg-orange-600 text-white hover:bg-orange-700" onClick={() => { setEditingRouter(null); setShowRouterModal(true); }}>Add Router</Button>
                     </div>
                   </div>
