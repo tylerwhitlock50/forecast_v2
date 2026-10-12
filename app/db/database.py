@@ -413,10 +413,100 @@ class DatabaseManager:
                 UNIQUE(loan_id, payment_number)
             )
         ''')
-        
+
+        # ---- Financial planning tables (reporting engine) ----
+
+        # Opening balances and working-capital / tax assumptions, one row per
+        # forecast scenario. A missing row falls back to engine defaults.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS financial_assumptions (
+                forecast_id TEXT PRIMARY KEY,
+                opening_period TEXT,
+                opening_cash REAL DEFAULT 0,
+                opening_accounts_receivable REAL DEFAULT 0,
+                opening_inventory REAL DEFAULT 0,
+                opening_fixed_assets REAL DEFAULT 0,
+                opening_accumulated_depreciation REAL DEFAULT 0,
+                opening_fixed_assets_remaining_life_months INTEGER DEFAULT 0,
+                opening_accounts_payable REAL DEFAULT 0,
+                opening_other_liabilities REAL DEFAULT 0,
+                opening_equity REAL,
+                dso_days REAL DEFAULT 30,
+                dio_days REAL DEFAULT 60,
+                dpo_days REAL DEFAULT 30,
+                income_tax_rate REAL DEFAULT 0.21,
+                minimum_cash_balance REAL DEFAULT 0,
+                notes TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
+            )
+        ''')
+
+        # Planned capital purchases, depreciated straight-line from the
+        # purchase period over useful_life_months.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS capital_expenditures (
+                capex_id TEXT PRIMARY KEY,
+                forecast_id TEXT,
+                asset_name TEXT NOT NULL,
+                category TEXT,
+                amount REAL NOT NULL,
+                purchase_period TEXT NOT NULL,
+                useful_life_months INTEGER NOT NULL DEFAULT 60,
+                salvage_value REAL DEFAULT 0,
+                depreciation_method TEXT DEFAULT 'straight_line' CHECK (depreciation_method IN ('straight_line', 'none')),
+                description TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
+            )
+        ''')
+
+        # Actual results by period and statement line, for budget-vs-actual.
+        # line_item values are the keys of
+        # services.financial_statements.VARIANCE_LINE_ITEMS.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS actuals (
+                actual_id TEXT PRIMARY KEY,
+                period TEXT NOT NULL,
+                line_item TEXT NOT NULL,
+                amount REAL NOT NULL,
+                reference_id TEXT DEFAULT '',
+                source TEXT,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(period, line_item, reference_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_actuals_period ON actuals (period)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sales_forecast_period ON sales (forecast_id, period)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_expense_alloc_period ON expense_allocations (period)')
+
         conn.commit()
         conn.close()
-    
+
+    def migrate_payroll_config_table(self):
+        """Add pay_frequency to payroll_config if missing (idempotent)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(payroll_config)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'pay_frequency' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE payroll_config ADD COLUMN pay_frequency TEXT DEFAULT 'biweekly'")
+                except sqlite3.OperationalError as alter_err:
+                    if 'duplicate column name' not in str(alter_err).lower():
+                        raise
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating payroll_config table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
     def migrate_payroll_table(self):
         """Migrate existing payroll table to new schema"""
         conn = self.get_connection()
@@ -1118,7 +1208,9 @@ class DatabaseManager:
         print("Expenses table migration completed")
         self.migrate_forecast_table()
         print("Forecast table migration completed")
-        
+        self.migrate_payroll_config_table()
+        print("Payroll config migration completed")
+
         # Check for force reload environment variable
         force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'
         

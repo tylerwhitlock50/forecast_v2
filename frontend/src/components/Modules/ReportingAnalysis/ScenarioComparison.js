@@ -3,6 +3,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import ForecastSelector from './components/ForecastSelector';
 import { useScenarioComparison } from './hooks/useScenarioComparison';
 import { Card } from '../../ui/card';
+import { formatCurrency, formatPeriod } from './utils/formatters';
 
 const ScenarioComparison = () => {
   const { state } = useForecast();
@@ -21,7 +22,7 @@ const ScenarioComparison = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Scenario Comparison</h1>
-        <p className="text-gray-600">Compare revenue, expenses and payroll across scenarios</p>
+        <p className="text-gray-600">Compare revenue, cost, payroll and profit across scenarios</p>
       </div>
 
       <Card className="p-6">
@@ -37,27 +38,44 @@ const ScenarioComparison = () => {
       {error && <p className="text-red-600">{error}</p>}
 
       {data.length > 0 && (
-        <Card className="p-6">
-          <table className="min-w-full divide-y divide-gray-200">
+        <Card className="p-6 overflow-x-auto">
+          <p className="text-sm text-gray-500 mb-3">
+            Figures come from the statements engine over each scenario&apos;s sales window, so they match the Reporting screen.
+          </p>
+          <table className="min-w-full divide-y divide-gray-200 text-sm">
             <thead>
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
-                <th className="px-6 py-3">Revenue</th>
-                <th className="px-6 py-3">Expenses</th>
-                <th className="px-6 py-3">Payroll</th>
-                <th className="px-6 py-3">Profit</th>
+              <tr className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left">Scenario</th>
+                <th className="px-4 py-3 text-left">Window</th>
+                <th className="px-4 py-3 text-right">Revenue</th>
+                <th className="px-4 py-3 text-right">COGS</th>
+                <th className="px-4 py-3 text-right">Gross Profit</th>
+                <th className="px-4 py-3 text-right">Payroll</th>
+                <th className="px-4 py-3 text-right">Other Opex</th>
+                <th className="px-4 py-3 text-right">Operating Income</th>
+                <th className="px-4 py-3 text-right">Net Income</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {data.map(row => (
-                <tr key={row.forecast_id}>
-                  <td className="px-6 py-4 whitespace-nowrap">{row.forecast_id}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{(row.revenue ?? 0).toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{(row.expenses ?? 0).toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{(row.payroll ?? 0).toFixed(2)}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">{((row.revenue ?? 0) - (row.expenses ?? 0) - (row.payroll ?? 0)).toFixed(2)}</td>
-                </tr>
-              ))}
+            <tbody className="bg-white divide-y divide-gray-200 tabular-nums">
+              {data.map(row => {
+                const name = row.name || scenarios[row.forecast_id]?.name || row.forecast_id;
+                const window = row.start_period ? `${formatPeriod(row.start_period)} – ${formatPeriod(row.end_period)}` : 'No sales';
+                const grossProfit = row.gross_profit ?? ((row.revenue ?? 0) - (row.cogs ?? 0));
+                const netIncome = row.net_income ?? ((row.revenue ?? 0) - (row.expenses ?? 0) - (row.payroll ?? 0));
+                return (
+                  <tr key={row.forecast_id}>
+                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-900">{name}</td>
+                    <td className="px-4 py-3 whitespace-nowrap text-gray-500">{window}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(row.revenue ?? 0)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(row.cogs ?? 0)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(grossProfit)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(row.payroll ?? 0)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(row.expenses ?? 0)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(row.operating_income ?? 0)}</td>
+                    <td className={`px-4 py-3 text-right font-semibold ${netIncome < 0 ? 'text-red-600' : 'text-green-700'}`}>{formatCurrency(netIncome)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Card>

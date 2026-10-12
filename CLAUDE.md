@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an AI-powered financial modeling and cash flow forecasting system with a FastAPI backend, React frontend, and integrated LLM services. The application provides comprehensive revenue forecasting, cost management, and financial planning capabilities.
+This is a financial modeling, budgeting and cash flow forecasting system for a manufacturing business, with a FastAPI backend, a SQLite database and a React frontend. It covers revenue forecasting by customer and product, product costing from BOMs and routings, payroll, operating expenses, loans, capital expenditures, and a period-by-period income statement, balance sheet, cash flow statement and budget-vs-actual report.
 
 ## Common Development Commands
 
@@ -14,14 +14,12 @@ This is an AI-powered financial modeling and cash flow forecasting system with a
 docker-compose up --build
 
 # Start specific service
-docker-compose up ollama
 docker-compose up fastapi
 docker-compose up frontend
 
 # View logs
 docker-compose logs
 docker-compose logs fastapi
-docker-compose logs ollama
 
 # Reset everything
 docker-compose down -v
@@ -34,40 +32,41 @@ docker-compose up --build
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r app/requirements.txt
-python run_local.py
+python scripts/run_local.py        # or: uvicorn app.main:app --reload
 
 # Frontend setup
-./setup_frontend.sh
-cd frontend && npm start
+cd frontend && npm install && npm start
 
-# Run tests
-python run_tests.py
-python run_tests.py tests/test_specific.py  # Run specific test
+# Backend tests
 pytest tests/ -v
+pytest tests/test_financial_statements.py -v   # statements engine + reporting routes
+
+# Frontend tests and production build
+cd frontend && CI=true npx react-scripts test --watchAll=false
+cd frontend && CI=true npm run build
 ```
 
 ### Service URLs
 - React Frontend: http://localhost:3000
 - FastAPI Backend: http://localhost:8000
 - API Documentation: http://localhost:8000/docs
-- Ollama LLM Service: http://localhost:11434
-- Whisper ASR Service: http://localhost:9000
 
 ## Application Architecture
 
 ### Backend (FastAPI)
 - **Entry Point**: `app/main.py` - Main FastAPI application with CORS middleware
-- **Database**: SQLite with SQLAlchemy models in `app/db/models.py`
-- **API Routes**: Modular structure in `app/api/` directory
-  - `data_routes.py` - CRUD operations for all data tables
-  - `forecast_routes.py` - Forecasting and scenario management
-  - `crud_routes.py` - Generic CRUD operations
-  - `cost_routes.py` - Cost management and analysis
+- **Database**: SQLite accessed with raw `sqlite3` through `app/db/database.py` (`DatabaseManager`); Pydantic request/response models in `app/db/models.py`
+- **API Routes**: Modular structure in `app/api/` directory, one file per domain
+  - `data_routes.py` - Generic table reads
+  - `forecast_routes.py` / `crud_routes.py` - Scenarios, sales forecast CRUD, bulk imports, scenario comparison
+  - `cost_routes.py` / `source_data_routes.py` - Product cost rollups from BOM + routing
+  - `payroll_routes.py` - Employees, payroll config (burden rates, pay frequency), payroll forecast (monthly or per pay run)
+  - `expense_routes.py` - Expense categories, expenses, per-period allocations
+  - `loan_routes.py` - Loans and amortization schedules
+  - `reporting_routes.py` - Financial statements, CSV export, budget-vs-actual, assumptions, capex, actuals
 - **Services**: Business logic in `app/services/`
-  - `llm_service.py` - Ollama LLM integration for natural language to SQL
-  - `agent_service.py` - LangChain agent for complex operations
-  - `plan_execute_service.py` - DeepSeek planning with Llama execution
-  - `whisper_service.py` - Speech-to-text transcription
+  - `financial_statements.py` - The statements engine. Single source of truth for the income statement, cash flow and balance sheet. Every number on the reporting screens, the payroll monthly forecast and the scenario comparison comes from here.
+- **Utilities**: `app/utils/cost_rollup.py` (per-unit material / labor / machine cost with data-quality warnings), `data_loader.py`, `period_normalizer.py`
 
 ### Frontend (React)
 - **Entry Point**: `frontend/src/App.js` - Main application with routing
@@ -82,7 +81,7 @@ pytest tests/ -v
 1. **Frontend** sends requests to `/api/*` endpoints (proxied to backend)
 2. **Backend** processes requests through route handlers
 3. **Database** operations use SQLAlchemy models and raw SQL for complex queries
-4. **LLM Services** integrate for natural language processing and AI assistance
+4. **Reporting** calls `services/financial_statements.build_statements`, which reads sales, BOM/routing, payroll, expenses, loans, capex and assumptions and returns period-by-period statements
 
 ### Key Data Models
 - **Sales/Forecasts**: Revenue forecasting data with customer/product relationships
@@ -104,6 +103,11 @@ The application uses SQLite with the following key tables:
 - `payroll` - Employee and labor data
 - `labor_rates` - Labor rate definitions
 - `forecast` - Forecast scenario definitions
+- `expense_categories`, `expenses`, `expense_allocations` - Operating expenses by period
+- `loans`, `loan_payments` - Debt and amortization schedules
+- `financial_assumptions` - Per-scenario opening balances, DSO/DIO/DPO days, income tax rate, minimum cash
+- `capital_expenditures` - Planned asset purchases, depreciated straight-line
+- `actuals` - Actual results by period and statement line, for budget vs actual
 
 ## Development Patterns
 
@@ -129,11 +133,16 @@ All API responses follow this pattern:
 - Run tests with `python run_tests.py`
 - Integration tests for API endpoints and database operations
 
-### LLM Integration
-- Natural language to SQL conversion via Ollama
-- LangChain agents for complex multi-step operations
-- Plan & Execute pattern with different models for planning vs execution
-- Human approval required for destructive SQL operations
+### Financial Statements Engine (`app/services/financial_statements.py`)
+- Periods are `YYYY-MM`; a reporting window is inclusive on both ends.
+- Scenario scoping: rows with `forecast_id` in the selected set OR `NULL` are included. `NULL` means company-wide (payroll, expenses, capex). Sales are always scenario-specific.
+- Payroll is prorated to each calendar month from `start_date` / `end_date`, with raises applied from `next_review_date`. Never annualize payroll in reporting code; call `payroll_by_period`.
+- Working capital uses days assumptions: AR = revenue x DSO / 30.4, inventory = product COGS x DIO / 30.4, AP = purchases x DPO / 30.4.
+- Cash rolls forward from `opening_cash`: net income + depreciation - working capital change - capex + loan proceeds - principal.
+- Debt rolls forward from the opening balance in the loan schedules, so the balance sheet identity holds exactly; opening equity is plugged unless supplied.
+- Income tax applies only to positive pre-tax income (no loss carry-forward).
+- Add a new statement line by extending `build_statements` and, if actuals should be tracked for it, `VARIANCE_LINE_ITEMS`.
+- Tests for the engine live in `tests/test_financial_statements.py`; keep the balance-check and cash roll-forward tests passing when changing the maths.
 
 ## File Mappings
 
@@ -141,12 +150,14 @@ All API responses follow this pattern:
 - `app/main.py` - FastAPI application entry point
 - `app/db/database.py` - Database connection and management
 - `app/db/models.py` - Pydantic models for API requests/responses
-- `app/services/llm_service.py` - Core LLM integration
+- `app/services/financial_statements.py` - Statements engine (see above)
+- `app/api/reporting_routes.py` - Reporting endpoints that wrap the engine
 
 ### Frontend Key Files
 - `frontend/src/App.js` - React application entry point
 - `frontend/src/context/ForecastContext.js` - Global state management
-- `frontend/src/components/Modules/RevenueForecasting/RevenueForecasting.js` - Main forecasting interface
+- `frontend/src/components/Modules/RevenueForecasting/RevenueForecastingNew.js` - Main forecasting interface
+- `frontend/src/components/Modules/ReportingAnalysis/` - Statements, budget vs actual, assumptions and capex screens (all data comes from `/api/reporting/*`)
 
 ### Configuration Files
 - `docker-compose.yml` - Service orchestration
@@ -160,7 +171,6 @@ The application supports CSV data loading through the `/load_table` endpoint. Sa
 
 ## Environment Considerations
 
-- Development uses proxy configuration for API calls
-- Production deployment uses Docker containers
-- LLM services require significant RAM (4GB+ recommended)
-- GPU acceleration available for Ollama service
+- Development uses the CRA proxy (`frontend/package.json` "proxy") so the UI calls `/api/*` and reaches the backend on port 8000
+- Production deployment uses Docker containers (nginx serves the built frontend and proxies `/api` to FastAPI)
+- There is no authentication; the app is intended to run on a trusted network or a single machine

@@ -224,52 +224,81 @@ async def delete_forecast_scenario(forecast_id: str):
 
 @router.get("/comparison", response_model=ForecastResponse)
 async def compare_forecast_scenarios(
-    forecast_ids: List[str] = Query(..., description="Forecast IDs to compare")
+    forecast_ids: List[str] = Query(..., description="Forecast IDs to compare"),
+    start_period: Optional[str] = Query(None, description="Start period (YYYY-MM); defaults to each scenario's first sales month"),
+    end_period: Optional[str] = Query(None, description="End period (YYYY-MM); defaults to each scenario's last sales month"),
 ):
-    """Return aggregate metrics for multiple forecast scenarios"""
+    """
+    Compare scenarios using the same statements engine as the reporting
+    module, so the numbers here match the income statement exactly.
+    """
     try:
         from db.database import db_manager
+        from services.financial_statements import build_statements, period_range
+
+        ids: List[str] = []
+        for value in forecast_ids:
+            ids.extend(v.strip() for v in str(value).split(",") if v.strip())
+        if not ids:
+            raise HTTPException(status_code=422, detail="At least one forecast_id is required")
+        if (start_period or end_period) and not (start_period and end_period):
+            raise HTTPException(status_code=422, detail="start_period and end_period must be supplied together")
+        if start_period and end_period:
+            try:
+                period_range(start_period, end_period)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
 
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        comparison = []
+        try:
+            for fid in ids:
+                cursor.execute("SELECT name FROM forecast WHERE forecast_id = ?", (fid,))
+                name_row = cursor.fetchone()
+                if start_period and end_period:
+                    window = (start_period, end_period)
+                else:
+                    cursor.execute(
+                        "SELECT MIN(period), MAX(period) FROM sales WHERE forecast_id = ? AND period IS NOT NULL",
+                        (fid,),
+                    )
+                    lo, hi = cursor.fetchone()
+                    window = (str(lo)[:7], str(hi)[:7]) if lo and hi else None
 
-        placeholders = ",".join("?" for _ in forecast_ids)
-
-        cursor.execute(
-            f"SELECT forecast_id, SUM(total_revenue) FROM sales WHERE forecast_id IN ({placeholders}) GROUP BY forecast_id",
-            forecast_ids,
-        )
-        sales = {row[0]: row[1] or 0 for row in cursor.fetchall()}
-
-        cursor.execute(
-            f"SELECT forecast_id, SUM(amount) FROM expenses WHERE forecast_id IN ({placeholders}) GROUP BY forecast_id",
-            forecast_ids,
-        )
-        expenses = {row[0]: row[1] or 0 for row in cursor.fetchall()}
-
-        cursor.execute(
-            f"SELECT forecast_id, SUM(weekly_hours * hourly_rate * 52) FROM payroll WHERE forecast_id IN ({placeholders}) GROUP BY forecast_id",
-            forecast_ids,
-        )
-        payroll = {row[0]: row[1] or 0 for row in cursor.fetchall()}
-
-        db_manager.close_connection(conn)
-
-        comparison = [
-            {
-                "forecast_id": fid,
-                "revenue": float(sales.get(fid, 0) or 0),
-                "expenses": float(expenses.get(fid, 0) or 0),
-                "payroll": float(payroll.get(fid, 0) or 0),
-            }
-            for fid in forecast_ids
-        ]
+                row = {
+                    "forecast_id": fid,
+                    "name": name_row[0] if name_row else fid,
+                    "start_period": window[0] if window else None,
+                    "end_period": window[1] if window else None,
+                    "revenue": 0.0, "cogs": 0.0, "gross_profit": 0.0,
+                    "payroll": 0.0, "expenses": 0.0, "operating_income": 0.0, "net_income": 0.0,
+                    "closing_cash": None,
+                }
+                if window:
+                    stmt = build_statements(cursor, [fid], window[0], window[1])
+                    t = stmt["income_statement"]["totals"]
+                    row.update({
+                        "revenue": t.get("revenue", 0.0),
+                        "cogs": t.get("total_cogs", 0.0),
+                        "gross_profit": t.get("gross_profit", 0.0),
+                        "payroll": t.get("payroll", 0.0),
+                        "expenses": t.get("admin_expense", 0.0) + t.get("operating_expense", 0.0) + t.get("depreciation", 0.0),
+                        "operating_income": t.get("operating_income", 0.0),
+                        "net_income": t.get("net_income", 0.0),
+                        "closing_cash": stmt["cash_flow"]["totals"].get("closing_cash"),
+                    })
+                comparison.append(row)
+        finally:
+            db_manager.close_connection(conn)
 
         return ForecastResponse(
             status="success",
             data={"comparison": comparison},
             message=f"Compared {len(comparison)} forecast scenarios",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error comparing forecast scenarios: {str(e)}"

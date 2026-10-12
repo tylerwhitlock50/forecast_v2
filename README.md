@@ -1,6 +1,8 @@
 # Forecast Model
 
-A financial modeling and cash flow forecasting application built with FastAPI, SQLite, and React.
+A budgeting and cash flow forecasting application for a manufacturing business, built with FastAPI, SQLite, and React.
+
+It forecasts revenue by customer and product, rolls product cost up from bills of materials and routings, schedules payroll, operating expenses, loans and capital purchases, and produces a period-by-period income statement, balance sheet and cash flow statement plus a budget-vs-actual report.
 
 ## Quick Start
 
@@ -70,7 +72,7 @@ Routes are grouped by domain. See http://localhost:8000/docs for the full intera
 | `/payroll`      | `api/payroll_routes.py`         | Employees, allocations, payroll forecast |
 | `/expenses`     | `api/expense_routes.py`         | Expense categories, allocations, reports |
 | `/loans`        | `api/loan_routes.py`            | Loans, amortization, cash flow           |
-| `/reporting`    | `api/reporting_routes.py`       | Combined forecast, financial statements  |
+| `/reporting`    | `api/reporting_routes.py`       | Financial statements, CSV export, budget vs actual, assumptions, capex, actuals |
 | `/source-data`  | `api/source_data_routes.py`     | Sales / cost / revenue source data       |
 | `/database`     | `api/database_routes.py`, `api/database_management_routes.py` | DB load/save/snapshot/reset |
 
@@ -89,9 +91,25 @@ Located in `frontend/src/components/Modules/`:
 - **LoanManagement** — loans and amortization schedules
 - **CustomerManagement** — customer master data
 - **ProductManagement** — product/unit master data
-- **ReportingAnalysis** — combined financial reports and scenario comparison
+- **ReportingAnalysis** — income statement, balance sheet, cash flow, budget vs actual, assumptions and capex, scenario comparison
 
 Global state lives in `frontend/src/context/ForecastContext.js`.
+
+## Reporting Engine
+
+All statements are built server-side by `app/services/financial_statements.py` from the data in the other modules:
+
+| Statement line | Source |
+|----------------|--------|
+| Revenue, units | `sales` for the selected scenario(s) |
+| Materials, direct labor, machine cost | BOM and routing attached to each product (`utils/cost_rollup.py`) |
+| Factory overhead, admin, operating expenses | `expense_allocations` by period (`category_type` decides the bucket) |
+| Payroll | `payroll` prorated to each month, burdened with `payroll_config` rates |
+| Depreciation, capex | `capital_expenditures` (straight-line) plus opening fixed assets |
+| Interest, principal, loan proceeds | `loan_payments` schedules |
+| Income tax, working capital, opening balances | `financial_assumptions` per scenario (DSO / DIO / DPO days, tax rate, opening cash, AR, inventory, AP, fixed assets) |
+
+The Reporting screen's Assumptions tab edits the assumptions and capex; the Budget vs Actual tab records actuals by period and line (manual entry or CSV with columns `period, line_item, amount`). Statements can be downloaded as CSV.
 
 ## Data
 

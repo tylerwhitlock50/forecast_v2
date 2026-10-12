@@ -487,7 +487,8 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
       medicareRate: 0.0145,
       unemploymentRate: 0.006,
       benefitsRate: 0.25,
-      workersCompRate: 0.015
+      workersCompRate: 0.015,
+      payFrequency: 'biweekly'
     });
   };
 
@@ -506,6 +507,23 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
         </div>
 
         <form onSubmit={handleSubmit} className="modal-content">
+          <div className="config-section">
+            <h4>Pay Schedule</h4>
+            <div className="form-group">
+              <label>Pay Frequency</label>
+              <select
+                value={formData.payFrequency || 'biweekly'}
+                onChange={(e) => setFormData({...formData, payFrequency: e.target.value})}
+              >
+                <option value="weekly">Weekly (52 runs/year)</option>
+                <option value="biweekly">Biweekly (26 runs/year)</option>
+                <option value="semimonthly">Semimonthly (24 runs/year)</option>
+                <option value="monthly">Monthly (12 runs/year)</option>
+              </select>
+              <small>Used for the pay-run forecast. Financial statements always use calendar months.</small>
+            </div>
+          </div>
+
           <div className="config-section">
             <h4>Tax Rates</h4>
             

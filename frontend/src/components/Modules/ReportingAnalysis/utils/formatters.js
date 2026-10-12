@@ -206,7 +206,6 @@ export const formatVariance = (actual, budget, options = {}) => {
   if (!actual || !budget) return '-';
 
   const variance = actual - budget;
-  const percentageVariance = (variance / Math.abs(budget)) * 100;
   
   const isFavorable = variance > 0; // Assuming higher values are favorable (revenue context)
   const favorableText = showFavorable ? (isFavorable ? ' (F)' : ' (U)') : '';
@@ -264,4 +263,36 @@ export const formatRatio = (numerator, denominator, options = {}) => {
     minimumFractionDigits,
     maximumFractionDigits
   }).format(ratio) + suffix;
+};
+// Accounting-style number for financial statements: no currency symbol,
+// thousands separators, negatives in parentheses, null/undefined as a dash.
+export const formatAccounting = (value, options = {}) => {
+  const { decimals = 0, dash = '—' } = options;
+
+  if (value === null || value === undefined || value === '') return dash;
+
+  const num = typeof value === 'number' ? value : parseFloat(value);
+  if (isNaN(num)) return dash;
+
+  const abs = Math.abs(num);
+  // Treat tiny rounding noise as zero so "-0" never shows as "(0)".
+  const rounded = Number(abs.toFixed(decimals));
+  const formatted = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(rounded);
+
+  if (num < 0 && rounded !== 0) {
+    return `(${formatted})`;
+  }
+  return formatted;
+};
+
+// Percent-scale value (52.3 -> "52.3%"). Null/undefined -> dash.
+export const formatPct = (value, options = {}) => {
+  const { decimals = 1, dash = '—' } = options;
+  if (value === null || value === undefined || value === '') return dash;
+  const num = typeof value === 'number' ? value : parseFloat(value);
+  if (isNaN(num)) return dash;
+  return `${num.toFixed(decimals)}%`;
 };

@@ -1,368 +1,465 @@
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional, Dict, Any
-from db.models import ForecastResponse
-from db import get_forecast_data
+"""
+Reporting API: financial statements, budget-vs-actual, and the planning
+inputs that feed them (assumptions, capex, actuals).
+
+All statement maths lives in services.financial_statements; this module
+only handles HTTP concerns and persistence of the planning inputs.
+"""
+import csv
+import io
 import logging
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
+
+from db.database import db_manager
+from db.models import (
+    ActualsUpsertRequest,
+    CapitalExpenditureCreate,
+    CapitalExpenditureUpdate,
+    FinancialAssumptionsUpdate,
+    ForecastResponse,
+)
+from services.financial_statements import (
+    DEFAULT_ASSUMPTIONS,
+    VARIANCE_LINE_ITEMS,
+    build_statements,
+    build_variance,
+    load_actuals,
+    load_assumptions,
+    period_range,
+    statements_to_rows,
+    validate_period,
+)
 
 router = APIRouter(prefix="/reporting", tags=["reporting"])
+logger = logging.getLogger(__name__)
 
-@router.get("/combined-forecast", response_model=ForecastResponse)
-async def get_combined_forecast_data(
-    forecast_ids: List[str] = Query(..., description="List of forecast IDs to combine"),
-    start_period: Optional[str] = Query(None, description="Start period (YYYY-MM)"),
-    end_period: Optional[str] = Query(None, description="End period (YYYY-MM)")
-):
-    """
-    Get combined data from multiple forecasts for financial statement generation
-    """
+
+def _parse_forecast_ids(forecast_ids: List[str]) -> List[str]:
+    """Accept both repeated query params and a single comma-separated value."""
+    out: List[str] = []
+    for value in forecast_ids or []:
+        out.extend(v.strip() for v in str(value).split(",") if v.strip())
+    if not out:
+        raise HTTPException(status_code=422, detail="At least one forecast_id is required")
+    return out
+
+
+def _check_window(start_period: str, end_period: str) -> None:
     try:
-        from db.database import db_manager
-        import api.cost_routes as cost_routes
-        import api.payroll_routes as payroll_routes
-        import api.expense_routes as expense_routes
-        import api.loan_routes as loan_routes
-        
-        combined_data = {
-            "forecast_ids": forecast_ids,
-            "revenue": {"total": 0, "by_period": {}, "by_product": {}, "by_customer": {}},
-            "costs": {"materials": 0, "labor": 0, "manufacturing": 0, "total": 0, "by_product": {}},
-            "payroll": {"total_cost": 0, "by_period": {}, "by_department": {}, "by_business_unit": {}},
-            "expenses": {"total": 0, "by_category": {}, "by_period": {}, "operating": 0, "admin": 0, "factory_overhead": 0},
-            "loans": {"total_payments": 0, "principal": 0, "interest": 0, "by_period": {}},
-            "metadata": {
-                "generated_at": "2024-01-01T00:00:00Z",
-                "period_filter": {"start": start_period, "end": end_period}
-            }
-        }
-        
-        conn = db_manager.get_connection()
-        cursor = conn.cursor()
-        
-        # Combine revenue data from multiple forecasts
-        for forecast_id in forecast_ids:
-            # Get sales data for this forecast
-            cursor.execute("""
-                SELECT unit_id, customer_id, period, quantity, unit_price, total_revenue
-                FROM sales 
-                WHERE forecast_id = ?
-                AND (? IS NULL OR period >= ?)
-                AND (? IS NULL OR period <= ?)
-            """, (forecast_id, start_period, start_period, end_period, end_period))
-            
-            sales_data = cursor.fetchall()
-            
-            for sale in sales_data:
-                unit_id, customer_id, period, quantity, unit_price, total_revenue = sale
-                
-                # Aggregate revenue
-                combined_data["revenue"]["total"] += total_revenue or 0
-                
-                # By period
-                period_key = str(period)[:7] if period else "unknown"  # Convert to YYYY-MM
-                combined_data["revenue"]["by_period"][period_key] = \
-                    combined_data["revenue"]["by_period"].get(period_key, 0) + (total_revenue or 0)
-                
-                # By product
-                combined_data["revenue"]["by_product"][unit_id] = \
-                    combined_data["revenue"]["by_product"].get(unit_id, 0) + (total_revenue or 0)
-                
-                # By customer
-                combined_data["revenue"]["by_customer"][customer_id] = \
-                    combined_data["revenue"]["by_customer"].get(customer_id, 0) + (total_revenue or 0)
-        
-        # Get cost data for combined forecasts
-        # This would ideally call the cost calculation endpoints, but for simplicity we'll calculate here
-        for forecast_id in forecast_ids:
-            cursor.execute("""
-                SELECT u.unit_id, u.unit_name, u.bom_id, u.bom_version, u.router_id, u.router_version,
-                       SUM(s.quantity) as total_quantity
-                FROM sales s
-                JOIN units u ON s.unit_id = u.unit_id
-                WHERE s.forecast_id = ?
-                GROUP BY u.unit_id, u.unit_name, u.bom_id, u.bom_version, u.router_id, u.router_version
-            """, (forecast_id,))
-            
-            products = cursor.fetchall()
-            
-            for product in products:
-                unit_id, unit_name, bom_id, bom_version, router_id, router_version, quantity = product
-                
-                # Calculate material costs from BOM
-                if bom_id and quantity:
-                    cursor.execute("""
-                        SELECT SUM(material_cost) as total_material_cost
-                        FROM bom 
-                        WHERE bom_id = ? AND version = ?
-                    """, (bom_id, bom_version))
-                    bom_data = cursor.fetchone()
-                    material_cost = (bom_data[0] if bom_data and bom_data[0] else 0) * quantity
-                    combined_data["costs"]["materials"] += material_cost
-                
-                # Calculate labor and machine costs from routing
-                if router_id and quantity:
-                    cursor.execute("""
-                        SELECT ro.labor_minutes, ro.machine_minutes, m.machine_rate, lr.rate_amount
-                        FROM router_operations ro
-                        JOIN machines m ON ro.machine_id = m.machine_id
-                        LEFT JOIN labor_rates lr ON ro.labor_type_id = lr.rate_id
-                        WHERE ro.router_id = ?
-                    """, (router_id,))
-                    routing_data = cursor.fetchall()
-                    
-                    for route in routing_data:
-                        labor_minutes, machine_minutes, machine_rate, hourly_rate = route
-                        labor_cost = (labor_minutes / 60) * (hourly_rate if hourly_rate else 0) * quantity
-                        machine_cost = (machine_minutes / 60) * (machine_rate if machine_rate else 0) * quantity
-                        
-                        combined_data["costs"]["labor"] += labor_cost
-                        combined_data["costs"]["manufacturing"] += machine_cost
-        
-        combined_data["costs"]["total"] = (
-            combined_data["costs"]["materials"] + 
-            combined_data["costs"]["labor"] + 
-            combined_data["costs"]["manufacturing"]
-        )
-        
-        # Get payroll data (company-wide, not forecast-specific)
-        cursor.execute("""
-            SELECT SUM(weekly_hours * hourly_rate * 52) as annual_cost,
-                   department,
-                   allocations
-            FROM payroll 
-            WHERE end_date IS NULL OR end_date > date('now')
-            GROUP BY department, allocations
-        """)
-        payroll_data = cursor.fetchall()
-        
-        for payroll in payroll_data:
-            annual_cost, department, allocations = payroll
-            if annual_cost:
-                combined_data["payroll"]["total_cost"] += annual_cost
-                combined_data["payroll"]["by_department"][department or "Unassigned"] = \
-                    combined_data["payroll"]["by_department"].get(department or "Unassigned", 0) + annual_cost
-        
-        # Get expense data for the period
-        if start_period and end_period:
-            cursor.execute("""
-                SELECT c.category_type, c.category_name, 
-                       SUM(a.allocated_amount) as total_amount,
-                       a.period
-                FROM expense_allocations a
-                JOIN expenses e ON a.expense_id = e.expense_id
-                JOIN expense_categories c ON e.category_id = c.category_id
-                WHERE a.period >= ? AND a.period <= ?
-                GROUP BY c.category_type, c.category_name, a.period
-            """, (start_period, end_period))
-            expense_data = cursor.fetchall()
-            
-            for expense in expense_data:
-                category_type, category_name, amount, period = expense
-                combined_data["expenses"]["total"] += amount or 0
-                combined_data["expenses"]["by_category"][category_type or "Other"] = \
-                    combined_data["expenses"]["by_category"].get(category_type or "Other", 0) + (amount or 0)
-                combined_data["expenses"]["by_period"][period] = \
-                    combined_data["expenses"]["by_period"].get(period, 0) + (amount or 0)
-                
-                # Categorize expenses
-                if category_type == "admin_expense":
-                    combined_data["expenses"]["admin"] += amount or 0
-                elif category_type == "factory_overhead":
-                    combined_data["expenses"]["factory_overhead"] += amount or 0
-                else:
-                    combined_data["expenses"]["operating"] += amount or 0
-        
-        # Get loan data for the period
-        if start_period and end_period:
-            cursor.execute("""
-                SELECT strftime('%Y-%m', lp.payment_date) as period,
-                       SUM(lp.principal_payment) as total_principal,
-                       SUM(lp.interest_payment) as total_interest,
-                       SUM(lp.payment_amount) as total_payment
-                FROM loan_payments lp
-                JOIN loans l ON lp.loan_id = l.loan_id
-                WHERE strftime('%Y-%m', lp.payment_date) >= ? 
-                  AND strftime('%Y-%m', lp.payment_date) <= ?
-                  AND l.is_active = 1
-                GROUP BY strftime('%Y-%m', lp.payment_date)
-            """, (start_period, end_period))
-            loan_data = cursor.fetchall()
-            
-            for loan in loan_data:
-                period, principal, interest, payment = loan
-                combined_data["loans"]["total_payments"] += payment or 0
-                combined_data["loans"]["principal"] += principal or 0
-                combined_data["loans"]["interest"] += interest or 0
-                combined_data["loans"]["by_period"][period] = {
-                    "total_payment": payment or 0,
-                    "principal": principal or 0,
-                    "interest": interest or 0
-                }
-        
-        db_manager.close_connection(conn)
-        
-        return ForecastResponse(
-            status="success",
-            data=combined_data,
-            message=f"Combined data from {len(forecast_ids)} forecasts"
-        )
-        
-    except Exception as e:
-        logging.error(f"Error combining forecast data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error combining forecast data: {str(e)}")
+        period_range(start_period, end_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-@router.get("/financial-statements", response_model=ForecastResponse)
-async def generate_financial_statements(
-    forecast_ids: List[str] = Query(..., description="List of forecast IDs"),
+
+# ---------------------------------------------------------------------------
+# Statements
+# ---------------------------------------------------------------------------
+
+@router.get("/statements", response_model=ForecastResponse)
+async def get_financial_statements(
+    forecast_ids: List[str] = Query(..., description="Forecast IDs (repeat or comma-separate)"),
     start_period: str = Query(..., description="Start period (YYYY-MM)"),
-    end_period: str = Query(..., description="End period (YYYY-MM)")
+    end_period: str = Query(..., description="End period (YYYY-MM)"),
+    include_raises: bool = Query(True, description="Apply scheduled payroll raises"),
 ):
-    """
-    Generate complete financial statements from combined forecast data
-    """
+    """Period-by-period income statement, cash flow and balance sheet."""
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    conn = db_manager.get_connection()
     try:
-        # Get combined data
-        combined_response = await get_combined_forecast_data(forecast_ids, start_period, end_period)
-        combined_data = combined_response.data
-        
-        # Calculate financial statements
-        statements = calculate_financial_statements(combined_data, start_period, end_period)
-        
-        return ForecastResponse(
-            status="success",
-            data=statements,
-            message="Financial statements generated successfully"
-        )
-        
-    except Exception as e:
-        logging.error(f"Error generating financial statements: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating financial statements: {str(e)}")
-
-def calculate_financial_statements(data: Dict[str, Any], start_period: str, end_period: str) -> Dict[str, Any]:
-    """
-    Calculate income statement, balance sheet, and cash flow statement from combined data
-    """
-    # Income Statement
-    gross_revenue = data["revenue"]["total"]
-    total_cogs = data["costs"]["total"] + data["expenses"]["factory_overhead"]
-    gross_profit = gross_revenue - total_cogs
-    gross_margin = (gross_profit / gross_revenue * 100) if gross_revenue > 0 else 0
-    
-    # Operating expenses
-    operating_expenses = (
-        data["payroll"]["total_cost"] + 
-        data["expenses"]["operating"] + 
-        data["expenses"]["admin"]
+        statements = build_statements(conn.cursor(), ids, start_period, end_period, include_raises=include_raises)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Error building financial statements")
+        raise HTTPException(status_code=500, detail=f"Error building financial statements: {exc}")
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(
+        status="success",
+        data=statements,
+        message=f"Built statements for {len(statements['periods'])} period(s)",
     )
-    operating_income = gross_profit - operating_expenses
-    operating_margin = (operating_income / gross_revenue * 100) if gross_revenue > 0 else 0
-    
-    # Net income
-    interest_expense = data["loans"]["interest"]
-    net_income = operating_income - interest_expense
-    net_margin = (net_income / gross_revenue * 100) if gross_revenue > 0 else 0
-    
-    income_statement = {
-        "period": {"start": start_period, "end": end_period},
-        "revenue": {
-            "gross_revenue": gross_revenue,
-            "by_period": data["revenue"]["by_period"],
-            "by_product": data["revenue"]["by_product"],
-            "by_customer": data["revenue"]["by_customer"]
-        },
-        "cost_of_goods_sold": {
-            "materials": data["costs"]["materials"],
-            "labor": data["costs"]["labor"],
-            "manufacturing": data["costs"]["manufacturing"],
-            "factory_overhead": data["expenses"]["factory_overhead"],
-            "total": total_cogs
-        },
-        "gross_profit": gross_profit,
-        "gross_margin": gross_margin,
-        "operating_expenses": {
-            "payroll": data["payroll"]["total_cost"],
-            "admin_expenses": data["expenses"]["admin"],
-            "operating_expenses": data["expenses"]["operating"],
-            "total": operating_expenses
-        },
-        "operating_income": operating_income,
-        "operating_margin": operating_margin,
-        "other_expenses": {
-            "interest_expense": interest_expense
-        },
-        "net_income": net_income,
-        "net_margin": net_margin,
-        "metadata": data["metadata"]
-    }
-    
-    # Balance Sheet (simplified)
-    accounts_receivable = gross_revenue / 12  # 1 month of revenue
-    inventory = (data["costs"]["total"] * 2) / 12  # 2 months of COGS
-    current_assets = accounts_receivable + inventory
-    
-    accounts_payable = (data["expenses"]["total"] + data["payroll"]["total_cost"]) / 12
-    current_portion_debt = data["loans"]["principal"]
-    current_liabilities = accounts_payable + current_portion_debt
-    
-    working_capital = current_assets - current_liabilities
-    total_equity = working_capital  # Simplified
-    
-    balance_sheet = {
-        "period": end_period,
-        "assets": {
-            "current_assets": {
-                "accounts_receivable": accounts_receivable,
-                "inventory": inventory,
-                "total": current_assets
-            },
-            "total_assets": current_assets
-        },
-        "liabilities": {
-            "current_liabilities": {
-                "accounts_payable": accounts_payable,
-                "current_portion_long_term_debt": current_portion_debt,
-                "total": current_liabilities
-            },
-            "total_liabilities": current_liabilities
-        },
-        "equity": {
-            "retained_earnings": total_equity,
-            "total_equity": total_equity
-        },
-        "working_capital": working_capital,
-        "metadata": data["metadata"]
-    }
-    
-    # Cash Flow Statement
-    operating_cash_flow = net_income  # Simplified
-    investing_cash_flow = 0  # Placeholder
-    financing_cash_flow = -data["loans"]["total_payments"]
-    net_cash_flow = operating_cash_flow + investing_cash_flow + financing_cash_flow
-    
-    cash_flow_statement = {
-        "period": {"start": start_period, "end": end_period},
-        "operating_activities": {
-            "net_income": net_income,
-            "adjustments": {},
-            "operating_cash_flow": operating_cash_flow
-        },
-        "investing_activities": {
-            "capital_expenditures": 0,
-            "investing_cash_flow": investing_cash_flow
-        },
-        "financing_activities": {
-            "loan_payments": -data["loans"]["total_payments"],
-            "principal_payments": -data["loans"]["principal"],
-            "interest_payments": -data["loans"]["interest"],
-            "financing_cash_flow": financing_cash_flow
-        },
-        "net_cash_flow": net_cash_flow,
-        "by_period": data["loans"]["by_period"],
-        "metadata": data["metadata"]
-    }
-    
-    return {
-        "income_statement": income_statement,
-        "balance_sheet": balance_sheet,
-        "cash_flow_statement": cash_flow_statement,
-        "combined_data": data
-    }
+
+
+# Backward-compatible alias for callers of the old endpoint name.
+@router.get("/financial-statements", response_model=ForecastResponse, include_in_schema=False)
+async def get_financial_statements_legacy(
+    forecast_ids: List[str] = Query(...),
+    start_period: str = Query(...),
+    end_period: str = Query(...),
+):
+    return await get_financial_statements(forecast_ids, start_period, end_period, True)
+
+
+@router.get("/statements/export")
+async def export_financial_statements(
+    forecast_ids: List[str] = Query(...),
+    start_period: str = Query(...),
+    end_period: str = Query(...),
+    layout: str = Query("wide", description="'wide' (one column per period) or 'long'"),
+):
+    """Download the statements as CSV."""
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    conn = db_manager.get_connection()
+    try:
+        statements = build_statements(conn.cursor(), ids, start_period, end_period)
+    finally:
+        db_manager.close_connection(conn)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if layout == "long":
+        writer.writerow(["statement", "period", "line_item", "amount"])
+        for row in statements_to_rows(statements):
+            writer.writerow([row["statement"], row["period"], row["line_item"], row["amount"]])
+    else:
+        periods = statements["periods"]
+        for key, label in (("income_statement", "Income Statement"),
+                           ("cash_flow", "Cash Flow"),
+                           ("balance_sheet", "Balance Sheet")):
+            rows = statements[key]["by_period"]
+            writer.writerow([label] + periods + (["Total"] if key != "balance_sheet" else []))
+            line_keys = [k for k in rows[0].keys() if k != "period"] if rows else []
+            totals = statements[key].get("totals", {})
+            for line in line_keys:
+                values = [r.get(line, "") for r in rows]
+                extra = [totals.get(line, "")] if key != "balance_sheet" else []
+                writer.writerow([line] + values + extra)
+            writer.writerow([])
+
+    filename = f"financial_statements_{start_period}_{end_period}.csv"
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Budget vs actual
+# ---------------------------------------------------------------------------
+
+@router.get("/variance", response_model=ForecastResponse)
+async def get_variance(
+    forecast_ids: List[str] = Query(...),
+    start_period: str = Query(...),
+    end_period: str = Query(...),
+):
+    """Budget (from the statements) versus recorded actuals, by line and period."""
+    ids = _parse_forecast_ids(forecast_ids)
+    _check_window(start_period, end_period)
+    conn = db_manager.get_connection()
+    try:
+        variance = build_variance(conn.cursor(), ids, start_period, end_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Error building variance report")
+        raise HTTPException(status_code=500, detail=f"Error building variance report: {exc}")
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=variance, message="Variance report built")
+
+
+@router.get("/actuals/line-items", response_model=ForecastResponse)
+async def get_actual_line_items():
+    """The statement lines actuals can be recorded against."""
+    items = [{"line_item": k, **v} for k, v in VARIANCE_LINE_ITEMS.items()]
+    return ForecastResponse(status="success", data={"line_items": items}, message="Line items")
+
+
+@router.get("/actuals", response_model=ForecastResponse)
+async def get_actuals(
+    start_period: str = Query(...),
+    end_period: str = Query(...),
+):
+    _check_window(start_period, end_period)
+    conn = db_manager.get_connection()
+    try:
+        rows = load_actuals(conn.cursor(), start_period, end_period)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"actuals": rows}, message=f"Retrieved {len(rows)} actuals")
+
+
+def _upsert_actuals(cursor, entries: List[Dict[str, Any]]) -> int:
+    count = 0
+    for entry in entries:
+        period = validate_period(entry["period"])
+        line_item = str(entry["line_item"]).strip()
+        if line_item not in VARIANCE_LINE_ITEMS:
+            raise ValueError(f"Unknown line_item '{line_item}'")
+        reference_id = entry.get("reference_id") or ""
+        cursor.execute(
+            """
+            INSERT INTO actuals (actual_id, period, line_item, amount, reference_id, source, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(period, line_item, reference_id) DO UPDATE SET
+                amount = excluded.amount,
+                source = excluded.source,
+                notes = excluded.notes,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (f"ACT-{uuid.uuid4().hex[:10]}", period, line_item, float(entry["amount"]),
+             reference_id, entry.get("source"), entry.get("notes")),
+        )
+        count += 1
+    return count
+
+
+@router.post("/actuals", response_model=ForecastResponse)
+async def upsert_actuals(request: ActualsUpsertRequest):
+    """Create or update actuals; (period, line_item, reference_id) is the key."""
+    conn = db_manager.get_connection()
+    try:
+        count = _upsert_actuals(conn.cursor(), [e.dict() for e in request.entries])
+        conn.commit()
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"saved": count}, message=f"Saved {count} actual(s)")
+
+
+@router.post("/actuals/import", response_model=ForecastResponse)
+async def import_actuals(file: UploadFile = File(...), source: Optional[str] = Query(None)):
+    """
+    Import actuals from CSV with columns: period, line_item, amount
+    (optional: reference_id, notes).
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="File must be UTF-8 encoded CSV")
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"period", "line_item", "amount"}
+    if not reader.fieldnames or not required.issubset({f.strip().lower() for f in reader.fieldnames}):
+        raise HTTPException(status_code=422, detail="CSV must have columns: period, line_item, amount")
+
+    entries: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    for i, row in enumerate(reader, start=2):
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        if not row.get("period") and not row.get("line_item"):
+            continue
+        try:
+            amount = float(str(row.get("amount", "")).replace(",", "").replace("$", ""))
+        except ValueError:
+            errors.append(f"Row {i}: invalid amount '{row.get('amount')}'")
+            continue
+        entries.append({
+            "period": row.get("period"),
+            "line_item": row.get("line_item"),
+            "amount": amount,
+            "reference_id": row.get("reference_id", ""),
+            "notes": row.get("notes"),
+            "source": source or file.filename,
+        })
+
+    conn = db_manager.get_connection()
+    try:
+        count = _upsert_actuals(conn.cursor(), entries)
+        conn.commit()
+    except ValueError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(
+        status="success",
+        data={"imported": count, "errors": errors},
+        message=f"Imported {count} actual(s)" + (f", {len(errors)} row(s) skipped" if errors else ""),
+    )
+
+
+@router.delete("/actuals", response_model=ForecastResponse)
+async def delete_actuals(
+    period: Optional[str] = Query(None, description="Delete all actuals for this period"),
+    line_item: Optional[str] = Query(None),
+    actual_id: Optional[str] = Query(None),
+):
+    if not any([period, line_item, actual_id]):
+        raise HTTPException(status_code=422, detail="Provide actual_id, period and/or line_item")
+    clauses, params = [], []
+    if actual_id:
+        clauses.append("actual_id = ?"); params.append(actual_id)
+    if period:
+        clauses.append("period = ?"); params.append(validate_period(period))
+    if line_item:
+        clauses.append("line_item = ?"); params.append(line_item)
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM actuals WHERE {' AND '.join(clauses)}", params)
+        deleted = cursor.rowcount
+        conn.commit()
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"deleted": deleted}, message=f"Deleted {deleted} actual(s)")
+
+
+# ---------------------------------------------------------------------------
+# Assumptions
+# ---------------------------------------------------------------------------
+
+@router.get("/assumptions", response_model=ForecastResponse)
+async def get_assumptions(forecast_id: str = Query(...)):
+    conn = db_manager.get_connection()
+    try:
+        assumptions, found = load_assumptions(conn.cursor(), forecast_id)
+    finally:
+        db_manager.close_connection(conn)
+    assumptions = {**assumptions, "forecast_id": forecast_id, "found": found}
+    return ForecastResponse(
+        status="success",
+        data={"assumptions": assumptions, "defaults": DEFAULT_ASSUMPTIONS},
+        message="Assumptions retrieved" if found else "No saved assumptions; defaults returned",
+    )
+
+
+@router.put("/assumptions", response_model=ForecastResponse)
+async def save_assumptions(forecast_id: str = Query(...), payload: FinancialAssumptionsUpdate = None):
+    if payload is None:
+        raise HTTPException(status_code=422, detail="Request body required")
+    if payload.opening_period:
+        try:
+            validate_period(payload.opening_period)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    data = payload.dict()
+    columns = list(data.keys())
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ?", (forecast_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Forecast '{forecast_id}' not found")
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(f"{c} = excluded.{c}" for c in columns)
+        cursor.execute(
+            f"""
+            INSERT INTO financial_assumptions (forecast_id, {', '.join(columns)}, updated_at)
+            VALUES (?, {placeholders}, CURRENT_TIMESTAMP)
+            ON CONFLICT(forecast_id) DO UPDATE SET {updates}, updated_at = CURRENT_TIMESTAMP
+            """,
+            [forecast_id] + [data[c] for c in columns],
+        )
+        conn.commit()
+        assumptions, _ = load_assumptions(cursor, forecast_id)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"assumptions": assumptions}, message="Assumptions saved")
+
+
+# ---------------------------------------------------------------------------
+# Capital expenditures
+# ---------------------------------------------------------------------------
+
+def _capex_rows(cursor, forecast_id: Optional[str]) -> List[Dict[str, Any]]:
+    if forecast_id:
+        cursor.execute(
+            "SELECT * FROM capital_expenditures WHERE forecast_id = ? OR forecast_id IS NULL ORDER BY purchase_period, asset_name",
+            (forecast_id,),
+        )
+    else:
+        cursor.execute("SELECT * FROM capital_expenditures ORDER BY purchase_period, asset_name")
+    columns = [d[0] for d in cursor.description]
+    rows = []
+    for row in cursor.fetchall():
+        item = dict(zip(columns, row))
+        item["is_active"] = bool(item.get("is_active", 1))
+        rows.append(item)
+    return rows
+
+
+@router.get("/capex", response_model=ForecastResponse)
+async def list_capex(forecast_id: Optional[str] = Query(None)):
+    conn = db_manager.get_connection()
+    try:
+        rows = _capex_rows(conn.cursor(), forecast_id)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"capex": rows}, message=f"Retrieved {len(rows)} capital item(s)")
+
+
+@router.post("/capex", response_model=ForecastResponse)
+async def create_capex(item: CapitalExpenditureCreate):
+    try:
+        validate_period(item.purchase_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if item.useful_life_months < 0 or item.amount < 0:
+        raise HTTPException(status_code=422, detail="amount and useful_life_months must be non-negative")
+    capex_id = f"CAPEX-{uuid.uuid4().hex[:8].upper()}"
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO capital_expenditures (
+                capex_id, forecast_id, asset_name, category, amount, purchase_period,
+                useful_life_months, salvage_value, depreciation_method, description, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (capex_id, item.forecast_id, item.asset_name, item.category, item.amount, item.purchase_period,
+             item.useful_life_months, item.salvage_value, item.depreciation_method, item.description,
+             1 if item.is_active else 0),
+        )
+        conn.commit()
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"capex_id": capex_id}, message="Capital item created")
+
+
+@router.put("/capex/{capex_id}", response_model=ForecastResponse)
+async def update_capex(capex_id: str, item: CapitalExpenditureUpdate):
+    updates = item.dict(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    if "purchase_period" in updates and updates["purchase_period"]:
+        try:
+            validate_period(updates["purchase_period"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if "is_active" in updates and updates["is_active"] is not None:
+        updates["is_active"] = 1 if updates["is_active"] else 0
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM capital_expenditures WHERE capex_id = ?", (capex_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Capital item not found")
+        assignments = ", ".join(f"{k} = ?" for k in updates)
+        cursor.execute(
+            f"UPDATE capital_expenditures SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE capex_id = ?",
+            list(updates.values()) + [capex_id],
+        )
+        conn.commit()
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data={"capex_id": capex_id}, message="Capital item updated")
+
+
+@router.delete("/capex/{capex_id}", response_model=ForecastResponse)
+async def delete_capex(capex_id: str):
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM capital_expenditures WHERE capex_id = ?", (capex_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+    finally:
+        db_manager.close_connection(conn)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Capital item not found")
+    return ForecastResponse(status="success", data={"capex_id": capex_id}, message="Capital item deleted")

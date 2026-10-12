@@ -11,6 +11,12 @@ from db.models import (
     ForecastResponse
 )
 from db.database import db_manager
+from services.financial_statements import (
+    PAY_PERIODS_PER_YEAR,
+    load_payroll_config,
+    payroll_by_period,
+    period_range,
+)
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
 
@@ -298,7 +304,7 @@ async def get_payroll_config():
         conn = db_manager.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT * FROM payroll_config ORDER BY config_id DESC LIMIT 1")
+        cursor.execute("SELECT * FROM payroll_config ORDER BY rowid DESC LIMIT 1")
         row = cursor.fetchone()
         
         if row:
@@ -314,7 +320,8 @@ async def get_payroll_config():
                 "medicare_rate": 0.0145,
                 "unemployment_rate": 0.006,
                 "benefits_rate": 0.25,
-                "workers_comp_rate": 0.015
+                "workers_comp_rate": 0.015,
+                "pay_frequency": "biweekly"
             }
         
         db_manager.close_connection(conn)
@@ -338,18 +345,19 @@ async def update_payroll_config(config: PayrollConfigCreate):
         cursor = conn.cursor()
         
         # Generate config ID
-        config_id = f"CONFIG-{int(datetime.now().timestamp())}"
+        config_id = f"CONFIG-{int(datetime.now().timestamp())}-{uuid.uuid4().hex[:6]}"
         
         # Insert new config (keep history)
         cursor.execute("""
             INSERT INTO payroll_config (
                 config_id, federal_tax_rate, state_tax_rate, social_security_rate,
-                medicare_rate, unemployment_rate, benefits_rate, workers_comp_rate
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                medicare_rate, unemployment_rate, benefits_rate, workers_comp_rate, pay_frequency
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             config_id, config.federal_tax_rate, config.state_tax_rate,
             config.social_security_rate, config.medicare_rate, config.unemployment_rate,
-            config.benefits_rate, config.workers_comp_rate
+            config.benefits_rate, config.workers_comp_rate,
+            config.pay_frequency if config.pay_frequency in PAY_PERIODS_PER_YEAR else 'biweekly'
         ))
         
         conn.commit()
@@ -433,106 +441,133 @@ async def calculate_employee_costs(
 
 @router.get("/forecast", response_model=ForecastResponse)
 async def get_payroll_forecast(
-    periods: int = Query(26, description="Number of pay periods to forecast"),
+    periods: int = Query(26, description="Number of pay periods to forecast (pay-period mode)"),
     include_raises: bool = Query(True, description="Include scheduled raises in forecast"),
-    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
+    forecast_id: Optional[str] = Query(None, description="Filter by forecast ID"),
+    start_period: Optional[str] = Query(None, description="Start month (YYYY-MM) for monthly mode"),
+    end_period: Optional[str] = Query(None, description="End month (YYYY-MM) for monthly mode"),
 ):
     """
-    Generate payroll forecast for specified number of pay periods
+    Payroll forecast.
+
+    * Monthly mode (start_period + end_period): fully burdened cost per
+      calendar month, prorated for hire/termination dates. This is what the
+      financial statements use, so the two always agree.
+    * Pay-period mode (default): the next N pay runs from today, using the
+      configured pay_frequency.
     """
     try:
-        # Get all active employees, optionally scoped by forecast
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        config = load_payroll_config(cursor)
+        scope_ids = [forecast_id] if forecast_id else []
 
+        if start_period or end_period:
+            if not (start_period and end_period):
+                raise HTTPException(status_code=422, detail="start_period and end_period are both required")
+            try:
+                months = period_range(start_period, end_period)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            result = payroll_by_period(cursor, scope_ids, months, include_raises=include_raises, config=config)
+            db_manager.close_connection(conn)
+            forecast = [
+                {
+                    "period": month,
+                    "total_cost": round(result["total"][month], 2),
+                    "gross_pay": round(result["gross"][month], 2),
+                    "headcount_fte": round(result["headcount"][month], 2),
+                    "by_department": {d: round(v[month], 2) for d, v in result["by_department"].items()},
+                    "by_business_unit": {u: round(v[month], 2) for u, v in result["by_business_unit"].items()},
+                }
+                for month in months
+            ]
+            return ForecastResponse(
+                status="success",
+                data={
+                    "mode": "monthly",
+                    "forecast": forecast,
+                    "employees": result["employees"],
+                    "total_cost": round(sum(result["total"].values()), 2),
+                    "config": config,
+                },
+                message=f"Generated monthly payroll forecast for {len(months)} month(s)",
+            )
+
+        # ---- pay-period mode ----
         cursor.execute("""
             SELECT employee_id, employee_name, department, weekly_hours, hourly_rate,
                    rate_type, labor_type, start_date, end_date, next_review_date,
                    expected_raise, benefits_eligible, allocations, forecast_id
             FROM payroll
             WHERE (end_date IS NULL OR end_date > date('now'))
-              AND (? IS NULL OR forecast_id = ?)
+              AND (? IS NULL OR forecast_id = ? OR forecast_id IS NULL)
             ORDER BY employee_name
         """, (forecast_id, forecast_id))
         employee_rows = cursor.fetchall()
-        
         columns = [description[0] for description in cursor.description]
         employees = []
-        
         for row in employee_rows:
             employee_dict = dict(zip(columns, row))
-            
-            # Parse allocations JSON
-            if employee_dict.get('allocations'):
-                try:
-                    import json
-                    employee_dict['allocations'] = json.loads(employee_dict['allocations'])
-                except (json.JSONDecodeError, TypeError):
-                    employee_dict['allocations'] = {}
-            else:
+            try:
+                employee_dict['allocations'] = json.loads(employee_dict['allocations']) if employee_dict.get('allocations') else {}
+            except (json.JSONDecodeError, TypeError):
                 employee_dict['allocations'] = {}
-            
             employees.append(employee_dict)
-        
-        # Get payroll config
-        cursor.execute("SELECT * FROM payroll_config ORDER BY config_id DESC LIMIT 1")
-        config_row = cursor.fetchone()
-        
-        if config_row:
-            config_columns = [description[0] for description in cursor.description]
-            config = dict(zip(config_columns, config_row))
-        else:
-            # Return default configuration
-            config = {
-                "config_id": "default",
-                "federal_tax_rate": 0.22,
-                "state_tax_rate": 0.06,
-                "social_security_rate": 0.062,
-                "medicare_rate": 0.0145,
-                "unemployment_rate": 0.006,
-                "benefits_rate": 0.25,
-                "workers_comp_rate": 0.015
-            }
-        
-        # Generate forecast
-        forecast = []
+        db_manager.close_connection(conn)
+
+        frequency = config.get("pay_frequency", "biweekly")
+        runs_per_year = PAY_PERIODS_PER_YEAR.get(frequency, 26)
+        days_between_runs = 365.25 / runs_per_year
+        weeks_per_run = 52 / runs_per_year
+
         today = datetime.now()
-        
-        # Find next Friday (payroll day)
-        days_until_friday = (4 - today.weekday()) % 7
-        if days_until_friday == 0 and today.hour >= 17:  # If it's Friday after 5 PM, go to next Friday
-            days_until_friday = 7
-        next_payroll_date = today + timedelta(days=days_until_friday)
-        
+        if frequency in ("weekly", "biweekly"):
+            days_until_friday = (4 - today.weekday()) % 7
+            if days_until_friday == 0 and today.hour >= 17:
+                days_until_friday = 7
+            first_run = today + timedelta(days=days_until_friday)
+        else:
+            # Semimonthly / monthly: pay on the last day of the month.
+            next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+            first_run = next_month - timedelta(days=1)
+
+        forecast = []
         for period in range(periods):
-            payroll_date = next_payroll_date + timedelta(days=period * 14)
-            
-            period_total = 0
+            payroll_date = first_run + timedelta(days=round(period * days_between_runs))
+            period_total = 0.0
             employee_details = []
-            
             for emp in employees:
-                # Check if employee is still active on this date
+                if emp.get("start_date"):
+                    try:
+                        if payroll_date.date() < datetime.strptime(emp["start_date"], '%Y-%m-%d').date():
+                            continue
+                    except ValueError:
+                        pass
                 if emp.get("end_date"):
-                    end_date = datetime.strptime(emp["end_date"], '%Y-%m-%d')
-                    if payroll_date.date() > end_date.date():
-                        continue
-                
-                # Apply scheduled raises if enabled
-                adjusted_rate = emp["hourly_rate"]
+                    try:
+                        if payroll_date.date() > datetime.strptime(emp["end_date"], '%Y-%m-%d').date():
+                            continue
+                    except ValueError:
+                        pass
+
+                adjusted_rate = float(emp["hourly_rate"] or 0)
                 if include_raises and emp.get("next_review_date") and emp.get("expected_raise"):
-                    review_date = datetime.strptime(emp["next_review_date"], '%Y-%m-%d')
-                    if payroll_date.date() >= review_date.date():
-                        if emp["expected_raise"] > 1:  # Flat amount
-                            adjusted_rate += emp["expected_raise"]
-                        else:  # Percentage
-                            adjusted_rate *= (1 + emp["expected_raise"])
-                
-                # Calculate costs for this employee
+                    try:
+                        review_date = datetime.strptime(emp["next_review_date"], '%Y-%m-%d')
+                        if payroll_date.date() >= review_date.date():
+                            if emp["expected_raise"] > 1:
+                                adjusted_rate += emp["expected_raise"]
+                            else:
+                                adjusted_rate *= (1 + emp["expected_raise"])
+                    except ValueError:
+                        pass
+
                 if emp["rate_type"] == "salary":
-                    gross_pay = adjusted_rate * 40 * 52 / 26
+                    gross_pay = adjusted_rate * 40 * 52 / runs_per_year
                 else:
-                    gross_pay = adjusted_rate * emp["weekly_hours"] * 2
-                
+                    gross_pay = adjusted_rate * float(emp["weekly_hours"] or 0) * weeks_per_run
+
                 federal_tax = gross_pay * config["federal_tax_rate"]
                 state_tax = gross_pay * config["state_tax_rate"]
                 social_security = gross_pay * config["social_security_rate"]
@@ -540,9 +575,8 @@ async def get_payroll_forecast(
                 unemployment = gross_pay * config["unemployment_rate"]
                 workers_comp = gross_pay * config["workers_comp_rate"]
                 benefits = gross_pay * config["benefits_rate"] if emp["benefits_eligible"] else 0
-                
                 total_cost = gross_pay + federal_tax + state_tax + social_security + medicare + unemployment + workers_comp + benefits
-                
+
                 period_total += total_cost
                 employee_details.append({
                     "employee_id": emp["employee_id"],
@@ -552,7 +586,7 @@ async def get_payroll_forecast(
                     "total_cost": total_cost,
                     "allocations": emp.get("allocations", {})
                 })
-            
+
             forecast.append({
                 "period": period + 1,
                 "date": payroll_date.strftime('%Y-%m-%d'),
@@ -560,15 +594,15 @@ async def get_payroll_forecast(
                 "employee_count": len(employee_details),
                 "employee_details": employee_details
             })
-        
-        db_manager.close_connection(conn)
-        
+
         return ForecastResponse(
             status="success",
-            data={"forecast": forecast},
-            message=f"Generated payroll forecast for {periods} periods"
+            data={"mode": "pay_period", "pay_frequency": frequency, "forecast": forecast, "config": config},
+            message=f"Generated payroll forecast for {periods} {frequency} pay periods"
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating payroll forecast: {str(e)}")
 

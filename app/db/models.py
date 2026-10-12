@@ -159,6 +159,8 @@ class PayrollConfigBase(BaseModel):
     unemployment_rate: float = 0.006
     benefits_rate: float = 0.25
     workers_comp_rate: float = 0.015
+    # weekly | biweekly | semimonthly | monthly
+    pay_frequency: str = 'biweekly'
 
 class PayrollConfig(PayrollConfigBase):
     config_id: str
@@ -538,3 +540,82 @@ class CashFlowProjection(BaseModel):
     total_interest: float
     total_payment: float
     remaining_balance: float 
+
+# ========================
+# Financial planning models (reporting engine)
+# ========================
+
+class FinancialAssumptionsBase(BaseModel):
+    """Opening balances and working-capital / tax assumptions for a scenario."""
+    opening_period: Optional[str] = None  # YYYY-MM the opening balances are stated at
+    opening_cash: float = 0.0
+    opening_accounts_receivable: float = 0.0
+    opening_inventory: float = 0.0
+    opening_fixed_assets: float = 0.0
+    opening_accumulated_depreciation: float = 0.0
+    opening_fixed_assets_remaining_life_months: int = 0
+    opening_accounts_payable: float = 0.0
+    opening_other_liabilities: float = 0.0
+    opening_equity: Optional[float] = None  # None => plugged so the opening balance sheet balances
+    dso_days: float = 30.0
+    dio_days: float = 60.0
+    dpo_days: float = 30.0
+    income_tax_rate: float = 0.21
+    minimum_cash_balance: float = 0.0
+    notes: Optional[str] = None
+
+
+class FinancialAssumptions(FinancialAssumptionsBase):
+    forecast_id: str
+    updated_at: Optional[str] = None
+
+
+class FinancialAssumptionsUpdate(FinancialAssumptionsBase):
+    pass
+
+
+class CapitalExpenditureBase(BaseModel):
+    asset_name: str
+    category: Optional[str] = None
+    amount: float
+    purchase_period: str  # YYYY-MM
+    useful_life_months: int = 60
+    salvage_value: float = 0.0
+    depreciation_method: str = 'straight_line'
+    description: Optional[str] = None
+    is_active: bool = True
+    forecast_id: Optional[str] = None
+
+
+class CapitalExpenditure(CapitalExpenditureBase):
+    capex_id: str
+
+
+class CapitalExpenditureCreate(CapitalExpenditureBase):
+    pass
+
+
+class CapitalExpenditureUpdate(BaseModel):
+    asset_name: Optional[str] = None
+    category: Optional[str] = None
+    amount: Optional[float] = None
+    purchase_period: Optional[str] = None
+    useful_life_months: Optional[int] = None
+    salvage_value: Optional[float] = None
+    depreciation_method: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+    forecast_id: Optional[str] = None
+
+
+class ActualEntry(BaseModel):
+    period: str  # YYYY-MM
+    line_item: str
+    amount: float
+    reference_id: Optional[str] = ''
+    source: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ActualsUpsertRequest(BaseModel):
+    entries: List[ActualEntry]
