@@ -6,6 +6,7 @@ import { Label } from '../../ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
 import { Badge } from '../../ui/badge';
+import { PAY_FREQUENCY_LABELS, formatRate, runTotal } from './payrollView';
 
 const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -14,12 +15,19 @@ const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
 
 const formatDate = (dateStr) => formatDateOnly(dateStr, { year: 'numeric', month: 'short', day: 'numeric' }, '—');
 
+// All costs come from the payroll API (annual employer cost = gross + employer
+// payroll taxes + benefits, the income statement's rules). Withholding is
+// shown for information only; it is part of gross pay, not an extra cost.
 const PayrollReports = ({
   employees,
   forecast,
   departmentCosts,
-  businessUnitCosts
+  businessUnitCosts,
+  runsPerYear = 26,
+  payFrequency = 'biweekly'
 }) => {
+  const runLabel = PAY_FREQUENCY_LABELS[payFrequency] || 'Per pay run';
+  const runsPerQuarter = Math.max(1, Math.round(runsPerYear / 4));
   const safeEmployees = employees || [];
   const safeForecast = forecast || [];
   const safeDepartmentCosts = departmentCosts || {};
@@ -48,7 +56,7 @@ const PayrollReports = ({
     totalAnnualCost,
     avgSalary,
     monthlyAverageCost: totalAnnualCost / 12,
-    biweeklyAverageCost: totalAnnualCost / 26,
+    perRunCost: totalAnnualCost / runsPerYear,
     upcomingReviews: upcomingReviewsCount
   };
 
@@ -56,7 +64,7 @@ const PayrollReports = ({
     .sort((a, b) => (b[1].totalCost || 0) - (a[1].totalCost || 0))[0];
   const highestBU = Object.entries(safeBusinessUnitCosts)
     .sort((a, b) => (b[1].totalCost || 0) - (a[1].totalCost || 0))[0];
-  const nextQuarterForecast = safeForecast.slice(0, 6).reduce((sum, period) => sum + (period.totalCost || 0), 0);
+  const nextQuarterForecast = safeForecast.slice(0, runsPerQuarter).reduce((sum, period) => sum + (period.totalCost || 0), 0);
 
   const reportTabs = [
     { id: 'summary', label: 'Executive Summary' },
@@ -93,6 +101,9 @@ const PayrollReports = ({
       'Department': emp.department,
       'Rate Type': emp.rate_type,
       'Rate': emp.hourly_rate,
+      'Rate Basis': emp.rate_type === 'salary' ? 'Annual salary' : 'Per hour',
+      'Annual Gross': emp.annual_gross ?? '',
+      'Annual Cost': emp.annual_cost ?? '',
       'Weekly Hours': emp.weekly_hours,
       'Start Date': emp.start_date,
       'End Date': emp.end_date || 'Active',
@@ -113,7 +124,7 @@ const PayrollReports = ({
       'Annual Cost': costs.totalCost,
       'Average Cost per Employee': costs.employees > 0 ? costs.totalCost / costs.employees : 0,
       'Monthly Cost': costs.totalCost / 12,
-      'Bi-weekly Cost': costs.totalCost / 26
+      [`${runLabel} Run Cost`]: costs.totalCost / runsPerYear
     })), 'department_costs.csv');
   };
 
@@ -123,25 +134,22 @@ const PayrollReports = ({
       'FTE Allocation': costs.employees,
       'Annual Cost': costs.totalCost,
       'Monthly Cost': costs.totalCost / 12,
-      'Bi-weekly Cost': costs.totalCost / 26
+      [`${runLabel} Run Cost`]: costs.totalCost / runsPerYear
     })), 'business_unit_allocation.csv');
   };
 
   const exportForecastReport = () => {
-    exportToCSV(safeForecast.slice(0, 26).map(period => {
-      const details = period.employeeDetails || [];
-      return {
-        'Period': period.period,
-        'Date': period.date,
-        'Employee Count': period.employeeCount,
-        'Total Cost': period.totalCost,
-        'Gross Pay': details.reduce((sum, emp) => sum + (emp.compensation?.grossPay || 0), 0),
-        'Total Taxes': details.reduce((sum, emp) =>
-          sum + (emp.compensation?.federalTax || 0) + (emp.compensation?.stateTax || 0) +
-          (emp.compensation?.socialSecurity || 0) + (emp.compensation?.medicare || 0) + (emp.compensation?.unemployment || 0), 0),
-        'Benefits': details.reduce((sum, emp) => sum + (emp.compensation?.benefits || 0), 0)
-      };
-    }), 'payroll_forecast.csv');
+    exportToCSV(safeForecast.map(period => ({
+      'Period': period.period,
+      'Date': period.date,
+      'Employee Count': period.employeeCount,
+      'Gross Pay': runTotal(period, 'grossPay'),
+      'Employer Taxes': runTotal(period, 'employerTaxes'),
+      'Benefits': runTotal(period, 'benefits'),
+      'Total Employer Cost': period.totalCost,
+      'Employee Withholding (info)': runTotal(period, 'withholding'),
+      'Net Pay (info)': runTotal(period, 'netPay')
+    })), 'payroll_forecast.csv');
   };
 
   return (
@@ -187,10 +195,10 @@ const PayrollReports = ({
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <StatsCard title="Total Workforce" value={summary.totalEmployees} subtitle="Active employees" variant="primary" />
-            <StatsCard title="Annual Payroll Cost" value={formatCurrency(summary.totalAnnualCost)} subtitle="All employees & benefits" variant="success" />
+            <StatsCard title="Annual Payroll Cost" value={formatCurrency(summary.totalAnnualCost)} subtitle="Gross + employer taxes + benefits" variant="success" />
             <StatsCard title="Average Employee Cost" value={formatCurrency(summary.avgSalary)} subtitle="Per employee annually" variant="default" />
             <StatsCard title="Monthly Payroll" value={formatCurrency(summary.monthlyAverageCost)} subtitle="Average per month" variant="warning" />
-            <StatsCard title="Bi-weekly Payroll" value={formatCurrency(summary.biweeklyAverageCost)} subtitle="Average per period" variant="warning" />
+            <StatsCard title={`${runLabel} Payroll`} value={formatCurrency(summary.perRunCost)} subtitle={`Average per pay run (${runsPerYear} a year)`} variant="warning" />
             <StatsCard title="Upcoming Reviews" value={summary.upcomingReviews} subtitle="Next 90 days" variant="danger" />
           </div>
 
@@ -213,7 +221,7 @@ const PayrollReports = ({
               </div>
               <div>
                 <span className="font-medium text-gray-800">Next Quarter Forecast:</span>{' '}
-                <span className="text-gray-700">{formatCurrency(nextQuarterForecast)} (6 pay periods)</span>
+                <span className="text-gray-700">{formatCurrency(nextQuarterForecast)} ({runsPerQuarter} pay periods)</span>
               </div>
             </CardContent>
           </Card>
@@ -248,12 +256,8 @@ const PayrollReports = ({
                   <tr key={emp.employee_id} className="border-b last:border-0">
                     <Td>{emp.employee_name}</Td>
                     <Td>{emp.department}</Td>
-                    <Td>
-                      {emp.rate_type === 'salary'
-                        ? `${formatCurrency(emp.hourly_rate * 40 * 52)}/year`
-                        : `${formatCurrency(emp.hourly_rate)}/hour`}
-                    </Td>
-                    <Td>{formatCurrency((emp.hourly_rate || 0) * (emp.weekly_hours || 0) * 52 * 1.4)}</Td>
+                    <Td>{formatRate(emp, formatCurrency)}</Td>
+                    <Td>{emp.annual_cost === undefined || emp.annual_cost === null ? '—' : formatCurrency(emp.annual_cost)}</Td>
                     <Td>
                       <Badge variant={emp.status === 'active' ? 'success' : 'secondary'}>
                         {emp.status || 'unknown'}
@@ -312,7 +316,7 @@ const PayrollReports = ({
       {activeReport === 'forecast' && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Payroll Forecast Report (Next 26 Periods)</CardTitle>
+            <CardTitle className="text-base">Payroll Forecast Report (Next {safeForecast.length} Pay Runs)</CardTitle>
             <Button variant="outline" size="sm" onClick={exportForecastReport}>
               Export Forecast Data
             </Button>
@@ -430,33 +434,27 @@ const ForecastReportTable = ({ forecast }) => (
         <Th>Date</Th>
         <Th>Employees</Th>
         <Th>Gross Pay</Th>
-        <Th>Total Taxes</Th>
+        <Th>Employer Taxes</Th>
         <Th>Benefits</Th>
-        <Th>Total Cost</Th>
+        <Th>Total Employer Cost</Th>
+        <Th>Employee Withholding (info)</Th>
       </tr>
     </thead>
     <tbody>
       {forecast.length === 0 ? (
-        <EmptyRow colSpan={7} message="No forecast data" />
-      ) : forecast.slice(0, 26).map(period => {
-        const details = period.employeeDetails || [];
-        const grossPay = details.reduce((sum, emp) => sum + (emp.compensation?.grossPay || 0), 0);
-        const totalTaxes = details.reduce((sum, emp) =>
-          sum + (emp.compensation?.federalTax || 0) + (emp.compensation?.stateTax || 0) +
-          (emp.compensation?.socialSecurity || 0) + (emp.compensation?.medicare || 0) + (emp.compensation?.unemployment || 0), 0);
-        const benefits = details.reduce((sum, emp) => sum + (emp.compensation?.benefits || 0), 0);
-        return (
-          <tr key={period.period} className="border-b last:border-0">
-            <Td>{period.period}</Td>
-            <Td>{formatDate(period.date)}</Td>
-            <Td>{period.employeeCount}</Td>
-            <Td>{formatCurrency(grossPay)}</Td>
-            <Td>{formatCurrency(totalTaxes)}</Td>
-            <Td>{formatCurrency(benefits)}</Td>
-            <Td>{formatCurrency(period.totalCost)}</Td>
-          </tr>
-        );
-      })}
+        <EmptyRow colSpan={8} message="No forecast data" />
+      ) : forecast.map(period => (
+        <tr key={period.period} className="border-b last:border-0">
+          <Td>{period.period}</Td>
+          <Td>{formatDate(period.date)}</Td>
+          <Td>{period.employeeCount}</Td>
+          <Td>{formatCurrency(runTotal(period, 'grossPay'))}</Td>
+          <Td>{formatCurrency(runTotal(period, 'employerTaxes'))}</Td>
+          <Td>{formatCurrency(runTotal(period, 'benefits'))}</Td>
+          <Td>{formatCurrency(period.totalCost)}</Td>
+          <Td>{formatCurrency(runTotal(period, 'withholding'))}</Td>
+        </tr>
+      ))}
     </tbody>
   </ReportTable>
 );

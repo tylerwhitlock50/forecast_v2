@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Annotated, Any, Dict, Optional
 
 from pydantic import Field
+from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server.core import DESTRUCTIVE, READ, WRITE, call, mcp, require
+from mcp_server.core import DESTRUCTIVE, READ, WRITE, call, mcp, require, trim_lists
 
 
 @mcp.tool(name="forecast_save_database", annotations=WRITE)
@@ -44,10 +45,27 @@ async def revert_to_last_save() -> Dict[str, Any]:
 
 
 @mcp.tool(name="forecast_data_quality", annotations=READ)
-async def data_quality() -> Dict[str, Any]:
-    """Data-quality report: sales rows whose product has no BOM, routings
-    referencing missing machines, employees without a labor rate, and
-    incomplete master data. Fix these before trusting COGS."""
-    quality = await call("GET", "/database/quality")
-    issues = await call("GET", "/data/validation/issues")
-    return {"quality": quality, "validation": issues}
+async def data_quality(
+    max_examples: Annotated[int, Field(description="Max entries shown per list (counts are always complete)", ge=1, le=500)] = 20,
+) -> Dict[str, Any]:
+    """Data-quality report from the API: sold products without a usable BOM
+    or routing, routing steps whose machine or labor rate is missing,
+    employees without a labor rate, incomplete master data. Fix these before
+    trusting COGS. Long lists are cut to max_examples entries; `truncated`
+    gives the full length of each cut list. Per-product cost gaps for one
+    scenario also show in forecast_product_cost_summary warnings."""
+    out: Dict[str, Any] = {}
+    cut: Dict[str, int] = {}
+    for key, path in (("quality", "/database/quality"), ("validation", "/data/validation/issues")):
+        try:
+            body = await call("GET", path)
+        except ToolError as exc:
+            out[key] = {"error": str(exc)}
+            continue
+        body.pop("message", None)
+        trimmed, lengths = trim_lists(body, max_examples, path=key)
+        out[key] = trimmed
+        cut.update(lengths)
+    if cut:
+        out["truncated"] = cut
+    return out

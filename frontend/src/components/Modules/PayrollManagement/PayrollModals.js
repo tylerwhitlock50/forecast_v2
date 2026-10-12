@@ -1,5 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
+import { parseLocalDate, toDateOnly } from '../../../lib/dates';
+import { ANNUAL_SALARY_THRESHOLD, MAX_PLAUSIBLE_HOURLY_RATE, allocationTotal as sumAllocations } from './payrollView';
+
+/**
+ * Pay-rate validation, the same rules as the API: salaried staff are entered
+ * as an ANNUAL salary; an hourly rate is dollars per hour.
+ */
+export const validatePayRate = (rateType, rate) => {
+  const value = Number(rate) || 0;
+  if (value <= 0) {
+    return rateType === 'salary' ? 'Annual salary must be greater than 0' : 'Hourly rate must be greater than 0';
+  }
+  if (rateType === 'salary' && value < ANNUAL_SALARY_THRESHOLD) {
+    return `Enter the annual salary (e.g. 85000), not an hourly rate. A salary under ${ANNUAL_SALARY_THRESHOLD.toLocaleString()} would be read as an hourly rate x 2,080.`;
+  }
+  if (rateType !== 'salary' && value > MAX_PLAUSIBLE_HOURLY_RATE) {
+    return `$${value.toLocaleString()} an hour looks like an annual salary - choose Rate Type "Salary" for salaried staff.`;
+  }
+  return null;
+};
 
 // Employee Modal for adding/editing employees
 export const EmployeeModal = ({ employee, departments, businessUnits, onSave, onCancel, activeScenario = null, activeScenarioName = '' }) => {
@@ -9,7 +29,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
     hourly_rate: 0,
     rate_type: 'hourly',
     weekly_hours: 40,
-    start_date: new Date().toISOString().split('T')[0],
+    start_date: toDateOnly(),
     end_date: '',
     next_review_date: '',
     expected_raise: 0,
@@ -37,8 +57,9 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
       newErrors.department = 'Department is required';
     }
 
-    if (formData.hourly_rate <= 0) {
-      newErrors.hourly_rate = 'Hourly rate must be greater than 0';
+    const rateError = validatePayRate(formData.rate_type, formData.hourly_rate);
+    if (rateError) {
+      newErrors.hourly_rate = rateError;
     }
 
     if (formData.weekly_hours <= 0 || formData.weekly_hours > 168) {
@@ -50,8 +71,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
     }
 
     // Validate allocations
-    const allocationTotal = Object.values(formData.allocations || {}).reduce((sum, val) => sum + val, 0);
-    if (Math.abs(allocationTotal - 100) > 0.01) {
+    if (Math.abs(sumAllocations(formData.allocations) - 100) > 0.01) {
       newErrors.allocations = 'Allocations must sum to 100%';
     }
 
@@ -90,12 +110,12 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
   };
 
   const calculateNextReviewDate = () => {
-    const startDate = new Date(formData.start_date);
+    const startDate = parseLocalDate(formData.start_date) || new Date();
     startDate.setFullYear(startDate.getFullYear() + 1);
-    return startDate.toISOString().split('T')[0];
+    return toDateOnly(startDate);
   };
 
-  const allocationTotal = Object.values(formData.allocations || {}).reduce((sum, val) => sum + val, 0);
+  const allocationTotal = sumAllocations(formData.allocations);
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
@@ -183,19 +203,26 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
               </div>
 
               <div className="form-group">
-                <label>
+                <label htmlFor="payroll-rate">
                   {formData.rate_type === 'salary' ? 'Annual Salary *' : 'Hourly Rate *'}
                 </label>
                 <div className="input-group">
                   <span className="input-prefix">$</span>
                   <input
+                    id="payroll-rate"
                     type="number"
                     step="0.01"
                     value={formData.hourly_rate}
                     onChange={(e) => setFormData({...formData, hourly_rate: parseFloat(e.target.value) || 0})}
                     className={errors.hourly_rate ? 'error' : ''}
                   />
+                  <span className="input-suffix">{formData.rate_type === 'salary' ? '/ year' : '/ hour'}</span>
                 </div>
+                <small>
+                  {formData.rate_type === 'salary'
+                    ? 'The yearly salary, e.g. 85000. Payroll cost = salary x (1 + employer taxes + benefits).'
+                    : 'Dollars per hour. Annual gross = rate x weekly hours x 52.'}
+                </small>
                 {errors.hourly_rate && <span className="error-text">{errors.hourly_rate}</span>}
               </div>
 
@@ -240,7 +267,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                 <label>End Date (Optional)</label>
                 <input
                   type="date"
-                  value={formData.end_date}
+                  value={formData.end_date || ''}
                   onChange={(e) => setFormData({...formData, end_date: e.target.value})}
                 />
               </div>
@@ -250,7 +277,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                 <div className="input-group">
                   <input
                     type="date"
-                    value={formData.next_review_date}
+                    value={formData.next_review_date || ''}
                     onChange={(e) => setFormData({...formData, next_review_date: e.target.value})}
                   />
                   <button
@@ -277,7 +304,10 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                     {formData.expected_raise > 1 ? '$' : '%'}
                   </span>
                 </div>
-                <small>Enter percentage (0.05 for 5%) or flat amount ($2.50)</small>
+                <small>
+                  Enter a fraction (0.05 for 5%) or a flat amount in the rate's units
+                  ({formData.rate_type === 'salary' ? 'e.g. 5000 a year' : 'e.g. 2.50 an hour'}).
+                </small>
               </div>
             </div>
 
@@ -368,7 +398,7 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
   };
 
   const normalizeAllocations = () => {
-    const total = Object.values(allocations).reduce((sum, val) => sum + val, 0);
+    const total = sumAllocations(allocations);
     if (total > 0) {
       const normalized = {};
       Object.keys(allocations).forEach(unit => {
@@ -379,8 +409,7 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
   };
 
   const handleSubmit = () => {
-    const allocationTotal = Object.values(allocations).reduce((sum, val) => sum + val, 0);
-    if (Math.abs(allocationTotal - 100) > 0.01) {
+    if (Math.abs(sumAllocations(allocations) - 100) > 0.01) {
       toast.error('Allocations must sum to 100%');
       return;
     }
@@ -391,7 +420,7 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
     });
   };
 
-  const allocationTotal = Object.values(allocations).reduce((sum, val) => sum + val, 0);
+  const allocationTotal = sumAllocations(allocations);
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
@@ -486,6 +515,25 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
 };
 
 // Configuration Modal for tax and benefit rates
+const RateInput = ({ id, label, help, value, onChange, step = '0.001', digits = 2 }) => (
+  <div className="form-group">
+    <label htmlFor={id}>{label}</label>
+    <div className="input-group">
+      <input
+        id={id}
+        type="number"
+        step={step}
+        min="0"
+        max="1"
+        value={value || 0}
+        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+      />
+      <span className="input-suffix">({((value || 0) * 100).toFixed(digits)}%)</span>
+    </div>
+    {help && <small>{help}</small>}
+  </div>
+);
+
 export const ConfigurationModal = ({ config, onSave, onCancel }) => {
   const [formData, setFormData] = useState({});
 
@@ -495,7 +543,6 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    console.log('ConfigurationModal: handleSubmit called');
     onSave(formData);
   };
 
@@ -512,26 +559,25 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
     });
   };
 
+  const set = (field) => (value) => setFormData({ ...formData, [field]: value });
+  const employerRate = (formData.socialSecurityRate || 0) + (formData.medicareRate || 0)
+    + (formData.unemploymentRate || 0) + (formData.workersCompRate || 0);
+
   return (
-    <div className="modal-overlay" onClick={() => {
-      console.log('ConfigurationModal: overlay clicked');
-      onCancel();
-    }}>
+    <div className="modal-overlay" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>Payroll Configuration</h3>
-          <button className="close-btn" onClick={() => {
-            console.log('ConfigurationModal: close button clicked');
-            onCancel();
-          }}>×</button>
+          <button className="close-btn" onClick={onCancel}>×</button>
         </div>
 
         <form onSubmit={handleSubmit} className="modal-content">
           <div className="config-section">
             <h4>Pay Schedule</h4>
             <div className="form-group">
-              <label>Pay Frequency</label>
+              <label htmlFor="payroll-frequency">Pay Frequency</label>
               <select
+                id="payroll-frequency"
                 value={formData.payFrequency || 'biweekly'}
                 onChange={(e) => setFormData({...formData, payFrequency: e.target.value})}
               >
@@ -545,117 +591,41 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
           </div>
 
           <div className="config-section">
-            <h4>Tax Rates</h4>
-            
-            <div className="form-group">
-              <label>Federal Tax Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.federalTaxRate || 0}
-                  onChange={(e) => setFormData({...formData, federalTaxRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.federalTaxRate * 100).toFixed(1)}%)</span>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>State Tax Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.stateTaxRate || 0}
-                  onChange={(e) => setFormData({...formData, stateTaxRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.stateTaxRate * 100).toFixed(1)}%)</span>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Social Security Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.socialSecurityRate || 0}
-                  onChange={(e) => setFormData({...formData, socialSecurityRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.socialSecurityRate * 100).toFixed(1)}%)</span>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Medicare Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.medicareRate || 0}
-                  onChange={(e) => setFormData({...formData, medicareRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.medicareRate * 100).toFixed(2)}%)</span>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Unemployment Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.unemploymentRate || 0}
-                  onChange={(e) => setFormData({...formData, unemploymentRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.unemploymentRate * 100).toFixed(1)}%)</span>
-              </div>
-            </div>
+            <h4>Employer Payroll Taxes (added to payroll cost)</h4>
+            <RateInput id="payroll-ss" label="Social Security Rate (employer)" value={formData.socialSecurityRate}
+              onChange={set('socialSecurityRate')} digits={1} />
+            <RateInput id="payroll-medicare" label="Medicare Rate (employer)" value={formData.medicareRate}
+              onChange={set('medicareRate')} />
+            <RateInput id="payroll-unemployment" label="Unemployment Rate (FUTA / SUTA)" value={formData.unemploymentRate}
+              onChange={set('unemploymentRate')} digits={1} />
+            <RateInput id="payroll-workers-comp" label="Workers' Compensation Rate" value={formData.workersCompRate}
+              onChange={set('workersCompRate')} />
           </div>
 
           <div className="config-section">
-            <h4>Other Costs</h4>
-            
-            <div className="form-group">
-              <label>Benefits Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="1"
-                  value={formData.benefitsRate || 0}
-                  onChange={(e) => setFormData({...formData, benefitsRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.benefitsRate * 100).toFixed(1)}%)</span>
-              </div>
-              <small>Percentage of gross pay for health insurance, retirement, etc.</small>
-            </div>
+            <h4>Benefits (benefits-eligible staff, added to payroll cost)</h4>
+            <RateInput id="payroll-benefits" label="Benefits Rate" value={formData.benefitsRate}
+              onChange={set('benefitsRate')} step="0.01" digits={1}
+              help="Percentage of gross pay for health insurance, retirement, etc." />
+          </div>
 
-            <div className="form-group">
-              <label>Workers' Compensation Rate</label>
-              <div className="input-group">
-                <input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  max="1"
-                  value={formData.workersCompRate || 0}
-                  onChange={(e) => setFormData({...formData, workersCompRate: parseFloat(e.target.value) || 0})}
-                />
-                <span className="input-suffix">({(formData.workersCompRate * 100).toFixed(2)}%)</span>
-              </div>
-            </div>
+          <div className="config-section">
+            <h4>Employee Withholding (not an employer cost)</h4>
+            <RateInput id="payroll-federal" label="Federal Income Tax Rate - employee withholding (not an employer cost)"
+              value={formData.federalTaxRate} onChange={set('federalTaxRate')} digits={1} />
+            <RateInput id="payroll-state" label="State Income Tax Rate - employee withholding (not an employer cost)"
+              value={formData.stateTaxRate} onChange={set('stateTaxRate')} digits={1} />
+            <small>
+              Income tax is withheld from the employee's gross pay. It is shown as withholding and net pay only and
+              never changes payroll cost or the financial statements.
+            </small>
+          </div>
+
+          <div className="config-section">
+            <p className="text-sm" data-testid="burden-preview">
+              Payroll cost = gross pay x {(1 + employerRate + (formData.benefitsRate || 0)).toFixed(4)} for
+              benefits-eligible staff ({(1 + employerRate).toFixed(4)} otherwise).
+            </p>
           </div>
 
           <div className="config-actions">

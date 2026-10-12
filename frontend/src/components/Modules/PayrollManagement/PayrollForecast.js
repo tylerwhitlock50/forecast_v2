@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
 import './PayrollManagement.css';
 import { monthKey, formatDateOnly } from '../../../lib/dates';
+import { PAY_FREQUENCY_LABELS, runTotal } from './payrollView';
 
-const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
+// Pay runs come from /payroll/forecast: total cost is the EMPLOYER cost
+// (gross + employer payroll taxes + benefits). Employee withholding is shown
+// for information; it comes out of gross pay and is not an extra cost.
+const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange, runsPerYear = 26, payFrequency }) => {
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'chart'
   const [showDetails, setShowDetails] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
@@ -54,7 +58,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
       return {
         ...period,
         runningTotal,
-        percentChange: index > 0 ? 
+        percentChange: index > 0 && safeForecast[index - 1].totalCost ?
           ((period.totalCost - safeForecast[index - 1].totalCost) / safeForecast[index - 1].totalCost * 100) : 0
       };
     });
@@ -71,6 +75,17 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
 
   const formatDate = (dateStr) => formatDateOnly(dateStr, { month: 'short', day: 'numeric', year: 'numeric' }, '—');
 
+  const frequencyLabel = PAY_FREQUENCY_LABELS[payFrequency] || '';
+  const horizonOptions = [
+    { value: Math.max(1, Math.round(runsPerYear / 2)), label: '6 months' },
+    { value: runsPerYear, label: '1 year' },
+    { value: runsPerYear * 2, label: '2 years' }
+  ];
+  if (!horizonOptions.some(option => option.value === forecastHorizon)) {
+    horizonOptions.push({ value: forecastHorizon, label: 'custom' });
+    horizonOptions.sort((a, b) => a.value - b.value);
+  }
+
   return (
     <div className="payroll-forecast">
       <div className="payroll-forecast-header">
@@ -79,9 +94,9 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
           <label>
             Forecast Horizon:
             <select value={forecastHorizon} onChange={(e) => onHorizonChange(Number(e.target.value))}>
-              <option value={13}>13 periods (6 months)</option>
-              <option value={26}>26 periods (1 year)</option>
-              <option value={52}>52 periods (2 years)</option>
+              {horizonOptions.map(option => (
+                <option key={option.value} value={option.value}>{option.value} periods ({option.label})</option>
+              ))}
             </select>
           </label>
           
@@ -130,11 +145,11 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
           <h3>Annual Projection</h3>
           <div className="payroll-summary-value">
             {formatCurrency(
-              safeForecast.slice(0, 26).reduce((sum, period) => sum + period.totalCost, 0)
+              safeForecast.slice(0, runsPerYear).reduce((sum, period) => sum + period.totalCost, 0)
             )}
           </div>
           <div className="payroll-summary-detail">
-            26 pay periods
+            {Math.min(runsPerYear, safeForecast.length)} {frequencyLabel ? `${frequencyLabel.toLowerCase()} ` : ''}pay periods
           </div>
         </div>
         
@@ -160,7 +175,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                 <th>Date</th>
                 <th>Employees</th>
                 <th>Gross Pay</th>
-                <th>Total Cost</th>
+                <th title="Gross + employer payroll taxes + benefits">Employer Cost</th>
                 <th>Change</th>
                 <th>Running Total</th>
                 <th>Actions</th>
@@ -172,13 +187,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                   <td>{period.period}</td>
                   <td>{formatDate(period.date)}</td>
                   <td>{period.employeeCount}</td>
-                  <td>
-                    {formatCurrency(
-                      period.employeeDetails?.reduce((sum, emp) => 
-                        sum + (emp.compensation?.grossPay || 0), 0
-                      ) || 0
-                    )}
-                  </td>
+                  <td>{formatCurrency(runTotal(period, 'grossPay'))}</td>
                   <td>{formatCurrency(period.totalCost)}</td>
                   <td className={period.percentChange > 0 ? 'payroll-change-positive' : period.percentChange < 0 ? 'payroll-change-negative' : ''}>
                     {period.percentChange > 0 ? '+' : ''}{period.percentChange.toFixed(1)}%
@@ -204,7 +213,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
 
       {viewMode === 'chart' && (
         <div className="payroll-forecast-chart">
-          <PayrollChart data={trendData} />
+          <PayrollChart data={trendData.slice(0, runsPerYear)} />
         </div>
       )}
 
@@ -243,35 +252,27 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                 </div>
                 <div className="payroll-summary-row">
                   <span>Gross Pay:</span>
-                  <span>{formatCurrency(
-                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
-                      sum + (emp.compensation?.grossPay || 0), 0
-                    ) || 0
-                  )}</span>
+                  <span>{formatCurrency(runTotal(selectedPeriod, 'grossPay'))}</span>
                 </div>
                 <div className="payroll-summary-row">
-                  <span>Total Taxes:</span>
-                  <span>{formatCurrency(
-                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
-                      sum + (emp.compensation?.federalTax || 0) + 
-                      (emp.compensation?.stateTax || 0) + 
-                      (emp.compensation?.socialSecurity || 0) + 
-                      (emp.compensation?.medicare || 0) + 
-                      (emp.compensation?.unemployment || 0), 0
-                    ) || 0
-                  )}</span>
+                  <span>Employer Payroll Taxes:</span>
+                  <span>{formatCurrency(runTotal(selectedPeriod, 'employerTaxes'))}</span>
                 </div>
                 <div className="payroll-summary-row">
                   <span>Benefits:</span>
-                  <span>{formatCurrency(
-                    selectedPeriod.employeeDetails?.reduce((sum, emp) => 
-                      sum + (emp.compensation?.benefits || 0), 0
-                    ) || 0
-                  )}</span>
+                  <span>{formatCurrency(runTotal(selectedPeriod, 'benefits'))}</span>
                 </div>
                 <div className="payroll-summary-row total">
-                  <span>Total Cost:</span>
+                  <span>Total Employer Cost:</span>
                   <span>{formatCurrency(selectedPeriod.totalCost)}</span>
+                </div>
+                <div className="payroll-summary-row" title="Income tax and the employee's FICA withheld from gross pay - not an employer cost">
+                  <span>Employee Withholding (info):</span>
+                  <span>{formatCurrency(runTotal(selectedPeriod, 'withholding'))}</span>
+                </div>
+                <div className="payroll-summary-row">
+                  <span>Net Pay (info):</span>
+                  <span>{formatCurrency(runTotal(selectedPeriod, 'netPay'))}</span>
                 </div>
               </div>
 
@@ -283,7 +284,8 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                       <th>Employee</th>
                       <th>Department</th>
                       <th>Gross Pay</th>
-                      <th>Total Cost</th>
+                      <th>Employer Cost</th>
+                      <th>Net Pay (info)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -293,6 +295,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
                         <td>{emp.department}</td>
                         <td>{formatCurrency(emp.compensation?.grossPay || 0)}</td>
                         <td>{formatCurrency(emp.compensation?.totalCost || 0)}</td>
+                        <td>{formatCurrency(emp.compensation?.netPay || 0)}</td>
                       </tr>
                     )) || []}
                   </tbody>
@@ -324,7 +327,7 @@ const PayrollChart = ({ data }) => {
           <div className="payroll-y-label">${(minCost / 1000).toFixed(0)}k</div>
         </div>
         <div className="payroll-chart-area">
-          {data.slice(0, 26).map((period, index) => {
+          {data.map((period, index) => {
             const height = range > 0 ? ((period.totalCost - minCost) / range * 200) : 100;
             return (
               <div key={period.period} className="payroll-chart-bar">

@@ -3,6 +3,9 @@ import { Button } from '../../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 import { Select, SelectOption } from '../../ui/select';
+import { allocationTotal, mergeBusinessUnits } from './payrollView';
+
+const UNALLOCATED = 'Unallocated';
 
 const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -19,11 +22,14 @@ const BusinessUnitAllocation = ({
   employees,
   businessUnits,
   businessUnitCosts,
-  onEditAllocations
+  onEditAllocations = () => {}
 }) => {
   const safeEmployees = employees || [];
-  const safeBusinessUnits = businessUnits || [];
+  // Columns are the units people can be allocated to; the overview also
+  // shows any unit the API reports (e.g. 'Unallocated' for a shortfall).
+  const safeBusinessUnits = (businessUnits || []).filter(unit => unit !== UNALLOCATED);
   const safeBusinessUnitCosts = businessUnitCosts || {};
+  const overviewUnits = mergeBusinessUnits(safeBusinessUnits, safeBusinessUnitCosts);
 
   const [viewMode, setViewMode] = useState('overview');
   const [selectedBusinessUnit, setSelectedBusinessUnit] = useState('');
@@ -48,7 +54,7 @@ const BusinessUnitAllocation = ({
   const allocationIssues = safeEmployees
     .filter(emp => emp.status === 'active')
     .map(emp => {
-      const total = Object.values(emp.allocations || {}).reduce((sum, val) => sum + val, 0);
+      const total = allocationTotal(emp.allocations);
       if (Math.abs(total - 100) > 0.01) {
         return {
           employee: emp.employee_name,
@@ -118,10 +124,16 @@ const BusinessUnitAllocation = ({
         </Card>
       )}
 
+      <p className="text-sm text-muted-foreground">
+        Each employee's annual employer cost (gross pay + employer payroll taxes + benefits, the same figure the
+        income statement accrues) split by their allocation percentages. Any share not allocated shows as
+        {' '}{UNALLOCATED}, so the units add up to total payroll.
+      </p>
+
       {viewMode === 'overview' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {safeBusinessUnits.map(unit => {
+            {overviewUnits.map(unit => {
               const unitData = safeBusinessUnitCosts[unit] || { employees: 0, totalCost: 0 };
               const unitEmployees = getEmployeesForBusinessUnit(unit);
 
@@ -236,8 +248,7 @@ const BusinessUnitAllocation = ({
                   {safeEmployees
                     .filter(emp => emp.status === 'active')
                     .map(emp => {
-                      const totalAllocation = Object.values(emp.allocations || {})
-                        .reduce((sum, val) => sum + val, 0);
+                      const totalAllocation = allocationTotal(emp.allocations);
                       const isValid = Math.abs(totalAllocation - 100) <= 0.01;
 
                       return (
@@ -245,7 +256,7 @@ const BusinessUnitAllocation = ({
                           <td className="px-3 py-2 text-gray-800">{emp.employee_name}</td>
                           <td className="px-3 py-2 text-gray-600">{emp.department}</td>
                           <td className="px-3 py-2 text-gray-700">
-                            {formatCurrency((emp.hourly_rate || 0) * (emp.weekly_hours || 0) * 52 * 1.4)}
+                            {emp.annual_cost === undefined || emp.annual_cost === null ? '—' : formatCurrency(emp.annual_cost)}
                           </td>
                           {safeBusinessUnits.map(unit => (
                             <td key={unit} className="px-3 py-2 text-gray-700">
@@ -298,7 +309,7 @@ const BusinessUnitAllocation = ({
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {safeBusinessUnits.map(unit => {
+                {overviewUnits.map(unit => {
                   const unitData = safeBusinessUnitCosts[unit] || { employees: 0, totalCost: 0 };
                   return (
                     <div key={unit} className="rounded border p-3">
@@ -386,7 +397,7 @@ const AllocationMatrix = ({ matrix, businessUnits, selectedBusinessUnit, onEditA
             </thead>
             <tbody>
               {filteredMatrix.map(row => {
-                const total = Object.values(row.allocations).reduce((sum, val) => sum + val, 0);
+                const total = allocationTotal(row.employee.allocations);
                 const isValid = Math.abs(total - 100) <= 0.01;
 
                 return (

@@ -1,60 +1,127 @@
 """Reporting tools: statements, variance, actuals, assumptions and capex."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, mcp, require, strip_none
+from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, mcp, require, strip_none
 
-SECTIONS = ("income_statement", "cash_flow", "balance_sheet", "detail", "assumptions", "warnings")
+SECTIONS = ("income_statement", "cash_flow", "balance_sheet", "detail", "assumptions", "carry_forward", "warnings")
+DETAIL_KEYS = (
+    "revenue_by_product", "revenue_by_customer", "revenue_by_customer_type", "sales_deductions",
+    "expenses_by_category", "payroll_by_department", "payroll_by_business_unit", "payroll_headcount",
+    "payroll_employees", "loans", "capex_items",
+)
 ASSUMPTION_FIELDS = (
     "opening_period", "opening_cash", "opening_accounts_receivable", "opening_inventory", "opening_fixed_assets",
     "opening_accumulated_depreciation", "opening_fixed_assets_remaining_life_months", "opening_accounts_payable",
     "opening_other_liabilities", "opening_equity", "dso_days", "dio_days", "dpo_days", "income_tax_rate",
-    "minimum_cash_balance", "notes",
+    "minimum_cash_balance", "excise_payable_days", "notes",
 )
+#: Assumptions that stay null when unset (the API keeps the stored value or plugs / defaults it).
+NULLABLE_ASSUMPTIONS = ("opening_period", "opening_equity", "excise_payable_days", "notes")
 CAPEX_FIELDS = (
     "asset_name", "category", "amount", "purchase_period", "useful_life_months", "salvage_value",
     "depreciation_method", "description", "is_active", "forecast_id",
 )
+#: Windows longer than this many months default to the compact statement view.
+COMPACT_AFTER_MONTHS = 12
 
 Window = Annotated[str, Field(description="YYYY-MM")]
 
 
+def _months(start: str, end: str) -> int:
+    try:
+        (y1, m1), (y2, m2) = (map(int, start.split("-")[:2]), map(int, end.split("-")[:2]))
+        return (y2 - y1) * 12 + (m2 - m1) + 1
+    except ValueError:
+        return 0
+
+
+def _apply_layout(out: Dict[str, Any], layout: str) -> Dict[str, Any]:
+    """by_period lists as {columns, rows} tables (layout='table')."""
+    if layout != "table":
+        return out
+    for stmt in ("income_statement", "cash_flow", "balance_sheet"):
+        section = out.get(stmt)
+        if isinstance(section, dict) and isinstance(section.get("by_period"), list):
+            out[stmt] = {**section, "by_period": as_table(section["by_period"])}
+    return out
+
+
+def _headline(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Totals that answer "what changed" whatever sections were asked for."""
+    out: Dict[str, Any] = {}
+    if isinstance(body.get("income_statement"), dict):
+        out["income_statement_totals"] = body["income_statement"].get("totals")
+    if isinstance(body.get("cash_flow"), dict):
+        out["cash_flow_totals"] = body["cash_flow"].get("totals")
+    if isinstance(body.get("balance_sheet"), dict):
+        out["balance_sheet_closing"] = body["balance_sheet"].get("closing")
+    return out
+
+
 @mcp.tool(name="forecast_financial_statements", annotations=READ)
 async def financial_statements(
-    forecast_ids: Annotated[List[str], Field(description="Scenario ids to include (usually one)", min_length=1)],
+    forecast_ids: Annotated[List[str], Field(description="Scenario ids to include (usually one); an unknown id is an error", min_length=1)],
     start_period: Window,
     end_period: Window,
     include_raises: Annotated[bool, Field(description="Apply scheduled payroll raises")] = True,
-    sections: Annotated[Optional[List[str]], Field(description=f"Subset of {', '.join(SECTIONS)}; omit for everything. Totals are always included.")] = None,
+    sections: Annotated[Optional[List[str]], Field(description=(
+        f"Subset of {', '.join(SECTIONS)}, or one detail table as 'detail.<name>' ({', '.join(DETAIL_KEYS)}). "
+        f"Omit for everything when the window is {COMPACT_AFTER_MONTHS} months or less, or for the compact view "
+        f"(income statement by month + cash-flow totals + closing balance sheet + warnings) on longer windows. "
+        f"Headline totals and warnings are always included."))] = None,
+    layout: Annotated[Literal["table", "records"], Field(description=(
+        "table: each statement's by_period is {columns, rows} with one array per month (default, ~40% smaller); "
+        "records: one object per month"))] = "table",
 ) -> Dict[str, Any]:
-    """Period-by-period income statement, cash flow and balance sheet for a
-    window, built by the statements engine (the single source of truth for
-    every reported number). Each statement has by_period rows and totals;
-    detail holds revenue by product / customer, expenses by category,
-    payroll by department, loans and capex. Use sections to keep the
-    response small, e.g. ['income_statement']."""
+    """Period-by-period income statement (gross sales, sales deductions, net
+    sales = revenue, COGS, gross profit, opex, net income), cash flow and
+    balance sheet for a window, built by the statements engine (the single
+    source of truth for every reported number). Each statement has by_period
+    rows and totals; detail holds revenue by product / customer / customer
+    type, deductions, expenses by category, payroll by department, loans and
+    capex. Use sections to keep the response small, e.g. ['income_statement']
+    or ['detail.revenue_by_product']; a multi-year window defaults to the
+    compact view."""
     body = await call("GET", "/reporting/statements", params={
         "forecast_ids": forecast_ids, "start_period": start_period, "end_period": end_period,
         "include_raises": include_raises,
     })
-    if not sections:
-        return body
-    bad = [s for s in sections if s not in SECTIONS]
+    requested = list(sections or [])
+    top = [s for s in requested if not s.startswith("detail.")]
+    details = [s.split(".", 1)[1] for s in requested if s.startswith("detail.")]
+    bad = [s for s in top if s not in SECTIONS]
     if bad:
-        raise ToolError(f"Unknown sections: {', '.join(bad)}. Choose from {', '.join(SECTIONS)}")
-    keep = {"forecast_ids", "periods", "start_period", "end_period", "generated_at", "message", *sections}
+        raise ToolError(f"Unknown sections: {', '.join(bad)}. Choose from {', '.join(SECTIONS)} "
+                        f"or detail.<name> ({', '.join(DETAIL_KEYS)})")
+    detail_body = body.get("detail") or {}
+    bad_detail = [d for d in details if d not in detail_body]
+    if bad_detail:
+        raise ToolError(f"Unknown detail tables: {', '.join(bad_detail)}. Choose from {', '.join(detail_body) or ', '.join(DETAIL_KEYS)}")
+    months = len(body.get("periods") or []) or _months(start_period, end_period)
+    compact_default = not requested and months > COMPACT_AFTER_MONTHS
+    if not requested and not compact_default:
+        return _apply_layout(body, layout)
+    if compact_default:
+        top = ["income_statement", "warnings"]
+    keep = {"forecast_ids", "start_period", "end_period", "message", "warnings", *top}
     out = {k: v for k, v in body.items() if k in keep}
-    # Always give the headline totals so a trimmed response still answers "what changed".
-    for stmt in ("income_statement", "cash_flow"):
-        if stmt not in out and isinstance(body.get(stmt), dict):
-            out[f"{stmt}_totals"] = body[stmt].get("totals")
-    if "balance_sheet" not in out and isinstance(body.get("balance_sheet"), dict):
-        out["balance_sheet_closing"] = body["balance_sheet"].get("closing")
-    return out
+    out["months"] = months
+    if details and "detail" not in top:
+        out["detail"] = {d: detail_body[d] for d in details}
+    for key, value in _headline(body).items():
+        stmt = key.rsplit("_", 1)[0] if key != "balance_sheet_closing" else "balance_sheet"
+        if stmt not in top:
+            out[key] = value
+    if compact_default:
+        out["note"] = (f"{months}-month window: returned the income statement by month plus headline totals. "
+                       f"Pass sections=[...] (e.g. ['cash_flow'], ['balance_sheet'], ['detail.revenue_by_product']) "
+                       f"for the rest.")
+    return _apply_layout(out, layout)
 
 
 @mcp.tool(name="forecast_variance", annotations=READ)
@@ -113,9 +180,10 @@ async def delete_actuals(
 
 @mcp.tool(name="forecast_get_assumptions", annotations=READ)
 async def get_assumptions(forecast_id: Annotated[str, Field(description="Scenario id")]) -> Dict[str, Any]:
-    """Opening balances (cash, AR, inventory, fixed assets, AP, equity),
-    working-capital days (DSO / DIO / DPO), income tax rate and minimum cash
-    for a scenario. 'found' is false when defaults are in use."""
+    """Opening balances (cash, AR, inventory, fixed assets, AP, equity) as at
+    the end of opening_period, working-capital days (DSO / DIO / DPO, and
+    excise_payable_days for excise tax owed), income tax rate and minimum
+    cash for a scenario. 'found' is false when defaults are in use."""
     return await call("GET", "/reporting/assumptions", params={"forecast_id": require(forecast_id, "forecast_id")})
 
 
@@ -125,8 +193,10 @@ async def update_assumptions(
     updates: Annotated[Dict[str, Any], Field(description=f"Fields to change; any of {', '.join(ASSUMPTION_FIELDS)}. Rates are fractions (0.21 = 21%), days are numbers.")],
 ) -> Dict[str, Any]:
     """Save financial assumptions for a scenario. Only the fields given change;
-    the rest keep their current (or default) values. opening_equity left null
-    is plugged so the opening balance sheet balances."""
+    the rest keep their current (or default) values. opening_period (YYYY-MM)
+    is the month the opening balances are stated at; the model starts the
+    month after. opening_equity left null is plugged so the opening balance
+    sheet balances."""
     forecast_id = require(forecast_id, "forecast_id")
     unknown = [k for k in updates if k not in ASSUMPTION_FIELDS]
     if unknown:
@@ -137,7 +207,7 @@ async def update_assumptions(
     merged = {k: current.get(k) for k in ASSUMPTION_FIELDS}
     merged.update(updates)
     for key in ASSUMPTION_FIELDS:
-        if merged.get(key) is None and key not in ("opening_period", "opening_equity", "notes"):
+        if merged.get(key) is None and key not in NULLABLE_ASSUMPTIONS:
             merged[key] = 0 if key == "opening_fixed_assets_remaining_life_months" else 0.0
     return await call("PUT", "/reporting/assumptions", params={"forecast_id": forecast_id}, json=merged)
 
