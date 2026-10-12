@@ -296,3 +296,25 @@ export const formatPct = (value, options = {}) => {
   if (isNaN(num)) return dash;
   return `${num.toFixed(decimals)}%`;
 };
+
+// ['2027-01','2027-02','2027-03','2027-05'] -> "Jan – Mar 2027, May 2027".
+// Consecutive months collapse into ranges so long period lists stay readable.
+export const formatPeriodRanges = (periods) => {
+  const valid = [...new Set((periods || []).filter(p => /^\d{4}-\d{2}$/.test(p)))].sort();
+  const others = (periods || []).filter(p => !/^\d{4}-\d{2}$/.test(p));
+  const index = (p) => Number(p.slice(0, 4)) * 12 + Number(p.slice(5, 7)) - 1;
+  const runs = [];
+  valid.forEach(p => {
+    const last = runs[runs.length - 1];
+    if (last && index(p) === index(last.end) + 1) last.end = p;
+    else runs.push({ start: p, end: p });
+  });
+  const label = ({ start, end }) => {
+    if (start === end) return formatPeriod(start);
+    if (start.slice(0, 4) === end.slice(0, 4)) {
+      return `${formatPeriod(start).split(' ')[0]} – ${formatPeriod(end)}`;
+    }
+    return `${formatPeriod(start)} – ${formatPeriod(end)}`;
+  };
+  return [...runs.map(label), ...others].join(', ');
+};

@@ -1,98 +1,157 @@
 import React from 'react';
 import { Button } from '../../../ui/button';
+import { cn } from '../../../../lib/utils';
+import { formatPeriod } from '../utils/formatters';
+import { monthsInWindow, sameWindow } from '../../../../lib/scenarioWindow';
 
 const MONTHS = [
-  { value: '01', label: 'January' },
-  { value: '02', label: 'February' },
-  { value: '03', label: 'March' },
-  { value: '04', label: 'April' },
-  { value: '05', label: 'May' },
-  { value: '06', label: 'June' },
-  { value: '07', label: 'July' },
-  { value: '08', label: 'August' },
-  { value: '09', label: 'September' },
-  { value: '10', label: 'October' },
-  { value: '11', label: 'November' },
-  { value: '12', label: 'December' }
+  { value: '01', label: 'January', short: 'Jan' },
+  { value: '02', label: 'February', short: 'Feb' },
+  { value: '03', label: 'March', short: 'Mar' },
+  { value: '04', label: 'April', short: 'Apr' },
+  { value: '05', label: 'May', short: 'May' },
+  { value: '06', label: 'June', short: 'Jun' },
+  { value: '07', label: 'July', short: 'Jul' },
+  { value: '08', label: 'August', short: 'Aug' },
+  { value: '09', label: 'September', short: 'Sep' },
+  { value: '10', label: 'October', short: 'Oct' },
+  { value: '11', label: 'November', short: 'Nov' },
+  { value: '12', label: 'December', short: 'Dec' }
 ];
 
-const ym = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+export const calculateMonthsDifference = (start, end) => monthsInWindow({ start, end });
 
-export const calculateMonthsDifference = (start, end) => {
-  const [startYear, startMonth] = start.split('-').map(Number);
-  const [endYear, endMonth] = end.split('-').map(Number);
-  return (endYear - startYear) * 12 + (endMonth - startMonth) + 1;
+/**
+ * Years offered in the pickers: a band around today plus a band around the
+ * selected window, so a 2027 (or 2031) budget is always reachable.
+ */
+export const yearOptions = (period, now = new Date()) => {
+  const current = now.getFullYear();
+  const years = new Set();
+  for (let y = current - 3; y <= current + 5; y += 1) years.add(y);
+  [period?.start, period?.end].forEach(p => {
+    const y = parseInt(String(p || '').slice(0, 4), 10);
+    if (y) for (let d = -2; d <= 2; d += 1) years.add(y + d);
+  });
+  return [...years].sort((a, b) => a - b);
 };
 
-const ReportingControls = ({ period, onPeriodChange }) => {
-  const currentYear = new Date().getFullYear();
-  const years = Array.from({ length: 7 }, (_, i) => currentYear - 3 + i);
-  const selectClass = 'block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-sm';
+/** Keep start <= end: moving one bound past the other drags the other along. */
+export const orderedWindow = (start, end, changed = 'start') => {
+  if (start <= end) return { start, end };
+  return changed === 'start' ? { start, end: start } : { start: end, end };
+};
 
-  const [startYear, startMonth] = period.start.split('-');
-  const [endYear, endMonth] = period.end.split('-');
+const pad = (n) => String(n).padStart(2, '0');
 
-  const setRange = (start, end) => onPeriodChange({ start, end });
-  const setYearRange = (year, m1 = 1, m2 = 12) =>
-    setRange(`${year}-${String(m1).padStart(2, '0')}`, `${year}-${String(m2).padStart(2, '0')}`);
-  const setRolling = (offsetStart, offsetEnd) => {
-    const now = new Date();
-    setRange(ym(new Date(now.getFullYear(), now.getMonth() + offsetStart, 1)), ym(new Date(now.getFullYear(), now.getMonth() + offsetEnd, 1)));
-  };
+const selectClass = 'block w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm shadow-sm focus:border-orange-500 focus:outline-none focus:ring-1 focus:ring-orange-500';
+
+/** Month + year selects for one end of the window. */
+const MonthYear = ({ value, onChange, years, label, compact }) => {
+  const [year, month] = value.split('-');
+  return (
+    <div className={cn('grid gap-2', compact ? 'grid-cols-[5rem_5.5rem]' : 'grid-cols-2')}>
+      <select value={month} onChange={e => onChange(`${year}-${e.target.value}`)} className={selectClass} aria-label={`${label} month`}>
+        {MONTHS.map(m => <option key={m.value} value={m.value}>{m.short}</option>)}
+      </select>
+      <select value={year} onChange={e => onChange(`${e.target.value}-${month}`)} className={selectClass} aria-label={`${label} year`}>
+        {years.map(y => <option key={y} value={y}>{y}</option>)}
+      </select>
+    </div>
+  );
+};
+
+/**
+ * Reporting window picker.
+ *
+ * period:          { start, end } 'YYYY-MM'
+ * onPeriodChange:  (period) => void
+ * defaultWindow:   the scenario's default window (offered as a quick pick)
+ * compact:         one-line layout for page headers
+ */
+const ReportingControls = ({ period, onPeriodChange, defaultWindow, compact = false }) => {
+  const years = yearOptions(period);
+  const year = Number(period.start.slice(0, 4));
+  const months = calculateMonthsDifference(period.start, period.end);
+  const isDefault = sameWindow(period, defaultWindow);
+
+  const setStart = (start) => onPeriodChange(orderedWindow(start, period.end, 'start'));
+  const setEnd = (end) => onPeriodChange(orderedWindow(period.start, end, 'end'));
+  const setYearRange = (y, m1 = 1, m2 = 12) => onPeriodChange({ start: `${y}-${pad(m1)}`, end: `${y}-${pad(m2)}` });
+
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <MonthYear value={period.start} onChange={setStart} years={years} label="Start" compact />
+        <span className="text-gray-500">to</span>
+        <MonthYear value={period.end} onChange={setEnd} years={years} label="End" compact />
+        <span className="ml-1 text-xs text-gray-500 tabular-nums">{months} month{months === 1 ? '' : 's'}</span>
+        {defaultWindow && !isDefault && (
+          <button
+            type="button"
+            onClick={() => onPeriodChange(defaultWindow)}
+            className="ml-1 text-xs font-medium text-orange-700 hover:underline"
+          >
+            Reset to scenario window
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const quick = [
-    { label: 'Current Year', onClick: () => setYearRange(currentYear) },
-    { label: 'Next Year', onClick: () => setYearRange(currentYear + 1) },
-    { label: 'Last Year', onClick: () => setYearRange(currentYear - 1) },
-    { label: `Q1 ${currentYear}`, onClick: () => setYearRange(currentYear, 1, 3) },
-    { label: `Q2 ${currentYear}`, onClick: () => setYearRange(currentYear, 4, 6) },
-    { label: `Q3 ${currentYear}`, onClick: () => setYearRange(currentYear, 7, 9) },
-    { label: `Q4 ${currentYear}`, onClick: () => setYearRange(currentYear, 10, 12) },
-    { label: 'Next 12 Months', onClick: () => setRolling(0, 11) },
-    { label: 'Last 12 Months', onClick: () => setRolling(-12, -1) }
+    ...(defaultWindow ? [{
+      label: `Scenario window (${formatPeriod(defaultWindow.start)} – ${formatPeriod(defaultWindow.end)})`,
+      onClick: () => onPeriodChange(defaultWindow),
+      active: isDefault
+    }] : []),
+    ...(sameWindow(defaultWindow, { start: `${year}-01`, end: `${year}-12` }) ? [] : [
+      { label: `Full year ${year}`, onClick: () => setYearRange(year), active: period.start === `${year}-01` && period.end === `${year}-12` }
+    ]),
+    ...[1, 2, 3, 4].map(q => ({
+      label: `Q${q} ${year}`,
+      onClick: () => setYearRange(year, q * 3 - 2, q * 3),
+      active: period.start === `${year}-${pad(q * 3 - 2)}` && period.end === `${year}-${pad(q * 3)}`
+    })),
+    { label: `← ${year - 1}`, onClick: () => setYearRange(year - 1), title: 'Previous calendar year' },
+    { label: `${year + 1} →`, onClick: () => setYearRange(year + 1), title: 'Next calendar year' }
   ];
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Start Period</label>
-          <div className="grid grid-cols-2 gap-2">
-            <select value={startMonth} onChange={e => onPeriodChange({ ...period, start: `${startYear}-${e.target.value}` })} className={selectClass} aria-label="Start month">
-              {MONTHS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-            <select value={startYear} onChange={e => onPeriodChange({ ...period, start: `${e.target.value}-${startMonth}` })} className={selectClass} aria-label="Start year">
-              {years.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
+          <label className="mb-1.5 block text-sm font-medium text-gray-700">From</label>
+          <MonthYear value={period.start} onChange={setStart} years={years} label="Start" />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">End Period</label>
-          <div className="grid grid-cols-2 gap-2">
-            <select value={endMonth} onChange={e => onPeriodChange({ ...period, end: `${endYear}-${e.target.value}` })} className={selectClass} aria-label="End month">
-              {MONTHS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-            <select value={endYear} onChange={e => onPeriodChange({ ...period, end: `${e.target.value}-${endMonth}` })} className={selectClass} aria-label="End year">
-              {years.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </div>
+          <label className="mb-1.5 block text-sm font-medium text-gray-700">To</label>
+          <MonthYear value={period.end} onChange={setEnd} years={years} label="End" />
         </div>
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Quick Periods</label>
-        <div className="flex flex-wrap gap-2">
-          {quick.map(q => (
-            <Button key={q.label} variant="outline" size="sm" onClick={q.onClick}>{q.label}</Button>
-          ))}
-        </div>
+      <div className="flex flex-wrap gap-2">
+        {quick.map(q => (
+          <Button
+            key={q.label}
+            variant="outline"
+            size="sm"
+            title={q.title}
+            onClick={q.onClick}
+            className={cn('h-8 px-2.5 text-xs', q.active && 'border-orange-300 bg-orange-50 text-orange-800 hover:bg-orange-100')}
+          >
+            {q.label}
+          </Button>
+        ))}
       </div>
 
-      <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg">
-        <strong>Selected Period:</strong> {period.start} to {period.end}
-        <br />
-        <span className="text-xs">Duration: {calculateMonthsDifference(period.start, period.end)} months</span>
-      </div>
+      <p className="text-sm text-gray-600" data-testid="selected-window">
+        <span className="font-medium text-gray-900">{formatPeriod(period.start)} – {formatPeriod(period.end)}</span>
+        <span className="text-gray-500"> · {months} month{months === 1 ? '' : 's'}</span>
+        {defaultWindow && (
+          <span className="text-gray-500">{isDefault ? ' · the scenario window' : ' · custom window'}</span>
+        )}
+      </p>
     </div>
   );
 };

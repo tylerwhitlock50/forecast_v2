@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import BalanceSheet from '../components/BalanceSheet';
+import BalanceSheet, { normalizeOpening } from '../components/BalanceSheet';
 
 const balanceRow = (period, cash, extra = {}) => ({
   period, cash, accounts_receivable: 0, inventory: 0, total_current_assets: cash,
@@ -30,3 +30,22 @@ describe('BalanceSheet carry-forward', () => {
     expect(screen.queryByTestId('carry-forward-note')).not.toBeInTheDocument();
   });
 });
+
+describe('BalanceSheet excise tax payable', () => {
+  it('lists excise tax payable under accounts payable and counts it in the opening liabilities', () => {
+    const data = {
+      opening: { period: '2026-12', cash: 1000, accounts_receivable: 0, inventory: 0, fixed_assets_net: 0, accounts_payable: 100, other_liabilities: 0, debt: 0, equity: 900 },
+      by_period: [balanceRow('2027-01', 3900, { accounts_payable: 0, excise_tax_payable: 250 })],
+      closing: balanceRow('2027-01', 3900)
+    };
+    render(<BalanceSheet data={data} />);
+    const labels = screen.getAllByRole('rowheader').map(th => th.textContent);
+    expect(labels.indexOf('Excise tax payable')).toBe(labels.indexOf('Accounts payable') + 1);
+    const row = screen.getAllByRole('row').find(r => r.textContent.startsWith('Excise tax payable'));
+    expect(row.textContent).toContain('250');
+    const opening = normalizeOpening({ ...data.opening, excise_tax_payable: 40 });
+    expect(opening.total_current_liabilities).toBe(140);
+    expect(opening.working_capital).toBe(860);
+  });
+});
+

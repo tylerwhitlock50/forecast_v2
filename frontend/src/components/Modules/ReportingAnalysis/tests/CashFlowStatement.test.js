@@ -53,3 +53,14 @@ describe('CashFlowStatement aggregation', () => {
     expect(screen.getByTestId('cash-reconciliation')).toHaveClass('text-red-600');
   });
 });
+
+describe('CashFlowStatement excise tax payable', () => {
+  it('shows the change in excise tax payable inside operating activities', () => {
+    const withExcise = { ...data, by_period: byPeriod.map(r => ({ ...r, change_in_excise_tax_payable: 150 })), totals: { ...data.totals, change_in_excise_tax_payable: 450 } };
+    render(<CashFlowStatement data={withExcise} />);
+    expect(cells('Change in excise tax payable')).toEqual(['150', '150', '150', '450']);
+    const labels = screen.getAllByRole('rowheader').map(th => th.textContent);
+    expect(labels.indexOf('Change in excise tax payable')).toBeLessThan(labels.indexOf('Cash from operations'));
+  });
+});
+
