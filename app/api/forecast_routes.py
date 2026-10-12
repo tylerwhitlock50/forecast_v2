@@ -14,18 +14,13 @@ router = APIRouter(prefix="/forecast", tags=["forecast"])
 @router.get("", response_model=ForecastResponse)
 async def get_forecast(forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")):
     """
-    Returns computed forecast state with joined data
+    Legacy read-only forecast view: sales joined with customers / products and
+    a per-row cost estimate from utils.cost_rollup (forecast_results), limited
+    to forecast_id when given. Nothing is written.
     """
-    result = get_forecast_data()
+    result = get_forecast_data(forecast_id=forecast_id)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
-    
-    # If forecast_id is provided, filter the sales data
-    if forecast_id and result["data"].get("sales_forecast"):
-        result["data"]["sales_forecast"] = [
-            sale for sale in result["data"]["sales_forecast"] 
-            if sale.get("forecast_id") == forecast_id
-        ]
     
     return ForecastResponse(
         status="success",
@@ -588,7 +583,8 @@ async def compare_forecast_scenarios(
             else:
                 placeholders = ",".join("?" for _ in ids)
                 cursor.execute(
-                    f"SELECT MIN(period), MAX(period) FROM sales WHERE forecast_id IN ({placeholders}) AND period IS NOT NULL",
+                    f"SELECT MIN(substr(period, 1, 7)), MAX(substr(period, 1, 7)) FROM sales "
+                    f"WHERE forecast_id IN ({placeholders}) AND substr(period, 1, 7) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'",
                     ids,
                 )
                 lo, hi = cursor.fetchone()
@@ -603,7 +599,8 @@ async def compare_forecast_scenarios(
                     "is_base": bool(meta[1]) if meta else False,
                     "start_period": window[0] if window else None,
                     "end_period": window[1] if window else None,
-                    "revenue": 0.0, "cogs": 0.0, "gross_profit": 0.0,
+                    "gross_sales": 0.0, "total_sales_deductions": 0.0,
+                    "revenue": 0.0, "cogs": 0.0, "gross_profit": 0.0, "commissions": 0.0,
                     "payroll": 0.0, "expenses": 0.0, "operating_income": 0.0, "net_income": 0.0,
                     "closing_cash": None,
                 }
@@ -611,9 +608,12 @@ async def compare_forecast_scenarios(
                     stmt = build_statements(cursor, [fid], window[0], window[1])
                     t = stmt["income_statement"]["totals"]
                     row.update({
+                        "gross_sales": t.get("gross_sales", 0.0),
+                        "total_sales_deductions": t.get("total_sales_deductions", 0.0),
                         "revenue": t.get("revenue", 0.0),
                         "cogs": t.get("total_cogs", 0.0),
                         "gross_profit": t.get("gross_profit", 0.0),
+                        "commissions": t.get("commissions", 0.0),
                         "payroll": t.get("payroll", 0.0),
                         "expenses": t.get("admin_expense", 0.0) + t.get("operating_expense", 0.0) + t.get("depreciation", 0.0),
                         "operating_income": t.get("operating_income", 0.0),
@@ -643,12 +643,14 @@ async def compare_forecast_scenarios(
 @router.get("/results", response_model=ForecastResponse)
 async def get_saved_forecast_results_endpoint(
     period: Optional[str] = Query(None, description="Filter by period (e.g., '2024-01')"),
-    limit: Optional[int] = Query(None, description="Limit number of results")
+    limit: Optional[int] = Query(None, description="Limit number of results"),
+    forecast_id: Optional[str] = Query(None, description="Limit to one scenario"),
 ):
     """
-    Get saved forecast results from the database
+    Per-sales-row cost and margin estimate (utils.cost_rollup), computed on
+    request; read-only. Reporting numbers come from /reporting/*.
     """
-    result = get_saved_forecast_results(period=period, limit=limit)
+    result = get_saved_forecast_results(period=period, limit=limit, forecast_id=forecast_id)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
     
@@ -662,228 +664,184 @@ async def get_saved_forecast_results_endpoint(
         message=f"Retrieved {len(result['data'])} forecast results"
     )
 
+
+# Columns the bulk customer / product imports write, with the extra names they accept.
+_BULK_MASTER_SPECS: Dict[str, Dict[str, Any]] = {
+    "customers": {
+        "key": "customer_id", "name": "customer_name", "prefix": "CUST-", "label": "customers",
+        "columns": {"customer_id": (), "customer_name": (), "customer_type": (), "region": ()},
+    },
+    "units": {
+        "key": "unit_id", "name": "unit_name", "prefix": "PROD-", "label": "products",
+        "columns": {"unit_id": ("product_id",), "unit_name": ("product_name",),
+                    "unit_description": ("product_description",), "base_price": (),
+                    "unit_type": ("product_type",), "bom_id": (), "bom_version": (), "router_id": (),
+                    "router_version": ()},
+    },
+}
+_MERGE_STRATEGIES = ("skip", "update", "create_new")
+
+
+def _bulk_master_values(spec: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The non-blank cells of one import row by column: aliases resolved,
+    base_price parsed ('$1,299.00'; ColumnValueError when not a number),
+    versions normalized ('1' -> '1.0'), everything else as trimmed text.
+    Blank cells are left out, so they never overwrite or store ''.
+    """
+    from api.import_routes import normalize_version
+    from utils.data_loader import is_blank, parse_number
+
+    values: Dict[str, Any] = {}
+    for column, aliases in spec["columns"].items():
+        for name in (column, *aliases):
+            value = row.get(name)
+            if not is_blank(value):
+                break
+        else:
+            continue
+        if column == "base_price":
+            values[column] = parse_number(value, column)
+        elif column in ("bom_version", "router_version"):
+            values[column] = normalize_version(value)
+        else:
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            values[column] = str(value).strip()
+    return values
+
+
+def _bulk_upsert_master(table: str, rows: List[Any], merge_strategy: str) -> Dict[str, Any]:
+    """
+    Shared body of bulk_create_customers / bulk_create_products.
+
+    ``skip`` leaves existing ids alone; ``update`` changes only the columns a
+    row fills in (blank or missing cells keep the stored value, so a price
+    refresh never unlinks a product's BOM or routing); ``create_new`` inserts
+    an existing id under the next free CUST-### / PROD-### id. New rows store
+    NULL, not '', for blank cells. A row that fails is reported in ``errors``
+    and the others are saved. Returns the counts plus per-row ``records``
+    ({row, id, action, fields}).
+    """
+    from db.database import db_manager
+    from api.import_routes import next_sequential_id
+    from utils.data_loader import ColumnValueError
+
+    spec = _BULK_MASTER_SPECS[table]
+    key_col, name_col = spec["key"], spec["name"]
+    created = updated = skipped = unchanged = 0
+    errors: List[Dict[str, Any]] = []
+    records: List[Dict[str, Any]] = []
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                errors.append({"row": index, "error": "each row must be an object of column: value"})
+                continue
+            try:
+                values = _bulk_master_values(spec, row)
+            except ColumnValueError as exc:
+                errors.append({"row": index, "error": str(exc)})
+                continue
+            record_id = values.get(key_col)
+            if not record_id or not values.get(name_col):
+                errors.append({"row": index, "error": f"Missing {key_col} or {name_col}"})
+                continue
+            cursor.execute(f"SELECT * FROM {table} WHERE {key_col} = ?", (record_id,))
+            found = cursor.fetchone()
+            try:
+                if found is not None and merge_strategy == "skip":
+                    skipped += 1
+                    records.append({"row": index, key_col: record_id, "action": "skipped"})
+                    continue
+                if found is not None and merge_strategy == "update":
+                    current = dict(zip([d[0] for d in cursor.description], found))
+                    changed = {k: v for k, v in values.items() if k != key_col and current.get(k) != v}
+                    if changed:
+                        cursor.execute(f"UPDATE {table} SET {', '.join(f'{k} = ?' for k in changed)} "
+                                       f"WHERE {key_col} = ?", [*changed.values(), record_id])
+                        updated += 1
+                        records.append({"row": index, key_col: record_id, "action": "updated",
+                                        "fields": sorted(changed)})
+                    else:
+                        unchanged += 1
+                        records.append({"row": index, key_col: record_id, "action": "unchanged"})
+                    continue
+                if found is not None:  # create_new
+                    record_id = next_sequential_id(cursor, table, key_col, spec["prefix"], 3)
+                    values[key_col] = record_id
+                cols = list(values)
+                cursor.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                               [values[c] for c in cols])
+                created += 1
+                records.append({"row": index, key_col: record_id, "action": "created"})
+            except sqlite3.Error as exc:
+                errors.append({"row": index, "error": str(exc)})
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        db_manager.close_connection(conn)
+
+    message = (f"Processed {len(rows)} {spec['label']}: {created} created, {updated} updated, {skipped} skipped"
+               + (f", {unchanged} unchanged" if unchanged else "")
+               + (f", {len(errors)} with errors" if errors else ""))
+    return {"created": created, "updated": updated, "skipped": skipped, "unchanged": unchanged,
+            "errors": errors, "records": records[:1000], "message": message}
+
+
 @router.post("/bulk_create_customers", response_model=ForecastResponse)
 async def bulk_create_customers(customers_data: Dict[str, Any]):
     """
-    Bulk create customers from CSV import
+    Bulk create customers from CSV import.
+
+    Body: ``{customers: [{customer_id, customer_name, customer_type?,
+    region?}], options: {merge_strategy: 'skip'|'update'|'create_new'}}``.
+    ``update`` changes only the columns a row fills in. Responds with
+    created / updated / skipped / unchanged counts, ``errors`` [{row, error}]
+    and per-row ``records``.
     """
+    customers = customers_data.get('customers', [])
+    options = customers_data.get('options') or {}
+    merge_strategy = options.get('merge_strategy', 'skip')
+    if not customers or not isinstance(customers, list):
+        raise HTTPException(status_code=400, detail="No customer data provided")
+    if merge_strategy not in _MERGE_STRATEGIES:
+        raise HTTPException(status_code=422, detail=f"merge_strategy must be one of {', '.join(_MERGE_STRATEGIES)}")
     try:
-        from db.database import db_manager
-        
-        conn = db_manager.get_connection()
-        cursor = conn.cursor()
-        
-        customers = customers_data.get('customers', [])
-        options = customers_data.get('options', {})
-        merge_strategy = options.get('merge_strategy', 'skip')  # 'skip', 'update', 'create_new'
-        
-        if not customers:
-            raise HTTPException(status_code=400, detail="No customer data provided")
-        
-        created_count = 0
-        updated_count = 0
-        skipped_count = 0
-        errors = []
-        
-        for idx, customer in enumerate(customers):
-            try:
-                customer_id = customer.get('customer_id')
-                customer_name = customer.get('customer_name', '')
-                
-                if not customer_id or not customer_name:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': 'Missing customer_id or customer_name'
-                    })
-                    continue
-                
-                # Check if customer exists
-                cursor.execute("SELECT customer_id FROM customers WHERE customer_id = ?", (customer_id,))
-                exists = cursor.fetchone()
-                
-                if exists:
-                    if merge_strategy == 'skip':
-                        skipped_count += 1
-                        continue
-                    elif merge_strategy == 'update':
-                        cursor.execute("""
-                            UPDATE customers 
-                            SET customer_name = ?, customer_type = ?, region = ?
-                            WHERE customer_id = ?
-                        """, (
-                            customer_name,
-                            customer.get('customer_type', ''),
-                            customer.get('region', ''),
-                            customer_id
-                        ))
-                        updated_count += 1
-                    elif merge_strategy == 'create_new':
-                        # Generate new ID
-                        cursor.execute("SELECT customer_id FROM customers ORDER BY customer_id DESC LIMIT 1")
-                        last = cursor.fetchone()
-                        if last and last[0].startswith('CUST-'):
-                            num = int(last[0].split('-')[1]) + 1
-                            customer_id = f"CUST-{num:03d}"
-                        else:
-                            customer_id = "CUST-001"
-                        cursor.execute("""
-                            INSERT INTO customers (customer_id, customer_name, customer_type, region)
-                            VALUES (?, ?, ?, ?)
-                        """, (
-                            customer_id,
-                            customer_name,
-                            customer.get('customer_type', ''),
-                            customer.get('region', '')
-                        ))
-                        created_count += 1
-                else:
-                    cursor.execute("""
-                        INSERT INTO customers (customer_id, customer_name, customer_type, region)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        customer_id,
-                        customer_name,
-                        customer.get('customer_type', ''),
-                        customer.get('region', '')
-                    ))
-                    created_count += 1
-            except Exception as e:
-                errors.append({
-                    'row': idx + 1,
-                    'error': str(e)
-                })
-        
-        conn.commit()
-        db_manager.close_connection(conn)
-        
-        return ForecastResponse(
-            status="success",
-            data={
-                'created': created_count,
-                'updated': updated_count,
-                'skipped': skipped_count,
-                'errors': errors
-            },
-            message=f"Processed {len(customers)} customers: {created_count} created, {updated_count} updated, {skipped_count} skipped"
-        )
+        result = _bulk_upsert_master("customers", customers, merge_strategy)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error bulk creating customers: {str(e)}")
+    message = result.pop("message")
+    return ForecastResponse(status="success", data=result, message=message)
 
 @router.post("/bulk_create_products", response_model=ForecastResponse)
 async def bulk_create_products(products_data: Dict[str, Any]):
     """
-    Bulk create products from CSV import
+    Bulk create products (units) from CSV import.
+
+    Body: ``{products: [{unit_id (or product_id), unit_name (or
+    product_name), unit_description?, base_price? ('$1,299.00' accepted),
+    unit_type?, bom_id?, bom_version?, router_id?, router_version?}],
+    options: {merge_strategy}}``. ``update`` changes only the columns a row
+    fills in, so refreshing prices never unlinks BOMs or routings. Same
+    response as bulk_create_customers.
     """
+    products = products_data.get('products', [])
+    options = products_data.get('options') or {}
+    merge_strategy = options.get('merge_strategy', 'skip')
+    if not products or not isinstance(products, list):
+        raise HTTPException(status_code=400, detail="No product data provided")
+    if merge_strategy not in _MERGE_STRATEGIES:
+        raise HTTPException(status_code=422, detail=f"merge_strategy must be one of {', '.join(_MERGE_STRATEGIES)}")
     try:
-        from db.database import db_manager
-        
-        conn = db_manager.get_connection()
-        cursor = conn.cursor()
-        
-        products = products_data.get('products', [])
-        options = products_data.get('options', {})
-        merge_strategy = options.get('merge_strategy', 'skip')  # 'skip', 'update', 'create_new'
-        
-        if not products:
-            raise HTTPException(status_code=400, detail="No product data provided")
-        
-        created_count = 0
-        updated_count = 0
-        skipped_count = 0
-        errors = []
-        
-        for idx, product in enumerate(products):
-            try:
-                unit_id = product.get('unit_id') or product.get('product_id')
-                unit_name = product.get('unit_name') or product.get('product_name', '')
-                
-                if not unit_id or not unit_name:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': 'Missing unit_id or unit_name'
-                    })
-                    continue
-                
-                # Check if product exists
-                cursor.execute("SELECT unit_id FROM units WHERE unit_id = ?", (unit_id,))
-                exists = cursor.fetchone()
-                
-                if exists:
-                    if merge_strategy == 'skip':
-                        skipped_count += 1
-                        continue
-                    elif merge_strategy == 'update':
-                        cursor.execute("""
-                            UPDATE units 
-                            SET unit_name = ?, unit_description = ?, base_price = ?, unit_type = ?, bom_id = ?, router_id = ?
-                            WHERE unit_id = ?
-                        """, (
-                            unit_name,
-                            product.get('unit_description', ''),
-                            product.get('base_price', 0) or 0,
-                            product.get('unit_type', ''),
-                            product.get('bom_id', ''),
-                            product.get('router_id', ''),
-                            unit_id
-                        ))
-                        updated_count += 1
-                    elif merge_strategy == 'create_new':
-                        # Generate new ID
-                        cursor.execute("SELECT unit_id FROM units ORDER BY unit_id DESC LIMIT 1")
-                        last = cursor.fetchone()
-                        if last and last[0].startswith('PROD-'):
-                            num = int(last[0].split('-')[1]) + 1
-                            unit_id = f"PROD-{num:03d}"
-                        else:
-                            unit_id = "PROD-001"
-                        cursor.execute("""
-                            INSERT INTO units (unit_id, unit_name, unit_description, base_price, unit_type, bom_id, router_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            unit_id,
-                            unit_name,
-                            product.get('unit_description', ''),
-                            product.get('base_price', 0) or 0,
-                            product.get('unit_type', ''),
-                            product.get('bom_id', ''),
-                            product.get('router_id', '')
-                        ))
-                        created_count += 1
-                else:
-                    cursor.execute("""
-                        INSERT INTO units (unit_id, unit_name, unit_description, base_price, unit_type, bom_id, router_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        unit_id,
-                        unit_name,
-                        product.get('unit_description', ''),
-                        product.get('base_price', 0) or 0,
-                        product.get('unit_type', ''),
-                        product.get('bom_id', ''),
-                        product.get('router_id', '')
-                    ))
-                    created_count += 1
-            except Exception as e:
-                errors.append({
-                    'row': idx + 1,
-                    'error': str(e)
-                })
-        
-        conn.commit()
-        db_manager.close_connection(conn)
-        
-        return ForecastResponse(
-            status="success",
-            data={
-                'created': created_count,
-                'updated': updated_count,
-                'skipped': skipped_count,
-                'errors': errors
-            },
-            message=f"Processed {len(products)} products: {created_count} created, {updated_count} updated, {skipped_count} skipped"
-        )
+        result = _bulk_upsert_master("units", products, merge_strategy)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error bulk creating products: {str(e)}")
+    message = result.pop("message")
+    return ForecastResponse(status="success", data=result, message=message)
 
 @router.post("/smart_import_sales", response_model=ForecastResponse)
 async def smart_import_sales(sales_data: Dict[str, Any]):

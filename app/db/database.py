@@ -1,7 +1,27 @@
 import sqlite3
 import os
+import re
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
+
+
+def _normalize_bom_version(value: Any) -> str:
+    """BOM version as stored: 1 / '1' / 1.0 / 'v1' -> '1.0', '1.5' -> '1.5', blank -> '1.0'."""
+    if value is None or (isinstance(value, float) and value != value) or not str(value).strip():
+        return '1.0'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{int(value)}.0" if float(value).is_integer() else str(value)
+    text = str(value).strip()
+    if re.match(r"^[vV]\d", text):
+        text = text[1:]
+    return f"{int(text)}.0" if text.isdigit() else text
+
+
+def _bom_version_key(version: Any) -> Tuple:
+    """Sort key so '10.0' > '9.0' > '2.0' > '1.0' (text parts sort after numbers)."""
+    parts = re.split(r"[.\-_\s]+", str(version or "").strip().lstrip("vV"))
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in parts if p)
+
 
 class DatabaseManager:
     def __init__(self, database_path: str = None, data_dir: str = None):
@@ -742,16 +762,29 @@ class DatabaseManager:
             'expense_allocations.csv': 'expense_allocations',  # -> expenses
         }
         
+        bom_names: Dict[str, str] = {}
         for csv_file, table_name in csv_mappings.items():
             csv_path = os.path.join(self.data_dir, csv_file)
             if os.path.exists(csv_path):
                 try:
                     df = pd.read_csv(csv_path)
-                    
+
                     # Handle versioning for BOM and routing tables
                     if table_name == 'bom':
-                        if 'version' not in df.columns:
-                            df['version'] = '1.0'
+                        # '1' / 1 / 1.0 -> '1.0' so lines match units.bom_version
+                        df['version'] = (df['version'].map(_normalize_bom_version)
+                                         if 'version' in df.columns else '1.0')
+                        # material_cost = qty x unit_price unless the file gives it
+                        if {'qty', 'unit_price'} <= set(df.columns):
+                            extended = (pd.to_numeric(df['qty'], errors='coerce')
+                                        * pd.to_numeric(df['unit_price'], errors='coerce'))
+                            df['material_cost'] = (pd.to_numeric(df['material_cost'], errors='coerce').fillna(extended)
+                                                   if 'material_cost' in df.columns else extended)
+                        # An optional bom_name column names the auto-created headers
+                        if 'bom_name' in df.columns:
+                            for bom_id, name in zip(df['bom_id'], df['bom_name']):
+                                if isinstance(name, str) and name.strip() and bom_id not in bom_names:
+                                    bom_names[bom_id] = name.strip()
                         if 'labor_type_id' not in df.columns:
                             df['labor_type_id'] = 'RATE-001'  # Default to general rate
                     elif table_name == 'routers':
@@ -829,35 +862,26 @@ class DatabaseManager:
             else:
                 print(f"CSV file not found: {csv_path}")
         
-        # Create BOM definitions from existing BOM data
+        # Create BOM definitions from existing BOM data: one header per BOM,
+        # named after the BOM (or a bom_name column), showing its newest version.
         try:
             cursor = conn.cursor()
-            
-            # Get unique BOM IDs from the bom table
-            cursor.execute("SELECT DISTINCT bom_id, version FROM bom ORDER BY bom_id")
-            bom_entries = cursor.fetchall()
-            
-            for bom_id, version in bom_entries:
+
+            cursor.execute("SELECT DISTINCT bom_id, version FROM bom WHERE bom_id IS NOT NULL")
+            newest: Dict[str, str] = {}
+            for bom_id, version in cursor.fetchall():
+                version = version or '1.0'
+                if bom_id not in newest or _bom_version_key(version) > _bom_version_key(newest[bom_id]):
+                    newest[bom_id] = version
+
+            for bom_id, version in sorted(newest.items()):
                 # Check if BOM definition already exists
                 cursor.execute("SELECT COUNT(*) FROM bom_definitions WHERE bom_id = ?", (bom_id,))
                 if cursor.fetchone()[0] == 0:
-                    # Get the header entry (bom_line = 1) to extract the name
-                    cursor.execute("""
-                        SELECT material_description 
-                        FROM bom 
-                        WHERE bom_id = ? AND bom_line = 1
-                    """, (bom_id,))
-                    header_result = cursor.fetchone()
-                    
-                    bom_name = "BOM Header"
-                    if header_result and header_result[0] and header_result[0] != 'BOM Header':
-                        bom_name = header_result[0]
-                    
-                    # Insert BOM definition
                     cursor.execute("""
                         INSERT INTO bom_definitions (bom_id, bom_name, bom_description, version)
                         VALUES (?, ?, ?, ?)
-                    """, (bom_id, bom_name, f"Bill of Materials for {bom_id}", version or '1.0'))
+                    """, (bom_id, bom_names.get(bom_id, bom_id), f"Bill of Materials for {bom_id}", version))
             
             conn.commit()
             print("Created BOM definitions from existing BOM data")
@@ -943,183 +967,141 @@ class DatabaseManager:
 
         return result
     
-    def get_forecast_data(self) -> Dict[str, Any]:
-        """Get comprehensive forecast data with joins and append computed results to forecast_results"""
+    # Columns of a legacy forecast result row (the old forecast_results table plus sale_id / warnings).
+    FORECAST_RESULT_COLUMNS = [
+        "forecast_id", "sale_id", "forecast_date", "period", "customer_id", "customer_name", "unit_id",
+        "unit_name", "quantity", "unit_price", "total_revenue", "material_cost", "labor_cost",
+        "machine_cost", "total_cost", "gross_margin", "margin_percentage", "cost_warnings",
+    ]
+
+    def _compute_forecast_results(self, cursor, forecast_id: Optional[str] = None,
+                                  period: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Per-sales-row cost and margin, computed on request with
+        utils.cost_rollup.calculate_unit_costs (the BOM version the product
+        uses, routing operations x machine and labor rates) - the same unit
+        costs the statements engine uses. Read-only: nothing is stored.
+        ``forecast_id`` in each result is the sale's scenario.
+        """
+        try:
+            from utils.cost_rollup import calculate_unit_costs
+        except ImportError:  # imported as app.db.database without app/ on sys.path
+            from app.utils.cost_rollup import calculate_unit_costs
+        from datetime import datetime
+
+        where, params = [], []
+        if forecast_id:
+            where.append("s.forecast_id = ?")
+            params.append(forecast_id)
+        if period:
+            where.append("s.period = ?")
+            params.append(period)
+        cursor.execute(f'''
+            SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity,
+                   s.unit_price, s.total_revenue, s.forecast_id,
+                   c.customer_name, u.unit_name, u.base_price, u.bom_id, u.router_id, u.bom_version
+            FROM sales s
+            LEFT JOIN customers c ON s.customer_id = c.customer_id
+            LEFT JOIN units u ON s.unit_id = u.unit_id
+            {"WHERE " + " AND ".join(where) if where else ""}
+            ORDER BY s.period, s.customer_id, s.unit_id
+        ''', params)
+        sales_columns = ['sale_id', 'customer_id', 'unit_id', 'period', 'quantity',
+                         'unit_price', 'total_revenue', 'forecast_id', 'customer_name',
+                         'unit_name', 'base_price', 'bom_id', 'router_id', 'bom_version']
+        sales_data = [dict(zip(sales_columns, row)) for row in cursor.fetchall()]
+
+        forecast_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        unit_costs: Dict[Tuple, Dict[str, Any]] = {}
+        results = []
+        for sale in sales_data:
+            key = (sale['bom_id'] or None, sale['bom_version'], sale['router_id'] or None)
+            if key not in unit_costs:
+                unit_costs[key] = calculate_unit_costs(cursor, *key)
+            costs = unit_costs[key]
+            quantity = sale['quantity'] or 0
+            revenue = sale['total_revenue']
+            if revenue is None:
+                revenue = quantity * (sale['unit_price'] or 0)
+            material_cost = costs['material_per_unit'] * quantity
+            labor_cost = costs['labor_per_unit'] * quantity
+            machine_cost = costs['machine_per_unit'] * quantity
+            total_cost = material_cost + labor_cost + machine_cost
+            gross_margin = revenue - total_cost
+            results.append({
+                "forecast_id": sale['forecast_id'], "sale_id": sale['sale_id'], "forecast_date": forecast_date,
+                "period": sale['period'], "customer_id": sale['customer_id'],
+                "customer_name": sale['customer_name'], "unit_id": sale['unit_id'], "unit_name": sale['unit_name'],
+                "quantity": sale['quantity'], "unit_price": sale['unit_price'], "total_revenue": revenue,
+                "material_cost": material_cost, "labor_cost": labor_cost, "machine_cost": machine_cost,
+                "total_cost": total_cost, "gross_margin": gross_margin,
+                "margin_percentage": (gross_margin / revenue * 100) if revenue > 0 else 0,
+                "cost_warnings": list(costs['warnings']),
+            })
+        return {"sales": sales_data, "results": results, "forecast_date": forecast_date}
+
+    def get_forecast_data(self, forecast_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Legacy forecast view (GET /forecast): sales joined with customers and
+        products, BOM lines, routing operations, payroll, and per-sale cost /
+        margin rows (``forecast_results``) from utils.cost_rollup.
+
+        Read-only: the forecast_results table is no longer rewritten. Pass
+        ``forecast_id`` to limit sales and results to one scenario. The
+        statements engine (services.financial_statements) remains the source
+        of truth for reporting.
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
-            # Ensure forecast_results table exists
+            computed = self._compute_forecast_results(cursor, forecast_id=forecast_id)
+            sales_data = [{k: v for k, v in sale.items() if k != 'bom_version'} for sale in computed["sales"]]
+
+            # BOM lines of every version, and each BOM's material cost per unit for its header version
+            cursor.execute('SELECT * FROM bom ORDER BY bom_id, version, bom_line')
+            bom_columns = [d[0] for d in cursor.description]
+            bom_data = [dict(zip(bom_columns, row)) for row in cursor.fetchall()]
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS forecast_results (
-                    forecast_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    forecast_date TEXT NOT NULL,
-                    period TEXT NOT NULL,
-                    customer_id TEXT,
-                    customer_name TEXT,
-                    unit_id TEXT,
-                    unit_name TEXT,
-                    quantity INTEGER,
-                    unit_price REAL,
-                    total_revenue REAL,
-                    material_cost REAL,
-                    labor_cost REAL,
-                    machine_cost REAL,
-                    total_cost REAL,
-                    gross_margin REAL,
-                    margin_percentage REAL,
-                    FOREIGN KEY (customer_id) REFERENCES customers (customer_id),
-                    FOREIGN KEY (unit_id) REFERENCES units (unit_id)
-                )
-            ''')
-            cursor.execute("DELETE FROM forecast_results")
-            
-            # Get sales with customer and unit information
-            cursor.execute('''
-                SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity,
-                       s.unit_price, s.total_revenue, s.forecast_id,
-                       c.customer_name, u.unit_name, u.base_price, u.bom_id, u.router_id
-                FROM sales s
-                LEFT JOIN customers c ON s.customer_id = c.customer_id
-                LEFT JOIN units u ON s.unit_id = u.unit_id
-                ORDER BY s.period, s.customer_id
-            ''')
-            sales_rows = cursor.fetchall()
-            
-            # Convert sales data to list of dictionaries
-            sales_columns = ['sale_id', 'customer_id', 'unit_id', 'period', 'quantity',
-                           'unit_price', 'total_revenue', 'forecast_id', 'customer_name',
-                           'unit_name', 'base_price', 'bom_id', 'router_id']
-            sales_data = [dict(zip(sales_columns, row)) for row in sales_rows]
-            
-            # Get BOM data with total cost per BOM and full BOM details
-            cursor.execute('''
-                SELECT bom_id, SUM(material_cost) as total_bom_cost
-                FROM bom
-                GROUP BY bom_id
+                SELECT b.bom_id, SUM(b.material_cost)
+                FROM bom b LEFT JOIN bom_definitions d ON d.bom_id = b.bom_id
+                WHERE b.version = COALESCE(d.version, b.version)
+                GROUP BY b.bom_id
             ''')
             bom_costs = {row[0]: row[1] for row in cursor.fetchall()}
 
-            cursor.execute('SELECT * FROM bom ORDER BY bom_id, bom_line')
-            bom_rows = cursor.fetchall()
-            cursor.execute('PRAGMA table_info(bom)')
-            bom_columns = [col[1] for col in cursor.fetchall()]
-            bom_data = [dict(zip(bom_columns, row)) for row in bom_rows]
-            
-            # Get routing information with machine costs - handle shared router_id and machine ID mapping
+            # Routing operations with their machine and labor cost per unit
             cursor.execute('''
-                SELECT r.router_id, r.unit_id, r.machine_id, r.machine_minutes, r.labor_minutes, r.sequence,
-                       u.unit_name, m.machine_name, m.machine_rate,
-                       (r.machine_minutes * m.machine_rate / 60.0) as machine_cost_per_unit,
-                       r.labor_minutes
-                FROM routers r
-                LEFT JOIN units u ON r.unit_id = u.unit_id
-                LEFT JOIN machines m ON ('WC000' || SUBSTR(r.machine_id, 3)) = m.machine_id
-                ORDER BY r.unit_id, r.sequence
+                SELECT ro.router_id, ro.sequence, ro.machine_id, ro.machine_minutes, ro.labor_minutes,
+                       ro.labor_type_id, ro.operation_description, m.machine_name, m.machine_rate,
+                       COALESCE(ro.machine_minutes, 0) * COALESCE(m.machine_rate, 0) / 60.0,
+                       lr.rate_amount,
+                       COALESCE(ro.labor_minutes, 0) * COALESCE(lr.rate_amount, 0) / 60.0
+                FROM router_operations ro
+                LEFT JOIN machines m ON ro.machine_id = m.machine_id
+                LEFT JOIN labor_rates lr ON ro.labor_type_id = lr.rate_id
+                ORDER BY ro.router_id, ro.sequence
             ''')
-            router_rows = cursor.fetchall()
-            
-            # Convert router data to list of dictionaries
-            router_columns = ['router_id', 'unit_id', 'machine_id', 'machine_minutes', 'labor_minutes', 
-                             'sequence', 'unit_name', 'machine_name', 'machine_rate', 
-                             'machine_cost_per_unit', 'labor_minutes_raw']
-            router_data = [dict(zip(router_columns, row)) for row in router_rows]
-            
-            # Get labor rates for better calculation
+            router_columns = ['router_id', 'sequence', 'machine_id', 'machine_minutes', 'labor_minutes',
+                              'labor_type_id', 'operation_description', 'machine_name', 'machine_rate',
+                              'machine_cost_per_unit', 'labor_rate', 'labor_cost_per_unit']
+            router_data = [dict(zip(router_columns, row)) for row in cursor.fetchall()]
+
             cursor.execute('SELECT rate_type, AVG(rate_amount) as avg_rate FROM labor_rates GROUP BY rate_type')
             labor_rates = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # Get payroll data for labor rate calculation
+
             cursor.execute('SELECT * FROM payroll ORDER BY employee_id')
-            payroll_rows = cursor.fetchall()
-            
-            # Convert payroll data to list of dictionaries
-            cursor.execute("PRAGMA table_info(payroll)")
-            payroll_columns = [col[1] for col in cursor.fetchall()]
-            payroll_data = [dict(zip(payroll_columns, row)) for row in payroll_rows]
-            
-            # Calculate average labor rate from payroll data or use default
-            avg_labor_rate = 35.0  # Default fallback
-            if payroll_data:
-                total_rate = sum(row['hourly_rate'] for row in payroll_data)
-                avg_labor_rate = total_rate / len(payroll_data)
+            payroll_columns = [d[0] for d in cursor.description]
+            payroll_data = [dict(zip(payroll_columns, row)) for row in cursor.fetchall()]
+
+            # Informational only: product labor cost comes from routing labor rates.
+            avg_labor_rate = 35.0
+            rates = [row['hourly_rate'] for row in payroll_data if row.get('hourly_rate') is not None]
+            if rates:
+                avg_labor_rate = sum(rates) / len(rates)
             elif 'Hourly' in labor_rates:
                 avg_labor_rate = labor_rates['Hourly']
-            
-            # Compute and save forecast results
-            from datetime import datetime
-            forecast_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Process each sale and compute forecast
-            for sale in sales_data:
-                # Extract values from dictionary
-                sale_id = sale['sale_id']
-                customer_id = sale['customer_id']
-                unit_id = sale['unit_id']
-                period = sale['period']
-                quantity = sale['quantity']
-                unit_price = sale['unit_price']
-                total_revenue = sale['total_revenue']
-                forecast_id = sale['forecast_id']
-                customer_name = sale['customer_name']
-                unit_name = sale['unit_name']
-                base_price = sale['base_price']
-                bom_id = sale['bom_id']
-                router_id = sale['router_id']
-                
-                # Get BOM cost for this unit
-                bom_cost = bom_costs.get(bom_id, 0.0)
-                
-                # Get routing costs for this unit (sum all operations for this unit)
-                machine_cost_per_unit = 0.0
-                labor_cost_per_unit = 0.0
-                for router in router_data:
-                    if router['unit_id'] == unit_id:  # router.unit_id matches sale.unit_id
-                        machine_cost_per_unit += router['machine_cost_per_unit'] or 0.0
-                        labor_cost_per_unit += (router['labor_minutes_raw'] or 0.0) * avg_labor_rate / 60.0  # labor_minutes * rate / 60
-                
-                # Calculate total costs
-                material_cost = bom_cost * quantity
-                labor_cost = labor_cost_per_unit * quantity
-                machine_cost = machine_cost_per_unit * quantity
-                total_cost = material_cost + labor_cost + machine_cost
-                
-                # Calculate margins
-                gross_margin = total_revenue - total_cost
-                margin_percentage = (gross_margin / total_revenue * 100) if total_revenue > 0 else 0
-                
-                # Insert forecast result
-                cursor.execute('''
-                    INSERT INTO forecast_results (
-                        forecast_date, period, customer_id, customer_name, unit_id, unit_name,
-                        quantity, unit_price, total_revenue, material_cost, labor_cost,
-                        machine_cost, total_cost, gross_margin, margin_percentage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    forecast_date, period, customer_id, customer_name, unit_id, unit_name,
-                    quantity, unit_price, total_revenue, material_cost, labor_cost,
-                    machine_cost, total_cost, gross_margin, margin_percentage
-                ))
-            
-            # Commit the forecast results
-            conn.commit()
-            
-            # Get the saved forecast results
-            cursor.execute('''
-                SELECT * FROM forecast_results 
-                ORDER BY period, customer_id, unit_id
-            ''')
-            forecast_results = cursor.fetchall()
-            
-            # Get column names for forecast results
-            cursor.execute("PRAGMA table_info(forecast_results)")
-            forecast_columns = [col[1] for col in cursor.fetchall()]
-            
-            # Convert forecast results to list of dictionaries
-            forecast_data_list = []
-            for row in forecast_results:
-                forecast_data_list.append(dict(zip(forecast_columns, row)))
-            
+
             result = {
                 "status": "success",
                 "data": {
@@ -1129,10 +1111,10 @@ class DatabaseManager:
                     "router_data": router_data,
                     "payroll_data": payroll_data,
                     "labor_rates": labor_rates,
-                    "forecast_results": forecast_data_list,
-                    "forecast_columns": forecast_columns,
-                    "forecast_date": forecast_date,
-                    "avg_labor_rate": avg_labor_rate
+                    "forecast_results": computed["results"],
+                    "forecast_columns": list(self.FORECAST_RESULT_COLUMNS),
+                    "forecast_date": computed["forecast_date"],
+                    "avg_labor_rate": avg_labor_rate,
                 }
             }
         except Exception as e:
@@ -1142,63 +1124,38 @@ class DatabaseManager:
             }
         finally:
             conn.close()
-        
+
         return result
-    
-    def get_saved_forecast_results(self, period: str = None, limit: int = None) -> Dict[str, Any]:
-        """Get saved forecast results from the database"""
+
+    def get_saved_forecast_results(self, period: str = None, limit: int = None,
+                                   forecast_id: str = None) -> Dict[str, Any]:
+        """
+        Per-sale cost / margin rows (GET /forecast/results), computed on
+        request like get_forecast_data (read-only; always current). Optional
+        filters: ``period`` (exact), ``forecast_id``, ``limit``. ``summary``
+        covers the filtered rows before the limit.
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
-            # Build query with optional filters
-            query = "SELECT * FROM forecast_results"
-            params = []
-            
-            if period:
-                query += " WHERE period = ?"
-                params.append(period)
-            
-            query += " ORDER BY forecast_date DESC, period, customer_id, unit_id"
-            
-            if limit:
-                query += f" LIMIT {limit}"
-            
-            cursor.execute(query, params)
-            forecast_results = cursor.fetchall()
-            
-            # Get column names
-            cursor.execute("PRAGMA table_info(forecast_results)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            # Convert to list of dictionaries
-            data = []
-            for row in forecast_results:
-                data.append(dict(zip(columns, row)))
-            
-            # Get summary statistics
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_records,
-                    SUM(total_revenue) as total_revenue,
-                    SUM(total_cost) as total_cost,
-                    SUM(gross_margin) as total_margin,
-                    AVG(margin_percentage) as avg_margin_percentage
-                FROM forecast_results
-            ''')
-            summary = cursor.fetchone()
+            data = self._compute_forecast_results(cursor, forecast_id=forecast_id, period=period)["results"]
+            total_revenue = sum(r["total_revenue"] or 0 for r in data)
+            total_cost = sum(r["total_cost"] for r in data)
             summary_data = {
-                "total_records": summary[0],
-                "total_revenue": summary[1],
-                "total_cost": summary[2],
-                "total_margin": summary[3],
-                "avg_margin_percentage": summary[4]
+                "total_records": len(data),
+                "total_revenue": total_revenue,
+                "total_cost": total_cost,
+                "total_margin": total_revenue - total_cost,
+                "avg_margin_percentage": (sum(r["margin_percentage"] for r in data) / len(data)) if data else None,
             }
-            
+            if limit:
+                data = data[:int(limit)]
+
             result = {
                 "status": "success",
                 "data": data,
-                "columns": columns,
+                "columns": list(self.FORECAST_RESULT_COLUMNS),
                 "summary": summary_data
             }
         except Exception as e:
@@ -1208,7 +1165,7 @@ class DatabaseManager:
             }
         finally:
             conn.close()
-        
+
         return result
     
     def execute_sql(self, sql_statement: str, description: str = None, user_id: str = None, session_id: str = None) -> Dict[str, Any]:
@@ -1595,13 +1552,13 @@ def get_table_data(
     """Get data from a specific table"""
     return db_manager.get_table_data(table_name, forecast_id, filters, limit, offset)
 
-def get_forecast_data() -> Dict[str, Any]:
-    """Get comprehensive forecast data"""
-    return db_manager.get_forecast_data()
+def get_forecast_data(forecast_id: str = None) -> Dict[str, Any]:
+    """Legacy read-only forecast view (optionally one scenario)"""
+    return db_manager.get_forecast_data(forecast_id)
 
-def get_saved_forecast_results(period: str = None, limit: int = None) -> Dict[str, Any]:
-    """Get saved forecast results from the database"""
-    return db_manager.get_saved_forecast_results(period, limit)
+def get_saved_forecast_results(period: str = None, limit: int = None, forecast_id: str = None) -> Dict[str, Any]:
+    """Per-sale cost / margin rows, computed on request"""
+    return db_manager.get_saved_forecast_results(period, limit, forecast_id)
 
 def execute_sql(sql_statement: str, description: str = None, user_id: str = None, session_id: str = None) -> Dict[str, Any]:
     """Execute SQL statement with logging"""

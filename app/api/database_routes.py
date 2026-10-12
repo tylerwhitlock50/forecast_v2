@@ -28,31 +28,48 @@ router = APIRouter(prefix="/database", tags=["Database Management"])
 
 @router.post("/load_table", response_model=ForecastResponse)
 async def load_table_endpoint(
-    table_name: str = Query(..., description="Destination table name"),
-    mode: str = Query("append", description="append or replace"),
+    table_name: str = Query(..., description="Destination table (must already exist)"),
+    mode: str = Query("append", description="append (insert; any bad row rejects the file), "
+                                            "upsert (insert or update by key) or "
+                                            "replace (delete the table's rows, then insert the file)"),
     csv_file: UploadFile = File(...),
 ):
-    """Load CSV data into a database table"""
+    """
+    Load a CSV file into an existing table. The table is never dropped or
+    recreated. Errors: 400 unknown table / mode / columns, 409 the load would
+    orphan rows of another table, 422 row errors (``row N: ...`` for every bad
+    row); nothing is written on error. See utils.data_loader for details.
+    """
     try:
         csv_bytes = await csv_file.read()
         result = load_csv_to_table(table_name, csv_bytes, if_exists=mode)
         if result["status"] == "error":
-            raise HTTPException(status_code=500, detail=result["error"])
+            raise HTTPException(status_code=result.get("code", 500), detail=result["error"])
         if table_name == "forecast":
             # An uploaded scenario list may lack is_base; keep exactly one base.
-            from db.database import db_manager
-            db_manager.ensure_base_scenario()
+            import db.database as dbmod
+            dbmod.db_manager.ensure_base_scenario()
+        data = {k: v for k, v in result.items() if k != "status"}
+        verb = {"replace": "Replaced", "upsert": "Upserted"}.get(result["mode"], "Loaded")
         return ForecastResponse(
             status="success",
-            data={"rows_loaded": result["rows_loaded"]},
-            message=f"Loaded {result['rows_loaded']} rows into {table_name}"
+            data=data,
+            message=f"{verb} {result['rows_loaded']} rows into {table_name}"
+                    + (f" ({result['deleted']} previous rows deleted)" if result["mode"] == "replace" else "")
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/quality", response_model=ForecastResponse)
 async def data_quality_endpoint():
-    """Return basic data quality checks"""
+    """
+    Master-data checks behind COGS (products without a usable BOM / routing,
+    BOM lines with missing or inconsistent costs, operations on missing
+    machines / labor rates, ...) with row details and ``summary`` counts.
+    See utils.data_quality.get_data_quality_issues for every list.
+    """
     result = get_data_quality_issues()
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["error"])
