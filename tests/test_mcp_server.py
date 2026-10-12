@@ -671,6 +671,20 @@ def test_import_sales_is_all_or_nothing_and_reconciles(mcp_client):
         ("New Distributor LLC", "Distributor")]
 
 
+def test_import_sales_replace_mode_removes_stale_lines_in_the_files_months(mcp_client):
+    client, mgr = mcp_client
+    # F001 has Feb 2026: C1/P1 and C2/P2. A revised February without C2/P2 replaces it; March is untouched.
+    out = ok(client, "forecast_import_sales", {"forecast_id": "F001", "mode": "replace", "rows": [
+        {"customer_id": "C1", "unit_id": "P1", "period": "2026-02", "quantity": 25, "unit_price": 100}]})
+    assert out["deleted"] == 1 and out["status"] == "imported"
+    assert db_rows(mgr, "SELECT customer_id, unit_id, quantity FROM sales WHERE forecast_id = 'F001' "
+                        "AND period = '2026-02'") == [("C1", "P1", 25)]
+    assert db_rows(mgr, "SELECT COUNT(*) FROM sales WHERE forecast_id = 'F001' AND period = '2026-03'") == [(1,)]
+    text, is_error = call_tool(client, "forecast_import_sales", {"forecast_id": "F001", "mode": "replace",
+                                                                 "allow_partial": True, "rows": [{"customer_id": "C1"}]})
+    assert is_error and "allow_partial" in text
+
+
 def test_import_sales_reads_a_file_from_the_data_folder(mcp_client):
     client, mgr = mcp_client
     with open(os.path.join(mgr.data_dir, "sales_upload.csv"), "w", newline="") as fh:

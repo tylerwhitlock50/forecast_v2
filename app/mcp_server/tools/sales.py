@@ -350,9 +350,15 @@ async def import_sales(
     allow_zero_price: Annotated[bool, Field(description="Import rows that have no price and no price-list / base price at 0 instead of rejecting them")] = False,
     dry_run: Annotated[bool, Field(description="Validate and report totals without writing (always safe)")] = False,
     allow_partial: Annotated[bool, Field(description="Write the valid rows even when some rows fail (default: all-or-nothing)")] = False,
+    mode: Annotated[str, Field(description=(
+        "upsert (default): add / update the file's rows and keep the scenario's other rows. "
+        "replace: also delete the scenario's rows in the months the file covers that the file no longer has "
+        "(re-importing a revised 2027 forecast; other years untouched). replace_all: delete every other row of "
+        "the scenario. Replace modes need every row to be valid."))] = "upsert",
 ) -> Dict[str, Any]:
     """Import a monthly sales forecast into a scenario. Existing rows for the
-    same customer + product + month are replaced. Price: a row's own
+    same customer + product + month are updated; mode=replace also removes
+    stale lines in the file's months. Price: a row's own
     unit_price (> 0) is kept; a blank or 0 price is resolved from the price
     list (customer, then customer type, then all customers) and then the
     product's base price; still-unpriced rows are errors unless
@@ -363,6 +369,10 @@ async def import_sales(
     quantity / revenue totals and month range written, so you can reconcile
     against the source file without a second call."""
     fid = require(forecast_id, "forecast_id")
+    if mode not in ("upsert", "replace", "replace_all"):
+        raise ToolError("mode must be upsert, replace or replace_all")
+    if mode != "upsert" and allow_partial:
+        raise ToolError("allow_partial cannot be combined with a replace mode: replacing needs every row to be valid")
     from mcp_server.tools.imports import load_rows  # file parsing shared with the other import tools
 
     rows, source = load_rows(rows, file_path, sheet, header_row)
@@ -377,7 +387,7 @@ async def import_sales(
 
     def body(dry: bool) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
-            "forecast_id": fid, "sales": [row for _, row in sendable], "dry_run": dry,
+            "forecast_id": fid, "sales": [row for _, row in sendable], "dry_run": dry, "mode": mode,
             "options": {"autoCreate": auto_create, "allowZeroPrice": allow_zero_price},
         }
         if year is not None:
@@ -404,6 +414,8 @@ async def import_sales(
                         f"{format_row_errors(errors)}. Fix those rows and call again "
                         f"(or pass allow_partial=true to import the valid rows).")
     result = preview if dry_run else await call("POST", "/forecast/smart_import_sales", json=body(False))
+    if result.get("replace_blocked") and not dry_run:
+        raise ToolError(f"Nothing was changed: {result.get('message')}")
     if not dry_run:
         errors = sorted(local_errors + remap(result.get("errors")), key=by_row)
     out = {k: v for k, v in result.items() if k != "errors"}
