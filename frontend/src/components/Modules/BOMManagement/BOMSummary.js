@@ -98,9 +98,6 @@ const BOMSummary = ({ boms, bomItems, units }) => {
     };
   }, [boms, bomItems]);
 
-  const topVersions = Object.entries(summaryData.versionBreakdown)
-    .sort(([,a], [,b]) => b - a)
-    .slice(0, 5);
 
   const topMaterialTypes = Object.entries(summaryData.materialTypes)
     .sort(([,a], [,b]) => b - a)

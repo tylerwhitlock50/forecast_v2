@@ -14,6 +14,19 @@ from db.models import (
     ForecastResponse, Loan, LoanCreate, LoanUpdate, LoanPayment, LoanPaymentCreate,
     AmortizationSchedule, LoanWithDetails, LoanSummary, CashFlowProjection
 )
+from services.financial_statements import add_months
+
+
+def payment_date_for(start_date: str, months_after: int) -> str:
+    """
+    Scheduled payment date `months_after` calendar months after the loan
+    start date, keeping the day of month and clamping to month end
+    (a loan started Jan 31 pays Feb 28/29, Mar 31, Apr 30, ...). Calendar
+    months, not 30.44-day increments, so a schedule never drifts or skips a
+    month.
+    """
+    start = datetime.strptime(start_date, '%Y-%m-%d').date()
+    return add_months(start, months_after).strftime('%Y-%m-%d')
 
 router = APIRouter(prefix="/loans", tags=["loans"])
 
@@ -46,7 +59,6 @@ def generate_amortization_schedule(
     
     payments = []
     remaining_balance = principal
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
     
     # Calculate payment frequency multiplier
     frequency_months = {"monthly": 1, "quarterly": 3, "annually": 12}
@@ -63,7 +75,7 @@ def generate_amortization_schedule(
         principal_payment = 0
         
         for payment_num in range(1, total_periods + 1):
-            payment_date = start_dt + timedelta(days=30.44 * freq_months * payment_num)  # Average month length
+            payment_date = datetime.strptime(payment_date_for(start_date, freq_months * payment_num), '%Y-%m-%d')
             
             # Check if this is the balloon payment date
             is_balloon = False
@@ -102,7 +114,7 @@ def generate_amortization_schedule(
             payment_amount = payment_amount * freq_months
         
         for payment_num in range(1, total_periods + 1):
-            payment_date = start_dt + timedelta(days=30.44 * freq_months * payment_num)
+            payment_date = datetime.strptime(payment_date_for(start_date, freq_months * payment_num), '%Y-%m-%d')
             
             interest_payment = remaining_balance * period_rate
             principal_payment = payment_amount - interest_payment
@@ -149,9 +161,8 @@ async def create_loan(loan_data: LoanCreate):
             loan_data.payment_type
         )
         
-        # Calculate next payment date
-        start_date = datetime.strptime(loan_data.start_date, '%Y-%m-%d')
-        next_payment_date = start_date + timedelta(days=30)  # First payment typically 30 days after start
+        # First payment one calendar month after the start date
+        next_payment_date = payment_date_for(loan_data.start_date, 1)
         
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -172,7 +183,7 @@ async def create_loan(loan_data: LoanCreate):
             loan_data.balloon_payment, loan_data.balloon_date, loan_data.description,
             loan_data.collateral_description, loan_data.guarantor, loan_data.loan_officer,
             loan_data.account_number, loan_data.is_active, loan_data.principal_amount,
-            next_payment_date.strftime('%Y-%m-%d'), monthly_payment
+            next_payment_date, monthly_payment
         ))
         
         # Generate and insert amortization schedule
@@ -307,7 +318,7 @@ async def get_loans(active_only: bool = Query(True)):
 
             next_payment_date_val = loan_dict.get('next_payment_date')
             if not next_payment_date_val and start_date_val:
-                next_payment_date_val = (datetime.strptime(start_date_val, '%Y-%m-%d') + timedelta(days=30)).strftime('%Y-%m-%d')
+                next_payment_date_val = payment_date_for(start_date_val, 1)
 
             created_date_val = loan_dict.get('created_date') or start_date_val or ''
             updated_date_val = loan_dict.get('updated_date') or created_date_val

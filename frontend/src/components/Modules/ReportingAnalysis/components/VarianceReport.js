@@ -34,6 +34,28 @@ const FavBadge = ({ favorable }) => {
 const cell = (value) => (value === null || value === undefined ? '—' : formatAccounting(value));
 const pctCell = (value) => (value === null || value === undefined ? '—' : formatPct(value));
 
+// Which months a line has actuals for, relative to the latest month with any actuals.
+export const coverageText = (totals, actualsThrough) => {
+  const compared = totals?.periods_compared || [];
+  const missing = totals?.missing_periods || [];
+  const coverage = totals?.coverage || (compared.length ? (missing.length ? 'partial' : 'complete') : 'none');
+  if (coverage === 'none') return 'No actuals';
+  if (coverage === 'complete') {
+    return compared.length === 1 ? `${formatPeriod(compared[0])} only` : `Complete through ${formatPeriod(actualsThrough || compared[compared.length - 1])}`;
+  }
+  return `Partial — missing ${missing.map(formatPeriod).join(', ')}`;
+};
+
+const CoverageBadge = ({ totals, actualsThrough }) => {
+  const coverage = totals?.coverage || 'none';
+  const variant = coverage === 'complete' ? 'success' : coverage === 'partial' ? 'warning' : 'secondary';
+  return (
+    <Badge variant={variant} className="px-2 whitespace-nowrap" data-coverage={coverage}>
+      {coverageText(totals, actualsThrough)}
+    </Badge>
+  );
+};
+
 // CSV template for actual imports, built client-side.
 export const buildActualsTemplate = (lineItems, period) => {
   const header = 'period,line_item,amount,reference_id,notes';
@@ -75,6 +97,10 @@ const VarianceReport = ({ forecastIds, period }) => {
   const periods = useMemo(() => variance?.periods || [], [variance]);
   const withActuals = useMemo(() => variance?.periods_with_actuals || [], [variance]);
   const items = useMemo(() => variance?.line_items || [], [variance]);
+  const actualsThrough = variance?.actuals_through || (withActuals.length > 0 ? withActuals[withActuals.length - 1] : null);
+  const incompleteLines = useMemo(() => variance?.incomplete_lines || [], [variance]);
+  const periodCoverage = useMemo(() => variance?.period_coverage || [], [variance]);
+  const selectedCoverage = periodCoverage.find(c => c.period === selectedPeriod) || null;
 
   const effectiveLineItems = useMemo(() => {
     if (lineItems.length > 0) return lineItems;
@@ -191,9 +217,20 @@ const VarianceReport = ({ forecastIds, period }) => {
           <h3 className="text-lg font-medium">Budget vs actual</h3>
           <p className="text-sm text-gray-600">
             {withActuals.length > 0
-              ? `Actuals entered for ${withActuals.length} of ${periods.length} periods.`
+              ? `Actuals entered for ${withActuals.length} of ${periods.length} periods (latest ${formatPeriod(actualsThrough)}).`
               : 'No actuals entered yet for this window — enter them below or import a CSV.'}
           </p>
+          {incompleteLines.length > 0 && (
+            <p className="text-sm text-amber-800 mt-1" data-testid="incomplete-actuals-note">
+              Incomplete actuals: {incompleteLines.map(l => `${l.label} missing ${l.missing_periods.map(formatPeriod).join(', ')}`).join('; ')}.
+              A blank month is missing, not zero; to-date variances compare only the months each line has actuals for.
+            </p>
+          )}
+          {selectedCoverage && !selectedCoverage.complete && (
+            <p className="text-sm text-gray-600 mt-1" data-testid="period-coverage-note">
+              {formatPeriod(selectedPeriod)}: actuals entered for {selectedCoverage.lines_entered} of {selectedCoverage.lines_total} lines; the rest show — (missing).
+            </p>
+          )}
         </div>
         <div className="w-48">
           <Label htmlFor="variance-period">Period</Label>
@@ -250,8 +287,9 @@ const VarianceReport = ({ forecastIds, period }) => {
       {/* To date */}
       <div>
         <h4 className="text-sm font-semibold text-gray-700 mb-2">
-          To date {withActuals.length > 0 ? `(through ${formatPeriod(withActuals[withActuals.length - 1])})` : ''}
+          To date {actualsThrough ? `(through ${formatPeriod(actualsThrough)})` : ''}
         </h4>
+        <p className="text-xs text-gray-500 mb-2">Budget to date and the variance cover only the months each line has actuals for; see Coverage.</p>
         <div className="overflow-x-auto rounded-md border border-gray-200">
           <table data-testid="variance-to-date-table" className="min-w-full text-xs tabular-nums">
             <thead>
@@ -263,6 +301,7 @@ const VarianceReport = ({ forecastIds, period }) => {
                 <th className="px-3 py-2 text-right font-medium">Variance</th>
                 <th className="px-3 py-2 text-right font-medium">Var %</th>
                 <th className="px-3 py-2 text-center font-medium">F / U</th>
+                <th className="px-3 py-2 text-left font-medium">Coverage</th>
               </tr>
             </thead>
             <tbody>
@@ -273,11 +312,12 @@ const VarianceReport = ({ forecastIds, period }) => {
                   <tr key={li.line_item} data-testid={`variance-to-date-row-${li.line_item}`} className="border-t border-gray-100">
                     <td className="px-3 py-1 whitespace-nowrap font-medium text-gray-800">{li.label}</td>
                     <td className="px-3 py-1 text-right whitespace-nowrap">{cell(t.budget_full_period)}</td>
-                    <td className="px-3 py-1 text-right whitespace-nowrap">{cell(t.budget_to_date)}</td>
+                    <td className="px-3 py-1 text-right whitespace-nowrap">{has ? cell(t.budget_to_date) : '—'}</td>
                     <td className="px-3 py-1 text-right whitespace-nowrap">{has ? cell(t.actual_to_date) : '—'}</td>
                     <td className={cn('px-3 py-1 text-right whitespace-nowrap font-medium', varianceClass(t.favorable))}>{has ? cell(t.variance_to_date) : '—'}</td>
                     <td className={cn('px-3 py-1 text-right whitespace-nowrap', varianceClass(t.favorable))}>{has ? pctCell(t.variance_pct_to_date) : '—'}</td>
                     <td className="px-3 py-1 text-center"><FavBadge favorable={has ? t.favorable : null} /></td>
+                    <td className="px-3 py-1 whitespace-nowrap"><CoverageBadge totals={t} actualsThrough={actualsThrough} /></td>
                   </tr>
                 );
               })}

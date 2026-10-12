@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import uuid
 import json
 
@@ -16,6 +16,7 @@ from services.financial_statements import (
     load_payroll_config,
     payroll_by_period,
     period_range,
+    pay_run_dates,
 )
 
 router = APIRouter(prefix="/payroll", tags=["payroll"])
@@ -521,35 +522,26 @@ async def get_payroll_forecast(
 
         frequency = config.get("pay_frequency", "biweekly")
         runs_per_year = PAY_PERIODS_PER_YEAR.get(frequency, 26)
-        days_between_runs = 365.25 / runs_per_year
         weeks_per_run = 52 / runs_per_year
 
-        today = datetime.now()
-        if frequency in ("weekly", "biweekly"):
-            days_until_friday = (4 - today.weekday()) % 7
-            if days_until_friday == 0 and today.hour >= 17:
-                days_until_friday = 7
-            first_run = today + timedelta(days=days_until_friday)
-        else:
-            # Semimonthly / monthly: pay on the last day of the month.
-            next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-            first_run = next_month - timedelta(days=1)
+        # Real calendar pay dates (Fridays / 15th + month end / month end),
+        # date-only so the result does not depend on the server's clock or zone.
+        run_dates = pay_run_dates(frequency, date.today(), periods)
 
         forecast = []
-        for period in range(periods):
-            payroll_date = first_run + timedelta(days=round(period * days_between_runs))
+        for period, payroll_date in enumerate(run_dates):
             period_total = 0.0
             employee_details = []
             for emp in employees:
                 if emp.get("start_date"):
                     try:
-                        if payroll_date.date() < datetime.strptime(emp["start_date"], '%Y-%m-%d').date():
+                        if payroll_date < datetime.strptime(emp["start_date"], '%Y-%m-%d').date():
                             continue
                     except ValueError:
                         pass
                 if emp.get("end_date"):
                     try:
-                        if payroll_date.date() > datetime.strptime(emp["end_date"], '%Y-%m-%d').date():
+                        if payroll_date > datetime.strptime(emp["end_date"], '%Y-%m-%d').date():
                             continue
                     except ValueError:
                         pass
@@ -558,7 +550,7 @@ async def get_payroll_forecast(
                 if include_raises and emp.get("next_review_date") and emp.get("expected_raise"):
                     try:
                         review_date = datetime.strptime(emp["next_review_date"], '%Y-%m-%d')
-                        if payroll_date.date() >= review_date.date():
+                        if payroll_date >= review_date.date():
                             if emp["expected_raise"] > 1:
                                 adjusted_rate += emp["expected_raise"]
                             else:
@@ -592,7 +584,8 @@ async def get_payroll_forecast(
 
             forecast.append({
                 "period": period + 1,
-                "date": payroll_date.strftime('%Y-%m-%d'),
+                "date": payroll_date.isoformat(),
+                "month": payroll_date.strftime('%Y-%m'),
                 "total_cost": period_total,
                 "employee_count": len(employee_details),
                 "employee_details": employee_details

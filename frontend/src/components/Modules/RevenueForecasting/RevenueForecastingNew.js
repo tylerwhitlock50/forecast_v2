@@ -246,7 +246,7 @@ const RevenueForecasting = () => {
   // Handle smart sales import
   const handleSmartSalesImport = async (importData) => {
     try {
-      const { data: salesData, options, missingItems } = importData;
+      const { data: salesData, options } = importData;
       
       // Transform data for API
       const sales = salesData.map(item => ({
@@ -407,6 +407,8 @@ const RevenueForecasting = () => {
     if (data.products?.length > 0 || data.customers?.length > 0) {
       logDataStructure();
     }
+    // Debug logging only; logDataStructure is a plain helper that reads the same data listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.products, data.customers, data.sales_forecast]);
 
   // Skeleton loader component

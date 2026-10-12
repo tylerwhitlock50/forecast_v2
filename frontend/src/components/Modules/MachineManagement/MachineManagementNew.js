@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
@@ -23,8 +22,8 @@ const MachineManagement = () => {
   const [editingMachine, setEditingMachine] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
-  const [sortField, setSortField] = useState('machine_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('machine_name');
+  const [sortDirection] = useState('asc');
   const [selectedMachines, setSelectedMachines] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
@@ -164,34 +163,6 @@ const MachineManagement = () => {
         URL.revokeObjectURL(url);
         toast.success(`Exported ${csvData.length} machines`);
       }
-    }
-  };
-
-  // Handle sorting
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
-  };
-
-  // Handle machine selection
-  const handleMachineSelect = (machineId, selected) => {
-    if (selected) {
-      setSelectedMachines(prev => [...prev, machineId]);
-    } else {
-      setSelectedMachines(prev => prev.filter(id => id !== machineId));
-    }
-  };
-
-  // Handle select all
-  const handleSelectAll = (selected) => {
-    if (selected) {
-      setSelectedMachines(filteredMachines.map(m => m.machine_id));
-    } else {
-      setSelectedMachines([]);
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import './PayrollManagement.css';
+import { monthKey, formatDateOnly } from '../../../lib/dates';
 
 const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'chart'
@@ -9,26 +10,28 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
   // Ensure forecast is defined and is an array
   const safeForecast = forecast || [];
 
-  // Calculate monthly rollups from bi-weekly data
+  // Cash-basis monthly rollups: each pay run counts in the month of its pay
+  // date (the server's `month`, else the date-only string's own month —
+  // never a UTC-parsed Date, which shifts month ends into the prior month).
   const getMonthlyRollups = () => {
     const monthlyData = {};
     
     safeForecast.forEach(period => {
-      const date = new Date(period.date);
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const key = period.month || monthKey(period.date);
+      if (!key) return;
       
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = {
-          month: monthKey,
+      if (!monthlyData[key]) {
+        monthlyData[key] = {
+          month: key,
           totalCost: 0,
           payrollCount: 0,
           avgEmployeeCount: 0
         };
       }
       
-      monthlyData[monthKey].totalCost += period.totalCost;
-      monthlyData[monthKey].payrollCount += 1;
-      monthlyData[monthKey].avgEmployeeCount += period.employeeCount;
+      monthlyData[key].totalCost += period.totalCost;
+      monthlyData[key].payrollCount += 1;
+      monthlyData[key].avgEmployeeCount += period.employeeCount;
     });
 
     // Calculate averages
@@ -66,14 +69,7 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
     }).format(amount);
   };
 
-  const formatDate = (dateStr) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
+  const formatDate = (dateStr) => formatDateOnly(dateStr, { month: 'short', day: 'numeric', year: 'numeric' }, '—');
 
   return (
     <div className="payroll-forecast">
@@ -214,14 +210,12 @@ const PayrollForecast = ({ forecast, forecastHorizon, onHorizonChange }) => {
 
       <div className="payroll-monthly-rollups">
         <h3>Monthly Summary</h3>
+        <p className="payroll-monthly-note">Cash basis: pay runs are grouped by pay date, so a month with three Fridays shows three runs. The income statement accrues payroll evenly per calendar month instead.</p>
         <div className="payroll-monthly-cards">
           {monthlyRollups.map(month => (
             <div key={month.month} className="payroll-monthly-card">
               <div className="payroll-month-label">
-                {new Date(month.month + '-01').toLocaleDateString('en-US', { 
-                  month: 'long', 
-                  year: 'numeric' 
-                })}
+                {formatDateOnly(month.month, { month: 'long', year: 'numeric' }, month.month)}
               </div>
               <div className="payroll-month-cost">{formatCurrency(month.totalCost)}</div>
               <div className="payroll-month-details">

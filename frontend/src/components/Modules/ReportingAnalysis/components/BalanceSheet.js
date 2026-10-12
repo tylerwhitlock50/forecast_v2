@@ -61,7 +61,7 @@ export const isBalanced = (rows, tolerance = 0.01) =>
 
 const fmt = (v) => formatCurrency(v, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 
-const BalanceSheet = ({ data }) => {
+const BalanceSheet = ({ data, carryForward }) => {
   if (!data || !data.by_period) {
     return (
       <div className="text-center py-8 text-gray-500">
@@ -92,6 +92,11 @@ const BalanceSheet = ({ data }) => {
 
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-sm text-gray-600">
+          {carryForward?.months_rolled_forward > 0 && (
+            <span data-testid="carry-forward-note">
+              Opening column is the balance sheet carried forward {carryForward.months_rolled_forward} month(s) from the opening balances at {formatPeriod(carryForward.opening_period)}.{' '}
+            </span>
+          )}
           {opening?.equity_plugged && (
             <span>Opening equity was plugged so the opening balance sheet balances. </span>
           )}

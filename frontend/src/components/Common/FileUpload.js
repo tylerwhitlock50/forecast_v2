@@ -9,7 +9,7 @@ const FileUpload = ({
   disabled = false
 }) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [dragCounter, setDragCounter] = useState(0);
+  const [, setDragCounter] = useState(0); // counter only tracks nested dragenter/dragleave
 
   const validateFile = (file) => {
     if (!file) return { valid: false, error: 'No file selected' };
@@ -38,6 +38,8 @@ const FileUpload = ({
     }
     
     onFileSelect(file);
+    // validateFile is re-created each render but only closes over maxSize/accept, which are props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onFileSelect, maxSize]);
 
   const handleDragEnter = useCallback((e) => {

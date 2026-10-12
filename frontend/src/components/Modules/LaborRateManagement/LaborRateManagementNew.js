@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
@@ -23,8 +22,8 @@ const LaborRateManagement = () => {
   const [editingLaborRate, setEditingLaborRate] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
-  const [sortField, setSortField] = useState('rate_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('rate_name');
+  const [sortDirection] = useState('asc');
   const [selectedLaborRates, setSelectedLaborRates] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 

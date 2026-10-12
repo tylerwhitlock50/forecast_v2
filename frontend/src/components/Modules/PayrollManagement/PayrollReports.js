@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { formatDateOnly, parseLocalDate, toDateOnly } from '../../../lib/dates';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
@@ -11,12 +12,7 @@ const formatCurrency = (amount) => new Intl.NumberFormat('en-US', {
   currency: 'USD'
 }).format(amount || 0);
 
-const formatDate = (dateStr) => {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-};
+const formatDate = (dateStr) => formatDateOnly(dateStr, { year: 'numeric', month: 'short', day: 'numeric' }, '—');
 
 const PayrollReports = ({
   employees,
@@ -31,8 +27,8 @@ const PayrollReports = ({
 
   const [activeReport, setActiveReport] = useState('summary');
   const [dateRange, setDateRange] = useState({
-    start: new Date().toISOString().split('T')[0],
-    end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    start: toDateOnly(),
+    end: toDateOnly(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate()))
   });
 
   const activeEmployees = safeEmployees.filter(emp => emp.status === 'active');
@@ -40,7 +36,8 @@ const PayrollReports = ({
   const avgSalary = activeEmployees.length > 0 ? totalAnnualCost / activeEmployees.length : 0;
   const upcomingReviewsCount = activeEmployees.filter(emp => {
     if (!emp.next_review_date) return false;
-    const reviewDate = new Date(emp.next_review_date);
+    const reviewDate = parseLocalDate(emp.next_review_date);
+    if (!reviewDate) return false;
     if (isNaN(reviewDate.getTime())) return false;
     const now = new Date();
     const threeMonthsFromNow = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);

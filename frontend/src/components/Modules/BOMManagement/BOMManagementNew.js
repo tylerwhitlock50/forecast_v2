@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
@@ -25,8 +25,8 @@ const BOMManagement = () => {
   const [selectedBOM, setSelectedBOM] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterVersion, setFilterVersion] = useState('all');
-  const [sortField, setSortField] = useState('bom_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('bom_name');
+  const [sortDirection] = useState('asc');
   const [selectedBOMs, setSelectedBOMs] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 

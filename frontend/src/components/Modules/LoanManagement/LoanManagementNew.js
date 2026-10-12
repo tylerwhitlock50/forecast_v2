@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import api from '../../../lib/apiClient';
-import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -11,7 +10,7 @@ import LoanModalNew from './LoanModalNew';
 import AmortizationScheduleModalNew from './AmortizationScheduleModalNew';
 
 const LoanManagement = () => {
-    const { actions, loading } = useForecast();
+    const { actions } = useForecast();
     const confirm = useConfirm();
 
     const [loans, setLoans] = useState([]);
@@ -25,6 +24,8 @@ const LoanManagement = () => {
     useEffect(() => {
         loadLoans();
         loadLoanSummary();
+        // Load once on mount; the loaders are defined below and are not memoised.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const loadLoans = async () => {
@@ -62,9 +63,11 @@ const LoanManagement = () => {
     const handleSaveLoan = async (loanData) => {
         actions.setLoading(true);
         try {
-            const response = selectedLoan 
-                ? await api.put(`/loans/${selectedLoan.loan_id}`, loanData)
-                : await api.post('/loans/', loanData);
+            if (selectedLoan) {
+                await api.put(`/loans/${selectedLoan.loan_id}`, loanData);
+            } else {
+                await api.post('/loans/', loanData);
+            }
             
             // API client handles success toast
             setIsModalOpen(false);
@@ -91,7 +94,7 @@ const LoanManagement = () => {
 
         actions.setLoading(true);
         try {
-            const response = await api.delete(`/loans/${loanId}`);
+            await api.delete(`/loans/${loanId}`);
             
             // API client handles success toast
             loadLoans();

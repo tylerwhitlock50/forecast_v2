@@ -67,7 +67,7 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
     if (!confirmed) return;
 
     try {
-      const response = await api.delete(`/database/delete/${database.filename}`);
+      await api.delete(`/database/delete/${database.filename}`);
       
       // API client handles success toast
       fetchDatabases(); // Refresh the list

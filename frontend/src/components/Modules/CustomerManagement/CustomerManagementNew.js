@@ -1,16 +1,14 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import CustomerTable from './CustomerTable';
 import CustomerModal from './CustomerModal';
 import CustomerSummary from './CustomerSummary';
 import CustomerValidation from './CustomerValidation';
@@ -25,8 +23,8 @@ const CustomerManagement = () => {
   const [editingCustomer, setEditingCustomer] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterSegment, setFilterSegment] = useState('all');
-  const [sortField, setSortField] = useState('customer_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('customer_name');
+  const [sortDirection] = useState('asc');
   const [selectedCustomers, setSelectedCustomers] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
@@ -158,34 +156,6 @@ const CustomerManagement = () => {
         URL.revokeObjectURL(url);
         toast.success(`Exported ${csvData.length} customers`);
       }
-    }
-  };
-
-  // Handle sorting
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
-  };
-
-  // Handle customer selection
-  const handleCustomerSelect = (customerId, selected) => {
-    if (selected) {
-      setSelectedCustomers(prev => [...prev, customerId]);
-    } else {
-      setSelectedCustomers(prev => prev.filter(id => id !== customerId));
-    }
-  };
-
-  // Handle select all
-  const handleSelectAll = (selected) => {
-    if (selected) {
-      setSelectedCustomers(filteredCustomers.map(c => c.customer_id));
-    } else {
-      setSelectedCustomers([]);
     }
   };
 

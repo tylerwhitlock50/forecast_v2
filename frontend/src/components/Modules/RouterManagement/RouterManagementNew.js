@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
@@ -10,7 +10,6 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import RouterTable from './RouterTable';
 import RouterModal from './RouterModal';
 import RouterOperationsModal from './RouterOperationsModal';
 import RouterSummary from './RouterSummary';
@@ -26,8 +25,8 @@ const RouterManagement = () => {
   const [selectedRouter, setSelectedRouter] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterVersion, setFilterVersion] = useState('all');
-  const [sortField, setSortField] = useState('router_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('router_name');
+  const [sortDirection] = useState('asc');
   const [selectedRouters, setSelectedRouters] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
@@ -172,34 +171,6 @@ const RouterManagement = () => {
         URL.revokeObjectURL(url);
         toast.success(`Exported ${csvData.length} routers`);
       }
-    }
-  };
-
-  // Handle sorting
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
-  };
-
-  // Handle router selection
-  const handleRouterSelect = (routerId, selected) => {
-    if (selected) {
-      setSelectedRouters(prev => [...prev, routerId]);
-    } else {
-      setSelectedRouters(prev => prev.filter(id => id !== routerId));
-    }
-  };
-
-  // Handle select all
-  const handleSelectAll = (selected) => {
-    if (selected) {
-      setSelectedRouters(filteredRouters.map(r => r.router_id));
-    } else {
-      setSelectedRouters([]);
     }
   };
 

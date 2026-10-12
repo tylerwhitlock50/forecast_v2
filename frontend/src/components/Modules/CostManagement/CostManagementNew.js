@@ -16,7 +16,6 @@ import {
   getRoutingDetails
 } from './CostCalculations';
 import CostWarningsBanner from '../../Common/CostWarningsBanner';
-import MiniTrendChart from './MiniTrendChart';
 import MaterialsUsageTab from './MaterialsUsageTab';
 import MachineUtilizationTab from './MachineUtilizationTab';
 import LaborUtilizationTab from './LaborUtilizationTab';

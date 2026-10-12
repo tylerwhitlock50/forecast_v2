@@ -131,12 +131,16 @@ All API responses follow this pattern:
 
 ### Testing Structure
 - Tests are in `tests/` directory using pytest
+- `DatabaseManager(database_path=..., data_dir=...)` arguments always win over `DATABASE_PATH` / `DATA_DIR`, so a test that names its own database can never touch the real one; path auto-detection tests patch `os.path.isdir('/data')` so they pass both locally and inside the container
+- The production build is `CI=true npm run build`; it treats ESLint warnings as errors, so keep the tree warning-free instead of disabling the plugin
 - Test configuration in `pytest.ini`
 - Run tests with `python run_tests.py`
 - Integration tests for API endpoints and database operations
 
 ### Financial Statements Engine (`app/services/financial_statements.py`)
 - Periods are `YYYY-MM`; a reporting window is inclusive on both ends.
+- Opening balances in `financial_assumptions` are stated as at the END of `opening_period`; the model starts the month after. When a report window starts later, `build_statements` rolls every month in between forward (cash, working capital, capex, depreciation, debt, retained earnings) and slices the window out, so a March-only report shows the same March as a full-year report. The response carries `carry_forward` (months rolled forward) and warns with `opening_period_unset` / `window_before_opening` when it cannot roll forward. Detail breakdowns (`detail.*`) cover the window only.
+- Cash flow `totals` sum the flows; `opening_cash` / `closing_cash` in `totals` are the window's balances, never sums of monthly balances. `cash_flow.reconciliation` proves opening + net cash flow = closing.
 - Scenario scoping: rows with `forecast_id` in the selected set OR `NULL` are included. `NULL` means company-wide (payroll, expenses, capex). Sales are always scenario-specific. The payroll / expense list endpoints and the generic `/data/{table}` read apply the same rule, so the module screens show what the statements use.
 - Scenario lifecycle (`forecast_routes.py`): `GET /forecast/scenarios` is enriched with counts and the sales window; branching (`POST /forecast/scenario/{id}/duplicate`) copies sales, scenario-specific expenses / payroll / capex, assumptions and notes in one transaction and applies price / quantity multipliers and period extension server-side; delete cascades the same tables. Exactly one scenario has `is_base = 1`. Tests: `tests/test_scenarios.py`. Workflow: `documentation/scenario_workflow_guide.md`.
 - Payroll is prorated to each calendar month from `start_date` / `end_date`, with raises applied from `next_review_date`. Never annualize payroll in reporting code; call `payroll_by_period`.
@@ -145,6 +149,8 @@ All API responses follow this pattern:
 - Debt rolls forward from the opening balance in the loan schedules, so the balance sheet identity holds exactly; opening equity is plugged unless supplied.
 - Income tax applies only to positive pre-tax income (no loss carry-forward).
 - Add a new statement line by extending `build_statements` and, if actuals should be tracked for it, `VARIANCE_LINE_ITEMS`.
+- Budget vs actual (`build_variance`): a line/month with no stored actual is MISSING (`actual: null`, no variance); a stored 0 is a confirmed zero and is compared. To-date totals compare each line only over the months that line has actuals for; every line reports `coverage` (`complete` / `partial` / `none`), `periods_compared` and `missing_periods` up to `actuals_through`, and the report carries `period_coverage`, `incomplete_lines` and an `incomplete_actuals` warning.
+- Calendars: pay runs come from `pay_run_dates` (Fridays for weekly/biweekly, 15th + month end for semimonthly, month end for monthly) and loan schedules from `add_months` (calendar months, day clamped to month end). Never use average-day increments (30.44 days, 365.25 / runs) for dates. The API sends dates as `YYYY-MM-DD` strings; the frontend parses them with `src/lib/dates.js` (`parseLocalDate`, `monthKey`) so a month-end date never shifts into the previous month in a US timezone.
 - Tests for the engine live in `tests/test_financial_statements.py`; keep the balance-check and cash roll-forward tests passing when changing the maths.
 
 ## File Mappings

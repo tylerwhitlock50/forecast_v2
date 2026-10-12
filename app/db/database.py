@@ -5,30 +5,36 @@ from typing import Dict, Any
 
 class DatabaseManager:
     def __init__(self, database_path: str = None, data_dir: str = None):
-        # Allow environment overrides first
+        """
+        Resolve where the database and CSV data live.
+
+        Precedence: explicit arguments, then the DATABASE_PATH / DATA_DIR
+        environment variables, then auto-detection (/data inside the Docker
+        container, ./data for local development). Explicit arguments always
+        win so a test or script that names its own database can never be
+        redirected to the production file by the environment.
+        """
         env_db_path = os.getenv('DATABASE_PATH')
         env_data_dir = os.getenv('DATA_DIR')
 
-        if env_db_path:
-            # Full explicit path provided
+        if database_path is not None:
+            # Explicit path provided by the caller
+            self.database_path = database_path
+            self.data_dir = data_dir if data_dir is not None else os.path.dirname(database_path)
+        elif env_db_path:
+            # Full explicit path provided by the environment
             self.database_path = env_db_path
-            self.data_dir = env_data_dir if env_data_dir else os.path.dirname(env_db_path)
-        elif env_data_dir and not database_path:
+            self.data_dir = data_dir or env_data_dir or os.path.dirname(env_db_path)
+        elif env_data_dir or data_dir:
             # Data directory provided; place DB inside it
-            self.data_dir = env_data_dir
+            self.data_dir = data_dir or env_data_dir
             self.database_path = os.path.join(self.data_dir, 'forecast.db')
-        else:
-            # Use local paths for development, Docker paths for production
-            if database_path is None:
-                if os.path.exists('/data'):  # Docker environment
-                    self.database_path = '/data/forecast.db'
-                    self.data_dir = '/data'
-                else:  # Local development
-                    self.database_path = './data/forecast.db'
-                    self.data_dir = './data'
-            else:
-                self.database_path = database_path
-                self.data_dir = data_dir if data_dir is not None else os.path.dirname(database_path)
+        elif os.path.isdir('/data'):  # Docker environment
+            self.database_path = '/data/forecast.db'
+            self.data_dir = '/data'
+        else:  # Local development
+            self.database_path = './data/forecast.db'
+            self.data_dir = './data'
         
         # Ensure data directory exists
         os.makedirs(os.path.dirname(self.database_path), exist_ok=True)
