@@ -146,7 +146,8 @@ def test_duplicate_copies_everything_and_applies_overrides(client):
     assert data["notes"] == "some notes"
     assert data["is_base"] is False
     # 3 copied rows + 2 lines x 2 extended months
-    assert data["copied"] == {"sales": 3, "sales_extended": 4, "expenses": 1, "employees": 1, "capex": 1, "assumptions": True}
+    assert data["copied"] == {"sales": 3, "sales_extended": 4, "expenses": 1, "employees": 1, "capex": 1, "assumptions": True,
+                              "deduction_rules": 0, "prices": 0}
     assert data["sales_rows"] == 7
     assert data["start_period"] == "2026-01" and data["end_period"] == "2026-04"
 
@@ -361,3 +362,85 @@ def test_fresh_database_seeded_from_legacy_forecast_csv_gets_a_base():
         mgr.close_all_connections()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Price list and sales deduction rules follow the scenario lifecycle
+# ---------------------------------------------------------------------------
+
+def _db_path() -> str:
+    import db.database as dbmod_short
+    return dbmod_short.db_manager.database_path   # the fixture's test database
+
+
+def _seed_rules():
+    """F001 gets one price and one deduction rule of its own; one of each is company-wide; F002 has one rule."""
+    conn = sqlite3.connect(_db_path())
+    c = conn.cursor()
+    c.executemany(
+        """INSERT INTO sales_deduction_rules (rule_id, forecast_id, deduction_type, name, method, rate, customer_type,
+                                              start_period, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-01-01', '2026-01-01')""", [
+            ("DED-OWN", "F001", "terms_allowance", "Dealer terms", "percent_of_gross", 0.02, "Dealer", "2026-01", "n"),
+            ("DED-ALL", None, "excise_tax", "FET", "embedded_tax", 0.11, None, None, None),
+            ("DED-F2", "F002", "chargebacks", "F2 chargebacks", "percent_of_gross", 0.01, None, None, None),
+        ])
+    c.executemany(
+        """INSERT INTO price_list (price_id, forecast_id, unit_id, customer_type, method, unit_price, discount_pct)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""", [
+            ("PRC-OWN", "F001", "P1", "Dealer", "fixed", 95.0, None),
+            ("PRC-ALL", None, None, "Government", "discount_from_base", None, 0.2),
+        ])
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def rules_client(client):
+    _seed_rules()
+    return client
+
+
+def test_scenario_counts_include_rules(rules_client):
+    base = rules_client.get("/forecast/scenario/F001").json()["data"]
+    assert base["deduction_rule_count"] == 1 and base["price_count"] == 1     # company-wide rows not counted
+    other = rules_client.get("/forecast/scenario/F002").json()["data"]
+    assert other["deduction_rule_count"] == 1 and other["price_count"] == 0
+
+
+def test_duplicate_copies_scenario_rules_with_new_ids(rules_client):
+    res = rules_client.post("/forecast/scenario/F001/duplicate", json={"name": "Branch"})
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    new_id = data["forecast_id"]
+    assert data["copied"]["deduction_rules"] == 1 and data["copied"]["prices"] == 1
+    assert data["deduction_rule_count"] == 1 and data["price_count"] == 1
+
+    conn = sqlite3.connect(_db_path())
+    try:
+        rules = conn.execute(
+            "SELECT rule_id, deduction_type, name, method, rate, customer_type, start_period, notes FROM sales_deduction_rules "
+            "WHERE forecast_id = ?", (new_id,)).fetchall()
+        prices = conn.execute("SELECT price_id, unit_id, customer_type, method, unit_price FROM price_list WHERE forecast_id = ?",
+                              (new_id,)).fetchall()
+        source_rules = conn.execute("SELECT COUNT(*) FROM sales_deduction_rules WHERE forecast_id = 'F001'").fetchone()[0]
+        company_wide = conn.execute("SELECT COUNT(*) FROM sales_deduction_rules WHERE forecast_id IS NULL").fetchone()[0]
+    finally:
+        conn.close()
+    assert len(rules) == 1 and rules[0][0].startswith("DED-") and rules[0][0] != "DED-OWN"
+    assert rules[0][1:] == ("terms_allowance", "Dealer terms", "percent_of_gross", 0.02, "Dealer", "2026-01", "n")
+    assert len(prices) == 1 and prices[0][0].startswith("PRC-") and prices[0][0] != "PRC-OWN"
+    assert prices[0][1:] == ("P1", "Dealer", "fixed", 95.0)
+    assert source_rules == 1 and company_wide == 1                              # source and company-wide untouched
+
+
+def test_delete_cascades_scenario_rules_only(rules_client):
+    assert rules_client.delete("/forecast/scenario/F001").status_code == 200
+    conn = sqlite3.connect(_db_path())
+    try:
+        rule_ids = sorted(r[0] for r in conn.execute("SELECT rule_id FROM sales_deduction_rules"))
+        price_ids = sorted(r[0] for r in conn.execute("SELECT price_id FROM price_list"))
+    finally:
+        conn.close()
+    assert rule_ids == ["DED-ALL", "DED-F2"]
+    assert price_ids == ["PRC-ALL"]

@@ -41,7 +41,10 @@ async def get_forecast(forecast_id: Optional[str] = Query(None, description="Fil
 # statements engine (see services.financial_statements._scope_clause).
 # ---------------------------------------------------------------------------
 
-SCENARIO_TABLES = ("sales", "expenses", "payroll", "capital_expenditures", "financial_assumptions")
+SCENARIO_TABLES = (
+    "sales", "expenses", "payroll", "capital_expenditures", "financial_assumptions",
+    "sales_deduction_rules", "price_list",
+)
 
 
 def _next_forecast_id(cursor) -> str:
@@ -74,6 +77,12 @@ def _scenario_summary(cursor, forecast_id: str) -> Dict[str, Any]:
     for table, key in (("expenses", "expense_count"), ("payroll", "employee_count"), ("capital_expenditures", "capex_count")):
         cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE forecast_id = ?", (forecast_id,))
         counts[key] = cursor.fetchone()[0]
+    for table, key in (("sales_deduction_rules", "deduction_rule_count"), ("price_list", "price_count")):
+        try:
+            cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE forecast_id = ?", (forecast_id,))
+            counts[key] = cursor.fetchone()[0]
+        except sqlite3.OperationalError:  # table missing on a database not yet migrated
+            counts[key] = 0
     cursor.execute("SELECT 1 FROM financial_assumptions WHERE forecast_id = ?", (forecast_id,))
     counts["has_assumptions"] = cursor.fetchone() is not None
     counts["start_period"] = str(lo)[:7] if lo else None
@@ -244,7 +253,9 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
     Branch a scenario in a single transaction.
 
     Copies sales, scenario-specific expenses / payroll / capex, the financial
-    assumptions and the notes. Optional overrides (applied to the copy only):
+    assumptions, the scenario's own price-list and sales deduction rules
+    (company-wide rules already apply to every scenario) and the notes.
+    Optional overrides (applied to the copy only):
 
     * price_multiplier     - scales unit_price on every copied sales row
     * quantity_multiplier  - scales quantity on every copied sales row
@@ -427,6 +438,26 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
                     )
                     copied_assumptions = True
 
+            # --- Price list and sales deduction rules (scenario-specific rows) ----
+            copied_rules = {}
+            for table, id_col, prefix in (("sales_deduction_rules", "rule_id", "DED"), ("price_list", "price_id", "PRC")):
+                cursor.execute(f"SELECT * FROM {table} WHERE forecast_id = ?", (forecast_id,))
+                columns = [d[0] for d in cursor.description]
+                now = datetime.now().isoformat(timespec="seconds")
+                count = 0
+                for values in [dict(zip(columns, r)) for r in cursor.fetchall()]:
+                    values[id_col] = f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
+                    values["forecast_id"] = new_forecast_id
+                    values["created_at"] = now
+                    values["updated_at"] = now
+                    cols = list(values.keys())
+                    cursor.execute(
+                        f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                        [values[c] for c in cols],
+                    )
+                    count += 1
+                copied_rules[table] = count
+
             conn.commit()
             record = _scenario_row(cursor, new_forecast_id)
         except HTTPException:
@@ -446,6 +477,8 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
             "employees": copied_employees,
             "capex": copied_capex,
             "assumptions": copied_assumptions,
+            "deduction_rules": copied_rules["sales_deduction_rules"],
+            "prices": copied_rules["price_list"],
         }
         record["overrides"] = {
             "price_multiplier": price_multiplier,
@@ -855,163 +888,334 @@ async def bulk_create_products(products_data: Dict[str, Any]):
 @router.post("/smart_import_sales", response_model=ForecastResponse)
 async def smart_import_sales(sales_data: Dict[str, Any]):
     """
-    Smart import sales forecast with auto-creation of missing customers/products
-    """
-    try:
-        from db.database import db_manager
-        
-        conn = db_manager.get_connection()
-        cursor = conn.cursor()
-        
-        sales = sales_data.get('sales', [])
-        options = sales_data.get('options', {})
-        auto_create = options.get('autoCreate', True)
-        forecast_id = sales_data.get('forecast_id')
+    Import a monthly sales forecast into a scenario, creating missing
+    customers / products on the fly.
 
-        if not sales:
-            raise HTTPException(status_code=400, detail="No sales data provided")
-        if not forecast_id:
-            raise HTTPException(status_code=400, detail="forecast_id is required")
-        
-        # Get existing customers and products
-        cursor.execute("SELECT customer_id, customer_name FROM customers")
-        existing_customers = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        cursor.execute("SELECT unit_id, unit_name FROM units")
-        existing_products = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        # Detect missing items
-        missing_customers = {}
-        missing_products = {}
-        
-        for sale in sales:
-            customer_id = sale.get('customer_id')
-            product_id = sale.get('product_id') or sale.get('unit_id')
-            
-            if customer_id and customer_id not in existing_customers:
-                if customer_id not in missing_customers:
-                    missing_customers[customer_id] = customer_id
-            
-            if product_id and product_id not in existing_products:
-                if product_id not in missing_products:
-                    missing_products[product_id] = product_id
-        
-        # Auto-create missing items if enabled
-        created_customers = []
-        created_products = []
-        
-        if auto_create and missing_customers:
-            for customer_id in missing_customers.keys():
-                try:
-                    cursor.execute("""
-                        INSERT INTO customers (customer_id, customer_name, customer_type, region)
-                        VALUES (?, ?, ?, ?)
-                    """, (customer_id, customer_id, 'Unknown', 'Unknown'))
-                    created_customers.append(customer_id)
-                    existing_customers[customer_id] = customer_id
-                except sqlite3.IntegrityError:
-                    pass  # Already exists
-        
-        if auto_create and missing_products:
-            for product_id in missing_products.keys():
-                try:
-                    cursor.execute("""
-                        INSERT INTO units (unit_id, unit_name, base_price)
-                        VALUES (?, ?, ?)
-                    """, (product_id, product_id, 0))
-                    created_products.append(product_id)
-                    existing_products[product_id] = product_id
-                except sqlite3.IntegrityError:
-                    pass  # Already exists
-        
-        # Import sales data
-        imported_count = 0
-        errors = []
-        
-        for idx, sale in enumerate(sales):
+    Body: ``{forecast_id, sales: [...] (or rows), options: {autoCreate = true,
+    allowZeroPrice = false}, dry_run = false, year?}``.
+
+    * Columns are matched through api.import_routes.SALES_FIELDS (case and
+      punctuation ignored; Customer / Qty / Price / Month ... aliases). A row
+      with no period column but month-named columns (Jan-27, 2027-02, ...)
+      is a wide row: one sales row per filled month. Bare month names (Jan ..
+      Dec, or a period of 'Jan') take the row's Year column or ``year`` from
+      the request.
+    * Periods: 2027-01, 2027-1, 2027/01, 1/2027, 1/15/2027, 2027-01-15,
+      Jan-27, Jan 2027, January 2027, Excel serial dates. Quarters / weeks
+      are rejected: the model is monthly.
+    * Price: a row's own price (> 0, or revenue / quantity when the file
+      has revenue instead of a price) is kept. A blank or 0 price is resolved
+      from the price list, then the product's base_price; still unpriced rows
+      are errors unless options.allowZeroPrice (then imported at 0).
+      ``price_sources`` counts where each row's price came from.
+    * Customers / products given by name, or by an id that is really a name,
+      resolve to the existing record. Auto-created records take
+      customer_name / customer_type / unit_name / unit_type / base_price from
+      the rows.
+    * Existing rows for the same customer + product + month are updated.
+      Quantity decimals are kept. ``dry_run`` reports without writing.
+    """
+    from db.database import db_manager
+    from api.import_routes import SALES_FIELDS, next_sequential_id
+    from api.import_routes import _blank, _number, _text  # shared cell parsing ('$1,234.50', NaN, blanks)
+    from services.pricing import load_price_rules, resolve_price
+    from utils.period_normalizer import month_from_name, month_in_year, normalize_month, period_kind
+
+    sales = sales_data.get('sales') or sales_data.get('rows') or []
+    options = sales_data.get('options') or {}
+    auto_create = bool(options.get('autoCreate', options.get('auto_create', True)))
+    allow_zero = bool(options.get('allowZeroPrice', options.get('allow_zero_price', False)))
+    dry_run = bool(sales_data.get('dry_run', options.get('dryRun', options.get('dry_run', False))))
+    forecast_id = sales_data.get('forecast_id')
+    default_year = sales_data.get('year', options.get('year'))
+
+    if not sales:
+        raise HTTPException(status_code=400, detail="No sales data provided")
+    if not forecast_id:
+        raise HTTPException(status_code=400, detail="forecast_id is required")
+    if not isinstance(sales, list) or not all(isinstance(s, dict) for s in sales):
+        raise HTTPException(status_code=422, detail="sales must be a list of row objects")
+
+    conn = db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ?", (forecast_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Forecast scenario '{forecast_id}' not found; create it first")
+
+        # --- 1. Map columns; unpivot wide (one column per month) rows ----------------
+        entries: List[Tuple[int, Dict[str, Any]]] = []
+        ignored_columns: List[str] = []
+        wide_format = False
+        blank_rows = 0
+        missing_year_rows: List[int] = []
+        for row_no, raw in enumerate(sales, start=1):
+            data, extra = SALES_FIELDS.map_row(raw)
+            year = data.get('year', default_year)
+            month_columns = []
+            for k in extra:
+                month = normalize_month(k)
+                if not month and month_from_name(k):
+                    # "Jan" .. "Dec" columns take the row's Year column (or the request's year).
+                    month = month_in_year(month_from_name(k), year)
+                    if not month:
+                        if row_no not in missing_year_rows:
+                            missing_year_rows.append(row_no)
+                        continue
+                if month:
+                    month_columns.append((k, month))
+                elif k not in ignored_columns:
+                    ignored_columns.append(k)
+            if row_no in missing_year_rows and _blank(data.get('period')):
+                continue
+            if month_columns and _blank(data.get('period')):
+                wide_format = True
+                filled = [(k, m) for k, m in month_columns if not _blank(raw.get(k))]
+                if not filled:
+                    blank_rows += 1
+                    continue
+                for key, month in filled:
+                    entries.append((row_no, {**data, 'period': month, 'quantity': raw[key]}))
+                continue
+            if not data and all(_blank(v) for v in raw.values()):
+                blank_rows += 1
+                continue
+            entries.append((row_no, data))
+
+        # --- 2. Customers and products (match by id, then by name) -----------------
+        cursor.execute("SELECT customer_id, customer_name, customer_type FROM customers")
+        customers = {r[0]: {"name": r[1], "type": r[2]} for r in cursor.fetchall()}
+        cursor.execute("SELECT unit_id, unit_name, base_price, unit_type FROM units")
+        products = {r[0]: {"name": r[1], "base_price": r[2], "type": r[3]} for r in cursor.fetchall()}
+
+        def _by_name(records: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
+            out: Dict[str, List[str]] = {}
+            for rid, rec in records.items():
+                if rec.get("name"):
+                    out.setdefault(str(rec["name"]).strip().lower(), []).append(rid)
+            return out
+
+        def _resolve(ref_id: Optional[str], ref_name: Optional[str], records, names) -> Optional[str]:
+            if ref_id and ref_id in records:
+                return ref_id
+            for candidate in (ref_id, ref_name):
+                if candidate and len(names.get(candidate.lower(), [])) == 1:
+                    return names[candidate.lower()][0]
+            return None
+
+        customer_names = _by_name(customers)
+        product_names = _by_name(products)
+        missing_customers: Dict[str, Dict[str, Any]] = {}
+        missing_products: Dict[str, Dict[str, Any]] = {}
+        for _row_no, data in entries:
+            cid, cname = _text(data.get('customer_id')), _text(data.get('customer_name'))
+            if (cid or cname) and not _resolve(cid, cname, customers, customer_names):
+                key = cid or f"~{cname.lower()}"
+                entry = missing_customers.setdefault(key, {"id": cid, "name": None, "type": None})
+                entry["name"] = entry["name"] or cname
+                entry["type"] = entry["type"] or _text(data.get('customer_type'))
+            uid, uname = _text(data.get('unit_id')), _text(data.get('unit_name'))
+            if (uid or uname) and not _resolve(uid, uname, products, product_names):
+                key = uid or f"~{uname.lower()}"
+                entry = missing_products.setdefault(key, {"id": uid, "name": None, "type": None, "base_price": None})
+                entry["name"] = entry["name"] or uname
+                entry["type"] = entry["type"] or _text(data.get('unit_type'))
+                if entry["base_price"] is None:
+                    try:
+                        entry["base_price"] = _number(data.get('base_price'), 'base_price')
+                    except ValueError:
+                        pass
+
+        created_customers: List[str] = []
+        created_products: List[str] = []
+        if auto_create:
+            for key, info in missing_customers.items():
+                new_id = info["id"] or next_sequential_id(cursor, "customers", "customer_id", "CUST-", 3)
+                cursor.execute(
+                    "INSERT INTO customers (customer_id, customer_name, customer_type, region) VALUES (?, ?, ?, ?)",
+                    (new_id, info["name"] or new_id, info["type"] or 'Unknown', 'Unknown'),
+                )
+                customers[new_id] = {"name": info["name"] or new_id, "type": info["type"] or 'Unknown'}
+                customer_names.setdefault((info["name"] or new_id).lower(), []).append(new_id)
+                created_customers.append(new_id)
+            for key, info in missing_products.items():
+                new_id = info["id"] or next_sequential_id(cursor, "units", "unit_id", "PROD-", 3)
+                base_price = info["base_price"] if info["base_price"] is not None else 0
+                cursor.execute(
+                    "INSERT INTO units (unit_id, unit_name, base_price, unit_type) VALUES (?, ?, ?, ?)",
+                    (new_id, info["name"] or new_id, base_price, info["type"]),
+                )
+                products[new_id] = {"name": info["name"] or new_id, "base_price": base_price, "type": info["type"]}
+                product_names.setdefault((info["name"] or new_id).lower(), []).append(new_id)
+                created_products.append(new_id)
+
+        # --- 3. Import rows -----------------------------------------------------------
+        price_rules = load_price_rules(cursor, [forecast_id])
+        imported_count = inserted = updated = 0
+        errors: List[Dict[str, Any]] = [
+            {'row': r, 'error': "Month columns (Jan, Feb, ...) have no year: add a Year column or send year with the request"}
+            for r in missing_year_rows
+        ]
+        warnings: List[str] = []
+        price_sources: Dict[str, int] = {}
+        seen: Dict[Tuple[str, str, str], int] = {}
+        no_quantity: List[int] = []
+        months: List[str] = []
+        total_quantity = total_revenue = 0.0
+
+        for row_no, data in entries:
+            def _fail(message: str, row_no: int = row_no) -> None:
+                errors.append({'row': row_no, 'error': message})
+
+            cid, cname = _text(data.get('customer_id')), _text(data.get('customer_name'))
+            uid, uname = _text(data.get('unit_id')), _text(data.get('unit_name'))
+            raw_period = data.get('period')
+            if not (cid or cname):
+                _fail('Missing customer_id')
+                continue
+            if not (uid or uname):
+                _fail('Missing product_id / unit_id')
+                continue
+            if _blank(raw_period):
+                _fail('Missing period (a month such as 2027-01)')
+                continue
+            customer_id = _resolve(cid, cname, customers, customer_names)
+            if not customer_id:
+                _fail(f'Customer {cid or cname} does not exist')
+                continue
+            product_id = _resolve(uid, uname, products, product_names)
+            if not product_id:
+                _fail(f'Product {uid or uname} does not exist')
+                continue
+
+            period = normalize_month(raw_period)
+            if not period and month_from_name(raw_period):
+                period = month_in_year(month_from_name(raw_period), data.get('year', default_year))
+                if not period:
+                    _fail(f"Period '{raw_period}' has no year: add a Year column or send year with the request")
+                    continue
+            if not period:
+                kind = period_kind(normalize_period(raw_period))
+                if kind in ('quarter', 'week'):
+                    _fail(f"Period '{raw_period}' is a {kind}; the forecast is monthly, so split it into months "
+                          f"(YYYY-MM, e.g. 2027-01)")
+                else:
+                    _fail(f"Invalid period '{raw_period}': use a month such as 2027-01, 1/2027, Jan-2027 or 1/15/2027")
+                continue
+
             try:
-                customer_id = sale.get('customer_id')
-                product_id = sale.get('product_id') or sale.get('unit_id')
-                period = sale.get('period', '')
-                quantity = float(sale.get('quantity', 0))
-                price = float(sale.get('price') or sale.get('unit_price', 0))
-                
-                # Validate
-                if not customer_id or not product_id or not period:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': 'Missing required fields'
-                    })
-                    continue
-                
-                if customer_id not in existing_customers:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': f'Customer {customer_id} does not exist'
-                    })
-                    continue
-                
-                if product_id not in existing_products:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': f'Product {product_id} does not exist'
-                    })
-                    continue
-                
-                # Normalize period to standard format (YYYY-MM, YYYY-QX, or YYYY-WXX)
-                from utils.period_normalizer import normalize_period
-                normalized_period = normalize_period(period)
-                if normalized_period:
-                    period = normalized_period
+                quantity = _number(data.get('quantity'), 'quantity')
+                price = _number(data.get('unit_price'), 'unit_price')
+                revenue = _number(data.get('total_revenue'), 'total_revenue')
+            except ValueError as exc:
+                _fail(str(exc))
+                continue
+            if quantity is None:
+                quantity = 0.0
+                no_quantity.append(row_no)
+            if not price and revenue and quantity:
+                price = round(revenue / quantity, 4)   # a file with revenue but no price
+            if price is not None and price < 0:
+                _fail(f'unit_price cannot be negative ({price:g})')
+                continue
+            if price:
+                source = 'explicit'
+            else:
+                product = products.get(product_id, {})
+                resolved = resolve_price(
+                    price_rules,
+                    {"forecast_id": forecast_id, "unit_id": product_id, "customer_id": customer_id,
+                     "customer_type": customers.get(customer_id, {}).get("type"), "period": period},
+                    base_price=product.get("base_price"),
+                )
+                if resolved["price"] is not None:
+                    price, source = round(float(resolved["price"]), 4), resolved["source"]
+                elif allow_zero:
+                    price, source = 0.0, 'zero_price'
                 else:
-                    errors.append({
-                        'row': idx + 1,
-                        'error': f'Invalid period format: {period}'
-                    })
+                    _fail(f'No price for {product_id} / {customer_id} in {period}: give unit_price, add a price-list '
+                          f'entry or a base price for the product, or import with allowZeroPrice')
                     continue
-                
-                sale_id = f"SAL-{uuid.uuid4().hex[:8].upper()}"
-                total_revenue = quantity * price
-                
-                # Check if exists
-                cursor.execute("""
-                    SELECT sale_id FROM sales 
-                    WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
-                """, (customer_id, product_id, period, forecast_id))
-                
-                if cursor.fetchone():
-                    # Update existing
-                    cursor.execute("""
-                        UPDATE sales 
-                        SET quantity = ?, unit_price = ?, total_revenue = ?
-                        WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?
-                    """, (quantity, price, total_revenue, customer_id, product_id, period, forecast_id))
-                else:
-                    # Insert new
-                    cursor.execute("""
-                        INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (sale_id, customer_id, product_id, period, quantity, price, total_revenue, forecast_id))
-                
-                imported_count += 1
-            except Exception as e:
-                errors.append({
-                    'row': idx + 1,
-                    'error': str(e)
-                })
-        
-        conn.commit()
-        db_manager.close_connection(conn)
-        
-        return ForecastResponse(
-            status="success",
-            data={
-                'imported': imported_count,
-                'created_customers': created_customers,
-                'created_products': created_products,
-                'errors': errors
-            },
-            message=f"Imported {imported_count} sales records. Created {len(created_customers)} customers and {len(created_products)} products."
-        )
+
+            total = quantity * price
+            key = (customer_id, product_id, period)
+            if key in seen:
+                warnings.append(f"Row {row_no} repeats {customer_id} / {product_id} / {period} from row {seen[key]}; "
+                                f"the later row wins")
+            seen[key] = row_no
+
+            cursor.execute(
+                "SELECT sale_id FROM sales WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?",
+                (customer_id, product_id, period, forecast_id),
+            )
+            if cursor.fetchone():
+                cursor.execute(
+                    """UPDATE sales SET quantity = ?, unit_price = ?, total_revenue = ?
+                       WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?""",
+                    (quantity, price, total, customer_id, product_id, period, forecast_id),
+                )
+                updated += 1
+            else:
+                cursor.execute(
+                    """INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (f"SAL-{uuid.uuid4().hex[:8].upper()}", customer_id, product_id, period, quantity, price, total,
+                     forecast_id),
+                )
+                inserted += 1
+            imported_count += 1
+            price_sources[source] = price_sources.get(source, 0) + 1
+            months.append(period)
+            total_quantity += quantity
+            total_revenue += total
+
+        if no_quantity:
+            warnings.append(f"{len(no_quantity)} rows had no quantity and were imported as 0")
+        if ignored_columns:
+            warnings.append(f"Ignored columns (not recognised): {', '.join(ignored_columns)}")
+        if created_customers:
+            warnings.append(f"Created {len(created_customers)} customers; check their customer_type (it drives "
+                            f"customer-type prices and deductions)")
+
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=f"Error smart importing sales: {str(e)}")
+    finally:
+        db_manager.close_connection(conn)
+
+    message = (f"Imported {imported_count} sales records. Created {len(created_customers)} customers and "
+               f"{len(created_products)} products.")
+    if errors:
+        message += f" {len(errors)} rows had errors."
+    if dry_run:
+        message = "Dry run, nothing written: " + message.replace("Imported", "would import", 1)
+    return ForecastResponse(
+        status="success",
+        data={
+            'imported': imported_count,
+            'inserted': inserted,
+            'updated': updated,
+            'created_customers': created_customers,
+            'created_products': created_products,
+            'errors': sorted(errors, key=lambda e: e['row']),
+            'warnings': warnings,
+            'price_sources': price_sources,
+            'dry_run': dry_run,
+            'rows': len(sales),
+            'records': len(entries),
+            'blank_rows': blank_rows,
+            'wide_format': wide_format,
+            'start_period': min(months) if months else None,
+            'end_period': max(months) if months else None,
+            'total_quantity': round(total_quantity, 4),
+            'total_revenue': round(total_revenue, 2),
+        },
+        message=message,
+    )
