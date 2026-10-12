@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import api from '../../../lib/apiClient';
 import { PageHeader } from '../../ui/page-header';
-import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { Card, CardContent } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Select, SelectOption } from '../../ui/select';
@@ -21,7 +22,6 @@ import CustomerImportModal from './CustomerImportModal';
 import ProductImportModal from './ProductImportModal';
 import KeyboardShortcutsModal from './KeyboardShortcutsModal';
 import NewScenarioModal from './NewScenarioModal';
-import BranchScenarioModal from './BranchScenarioModal';
 import GettingStartedCard from './GettingStartedCard';
 import { buildTimePeriods, getFormattedDateRange } from './periodUtils';
 
@@ -32,39 +32,17 @@ const RevenueForecasting = () => {
   const [timeRange, setTimeRange] = useState('monthly');
   const [segments, setSegments] = useState([]);
   const [showNewScenarioModal, setShowNewScenarioModal] = useState(false);
-  const [showBranchScenarioModal, setShowBranchScenarioModal] = useState(false);
   const [showForecastLineModal, setShowForecastLineModal] = useState(false);
   const [showDataDebugger, setShowDataDebugger] = useState(false);
   const [showSalesImportModal, setShowSalesImportModal] = useState(false);
   const [showCustomerImportModal, setShowCustomerImportModal] = useState(false);
   const [showProductImportModal, setShowProductImportModal] = useState(false);
-  const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [customDateRange, setCustomDateRange] = useState(null);
   const [activePreset, setActivePreset] = useState('default'); // 'default' | 'current_fy' | 'next_12' | 'next_qtr' | 'custom'
   const [showDateRangeModal, setShowDateRangeModal] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
 
-  // Scenario notes: inline-editable free-text field in the header.
   const activeScenarioObj = activeScenario && scenarios ? scenarios[activeScenario] : null;
-  const [notesEditing, setNotesEditing] = useState(false);
-  const [notesDraft, setNotesDraft] = useState('');
-
-  useEffect(() => {
-    setNotesDraft(activeScenarioObj?.notes || '');
-  }, [activeScenario, activeScenarioObj?.notes]);
-
-  const handleNotesBlur = async () => {
-    setNotesEditing(false);
-    const current = activeScenarioObj?.notes || '';
-    if (!activeScenario) return;
-    if ((notesDraft || '') === current) return;
-    try {
-      await actions.updateScenario(activeScenario, { notes: notesDraft });
-    } catch (err) {
-      // Revert draft on failure
-      setNotesDraft(current);
-    }
-  };
 
   // Load persisted preferences
   useEffect(() => {
@@ -73,7 +51,7 @@ const RevenueForecasting = () => {
       const savedPreset = localStorage.getItem('revenue_activePreset');
       const savedCustomRange = localStorage.getItem('revenue_customDateRange');
 
-      if (savedTimeRange) {
+      if (savedTimeRange === 'monthly' || savedTimeRange === 'quarterly') {
         setTimeRange(savedTimeRange);
       }
 
@@ -142,43 +120,46 @@ const RevenueForecasting = () => {
       console.warn('Unable to persist preferences', err);
     }
   }, [timeRange, customDateRange, activePreset]);
-  // Generate months and years for dropdowns
-  const months = [
-    { value: 1, label: 'January' },
-    { value: 2, label: 'February' },
-    { value: 3, label: 'March' },
-    { value: 4, label: 'April' },
-    { value: 5, label: 'May' },
-    { value: 6, label: 'June' },
-    { value: 7, label: 'July' },
-    { value: 8, label: 'August' },
-    { value: 9, label: 'September' },
-    { value: 10, label: 'October' },
-    { value: 11, label: 'November' },
-    { value: 12, label: 'December' }
-  ];
+  // Default range: the active scenario's own sales window (at least 12
+  // months), so opening a scenario always shows its numbers. Falls back to
+  // the next 12 months for an empty scenario.
+  const scenarioWindowRange = useMemo(() => {
+    const start = activeScenarioObj?.start_period;
+    const end = activeScenarioObj?.end_period;
+    if (!start || !end) return null;
+    const [sy, sm] = start.split('-').map(Number);
+    let [ey, em] = end.split('-').map(Number);
+    const span = (ey - sy) * 12 + (em - sm) + 1;
+    if (span < 12) {
+      const extra = 12 - span;
+      em += extra;
+      ey += Math.floor((em - 1) / 12);
+      em = ((em - 1) % 12) + 1;
+    }
+    return { start: { month: sm, year: sy }, end: { month: em, year: ey } };
+  }, [activeScenarioObj?.start_period, activeScenarioObj?.end_period]);
 
-  const currentYear = new Date().getFullYear();
-  const years = Array.from({ length: 10 }, (_, i) => currentYear + i);
+  const effectiveDateRange = customDateRange || scenarioWindowRange;
 
   // Generate time periods with improved logic
   const timePeriods = useMemo(() => {
-    return buildTimePeriods(timeRange, customDateRange);
-  }, [timeRange, customDateRange]);
+    return buildTimePeriods(timeRange, effectiveDateRange);
+  }, [timeRange, effectiveDateRange]);
 
   const rangeSummary = useMemo(() => {
-    const unit = timeRange === 'weekly' ? 'weeks' : timeRange === 'quarterly' ? 'quarters' : 'months';
+    const unit = timeRange === 'quarterly' ? 'quarters' : 'months';
+    const range = effectiveDateRange;
 
-    if (customDateRange) {
-      const monthsInRange = (customDateRange.end.year - customDateRange.start.year) * 12 +
-        (customDateRange.end.month - customDateRange.start.month) + 1;
+    if (range) {
+      const monthsInRange = (range.end.year - range.start.year) * 12 +
+        (range.end.month - range.start.month) + 1;
       const periodCount = timePeriods.length || monthsInRange;
-
-      return `${customDateRange.start.month}/${customDateRange.start.year} – ${customDateRange.end.month}/${customDateRange.end.year} • ${periodCount} ${unit}`;
+      const label = `${range.start.month}/${range.start.year} – ${range.end.month}/${range.end.year} • ${periodCount} ${unit}`;
+      return customDateRange ? label : `Scenario window: ${label}`;
     }
 
     return `Default: next ${timePeriods.length} ${unit}`;
-  }, [customDateRange, timePeriods, timeRange]);
+  }, [customDateRange, effectiveDateRange, timePeriods, timeRange]);
 
   const computePresetRange = (preset) => {
     const now = new Date();
@@ -226,9 +207,9 @@ const RevenueForecasting = () => {
   const defaultDateRange = useMemo(() => {
     const toDateString = (year, month, day) => `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-    if (customDateRange) {
-      const start = toDateString(customDateRange.start.year, customDateRange.start.month, 1);
-      const endDate = new Date(customDateRange.end.year, customDateRange.end.month, 0);
+    if (effectiveDateRange) {
+      const start = toDateString(effectiveDateRange.start.year, effectiveDateRange.start.month, 1);
+      const endDate = new Date(effectiveDateRange.end.year, effectiveDateRange.end.month, 0);
       const end = toDateString(endDate.getFullYear(), endDate.getMonth() + 1, endDate.getDate());
       return { start, end };
     }
@@ -238,7 +219,7 @@ const RevenueForecasting = () => {
     const start = toDateString(nextYear, 1, 1);
     const end = toDateString(nextYear, 12, 31);
     return { start, end };
-  }, [customDateRange]);
+  }, [effectiveDateRange]);
 
   // Warn on invalid custom date range
   useEffect(() => {
@@ -254,40 +235,6 @@ const RevenueForecasting = () => {
       toast.error('Start date must be before end date for the custom range');
     }
   }, [customDateRange]);
-
-  // Handle matrix data changes
-  const handleMatrixDataChange = (newData) => {
-    const updatedSales = [];
-    
-    newData.forEach(row => {
-      timePeriods.forEach(period => {
-        const quantity = row[`quantity_${period.key}`] || 0;
-        const price = row[`price_${period.key}`] || 0;
-        
-        if (quantity > 0 || price > 0) {
-          const saleItem = {
-            unit_id: row.product_id,
-            customer_id: row.customer_id,
-            period: period.key,
-            quantity: quantity,
-            unit_price: price,
-            total_revenue: quantity * price,
-            forecast_id: activeScenario
-          };
-
-          updatedSales.push(saleItem);
-        }
-      });
-    });
-
-    actions.updateData('sales_forecast', updatedSales);
-    setUnsavedChanges(true);
-  };
-
-  // Handle cell changes
-  const handleCellChange = (rowIndex, colIndex, value, columnKey) => {
-    console.log('Cell change:', { rowIndex, colIndex, value, columnKey });
-  };
 
   // Get unique segments
   useEffect(() => {
@@ -357,10 +304,12 @@ const RevenueForecasting = () => {
         };
 
         timePeriods.forEach(period => {
+          const productId = product.unit_id || product.id;
           const existingSale = sales.find(s => 
-            s.unit_id === product.id && 
+            s.unit_id === productId && 
             s.customer_id === customer.customer_id && 
-            s.period === period.key
+            s.period === period.key &&
+            s.forecast_id === activeScenario
           );
           
           baseRow[`quantity_${period.key}`] = existingSale?.quantity || 0;
@@ -368,7 +317,10 @@ const RevenueForecasting = () => {
           baseRow[`revenue_${period.key}`] = (existingSale?.quantity || 0) * (existingSale?.unit_price || 0);
         });
 
-        matrixData.push(baseRow);
+        // Only lines that are actually forecast in this scenario.
+        if (timePeriods.some(period => baseRow[`quantity_${period.key}`] > 0 || baseRow[`price_${period.key}`] > 0)) {
+          matrixData.push(baseRow);
+        }
       });
     });
 
@@ -394,21 +346,6 @@ const RevenueForecasting = () => {
     a.click();
     URL.revokeObjectURL(url);
     toast.success(`Exported ${exportData.length} rows`);
-  };
-
-  // Handle save changes
-  const handleSaveChanges = async () => {
-    try {
-      const salesData = data.sales_forecast || [];
-      if (salesData.length > 0) {
-        await actions.bulkUpdateForecast(salesData);
-        setUnsavedChanges(false);
-      } else {
-        toast.info('No changes to save');
-      }
-    } catch (error) {
-      toast.error('Failed to save changes');
-    }
   };
 
   // Handle forecast line save
@@ -596,72 +533,25 @@ const RevenueForecasting = () => {
     <div className="container mx-auto px-6 py-8">
       <PageHeader
         title="Revenue Forecasting"
-        description={`Manage your revenue forecasts and analyze segment performance. ${activeScenario ? `Active scenario: ${activeScenario}` : ''}`}
+        description="Quantity and price by customer and product, per period, for the active scenario."
         actions={headerActions}
       />
 
-      {unsavedChanges && (
-        <div className="sticky top-0 z-30 mb-4">
-          <div className="bg-orange-50 border border-orange-200 rounded-md p-3 shadow-sm flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-orange-800">
-              <span className="h-2 w-2 rounded-full bg-orange-600 animate-pulse"></span>
-              <span className="font-medium">You have unsaved changes</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => actions.fetchAllData().then(() => setUnsavedChanges(false))}>
-                Discard
-              </Button>
-              <Button size="sm" className="bg-orange-600 hover:bg-orange-700" onClick={handleSaveChanges}>
-                Save now
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Badge variant="secondary">Active scenario: {activeScenario || 'none selected'}</Badge>
-        <Button size="sm" variant="outline" onClick={() => setShowNewScenarioModal(true)}>
-          New Scenario
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setShowBranchScenarioModal(true)}
-          disabled={!activeScenario}
-          title={!activeScenario ? 'Select an active scenario first' : 'Duplicate the active scenario with optional overrides'}
-        >
-          Branch Scenario
-        </Button>
-        {activeScenario && (
-          <div
-            className="flex-1 min-w-[200px] max-w-xl"
-            title="Click to edit scenario notes"
-          >
-            {notesEditing ? (
-              <textarea
-                autoFocus
-                value={notesDraft}
-                onChange={(e) => setNotesDraft(e.target.value)}
-                onBlur={handleNotesBlur}
-                placeholder="Add notes..."
-                rows={2}
-                className="w-full resize-y rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => setNotesEditing(true)}
-                className={
-                  'w-full truncate rounded-md border border-dashed border-gray-300 bg-gray-50 px-3 py-1.5 text-left text-sm hover:border-orange-300 hover:bg-orange-50 ' +
-                  (activeScenarioObj?.notes ? 'text-gray-700' : 'text-muted-foreground italic')
-                }
-              >
-                {activeScenarioObj?.notes || 'Add notes...'}
-              </button>
-            )}
-          </div>
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+        {activeScenarioObj ? (
+          <>
+            <span>Editing</span>
+            <span className="font-semibold text-gray-900">{activeScenarioObj.name}</span>
+            <Badge variant="outline" className="font-mono">{activeScenario}</Badge>
+            {activeScenarioObj.is_base && <Badge variant="secondary">Base</Badge>}
+            {activeScenarioObj.description && <span className="text-gray-500">— {activeScenarioObj.description}</span>}
+          </>
+        ) : (
+          <span className="text-amber-700">No scenario selected. Pick one in the bar above or create one.</span>
         )}
+        <Link to="/scenarios" className="ml-auto font-medium text-orange-700 hover:underline">
+          Manage, branch or compare scenarios
+        </Link>
       </div>
 
       {/* Compact Filter Bar */}
@@ -673,7 +563,7 @@ const RevenueForecasting = () => {
               <Label className="text-sm font-medium text-gray-700">Range:</Label>
               <div className="flex gap-1.5">
                 {[
-                  { id: 'default', label: 'Default', onClick: applyDefaultRange },
+                  { id: 'default', label: 'Scenario window', onClick: applyDefaultRange },
                   { id: 'current_fy', label: 'Current FY', onClick: () => applyPresetRange('current_fy') },
                   { id: 'next_12', label: 'Next 12M', onClick: () => applyPresetRange('next_12') },
                   { id: 'next_qtr', label: 'Next Qtr', onClick: () => applyPresetRange('next_qtr') },
@@ -699,9 +589,8 @@ const RevenueForecasting = () => {
             <div className="flex items-center gap-2 border-r pr-3">
               <Label className="text-sm font-medium text-gray-700">Period:</Label>
               <Select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="w-28">
-                <SelectOption value="monthly">Monthly</SelectOption>
-                <SelectOption value="quarterly">Quarterly</SelectOption>
-                <SelectOption value="weekly">Weekly</SelectOption>
+                <SelectOption value="monthly">Monthly (editable)</SelectOption>
+                <SelectOption value="quarterly">Quarterly (totals)</SelectOption>
               </Select>
             </div>
 
@@ -766,20 +655,6 @@ const RevenueForecasting = () => {
         onCreate={(scenarioData) => actions.createScenario(scenarioData)}
       />
 
-      <BranchScenarioModal
-        open={showBranchScenarioModal}
-        onClose={() => setShowBranchScenarioModal(false)}
-        scenarios={scenarios}
-        activeScenarioId={activeScenario}
-        onSubmit={async (sourceId, scenarioData, overrides) => {
-          const result = await actions.duplicateScenario(sourceId, scenarioData, overrides);
-          if (result) {
-            toast.success(`Branched to "${scenarioData.name}"`);
-            await actions.fetchAllData(result.forecast_id);
-          }
-          return result;
-        }}
-      />
 
 
       <ForecastLineModal
@@ -875,12 +750,11 @@ const RevenueForecasting = () => {
               onAddForecastLine={() => setShowForecastLineModal(true)}
             />
             <RevenueMatrix
-              key={`matrix-${timeRange}-${customDateRange ? `${customDateRange.start.year}-${customDateRange.start.month}-to-${customDateRange.end.year}-${customDateRange.end.month}` : 'default'}-${timePeriods.length}`}
               data={data}
               timePeriods={timePeriods}
               selectedSegment={selectedSegment}
-              onDataChange={handleMatrixDataChange}
-              onCellChange={handleCellChange}
+              periodType={timeRange}
+              onAddForecastLine={() => setShowForecastLineModal(true)}
             />
           </div>
         )}

@@ -73,7 +73,7 @@ async def get_expense_categories(
         
         return ForecastResponse(
             status="success",
-            data=categories,
+            data={"categories": categories},
             message=f"Retrieved {len(categories)} expense categories"
         )
         
@@ -171,7 +171,7 @@ async def get_expenses(
             conditions.append("e.vendor LIKE ?")
             params.append(f"%{vendor}%")
         if forecast_id:
-            conditions.append("e.forecast_id = ?")
+            conditions.append("(e.forecast_id = ? OR e.forecast_id IS NULL)")
             params.append(forecast_id)
         
         if conditions:
@@ -224,7 +224,7 @@ async def get_expenses(
         
         return ForecastResponse(
             status="success",
-            data=expenses,
+            data={"expenses": expenses},
             message=f"Retrieved {len(expenses)} expenses"
         )
         
@@ -304,7 +304,8 @@ async def update_expense(expense_id: str, expense_update: ExpenseUpdate):
         params = []
         
         for field, value in expense_update.dict(exclude_unset=True).items():
-            if value is not None:
+            # forecast_id may be set to null explicitly to make an expense company-wide.
+            if value is not None or field == "forecast_id":
                 updates.append(f"{field} = ?")
                 params.append(value)
         
@@ -447,7 +448,7 @@ async def get_expense_allocations(
             conditions.append("a.payment_status = ?")
             params.append(payment_status)
         if forecast_id:
-            conditions.append("e.forecast_id = ?")
+            conditions.append("(e.forecast_id = ? OR e.forecast_id IS NULL)")
             params.append(forecast_id)
         
         if conditions:
@@ -477,7 +478,7 @@ async def get_expense_allocations(
         
         return ForecastResponse(
             status="success",
-            data=allocations,
+            data={"allocations": allocations},
             message=f"Retrieved {len(allocations)} expense allocations"
         )
         
@@ -523,7 +524,7 @@ async def get_expense_forecast(
             query += " AND c.category_type = ?"
             params.append(category_type)
         if forecast_id:
-            query += " AND e.forecast_id = ?"
+            query += " AND (e.forecast_id = ? OR e.forecast_id IS NULL)"
             params.append(forecast_id)
             
         query += """
@@ -559,6 +560,63 @@ async def get_expense_forecast(
     finally:
         db_manager.close_connection(conn)
 
+@router.get("/summary", response_model=ForecastResponse)
+async def get_expense_summary(
+    forecast_id: Optional[str] = Query(None, description="Scenario; company-wide (NULL) expenses are always included")
+):
+    """
+    Headline totals for the expense overview: monthly-equivalent run rate,
+    annual total and annual totals by category type, over active expenses.
+    """
+    try:
+        conn = db_manager.get_connection()
+        cursor = conn.cursor()
+        scope = " AND (e.forecast_id = ? OR e.forecast_id IS NULL)" if forecast_id else ""
+        params: List[Any] = [forecast_id] if forecast_id else []
+        annual_expr = """
+            CASE
+                WHEN e.frequency = 'weekly' THEN e.amount * 52
+                WHEN e.frequency = 'monthly' THEN e.amount * 12
+                WHEN e.frequency = 'quarterly' THEN e.amount * 4
+                WHEN e.frequency = 'biannually' THEN e.amount * 2
+                WHEN e.frequency = 'annually' THEN e.amount
+                ELSE e.amount
+            END"""
+        cursor.execute(
+            f"""SELECT COUNT(*), COALESCE(SUM({annual_expr}), 0),
+                       COALESCE(SUM(CASE WHEN e.forecast_id IS NULL THEN 1 ELSE 0 END), 0)
+                FROM expenses e WHERE (e.is_active IS NULL OR e.is_active = 1){scope}""",
+            params,
+        )
+        count, annual_total, company_wide = cursor.fetchone()
+        cursor.execute(
+            f"""SELECT c.category_type, COALESCE(SUM({annual_expr}), 0)
+                FROM expenses e JOIN expense_categories c ON e.category_id = c.category_id
+                WHERE (e.is_active IS NULL OR e.is_active = 1){scope}
+                GROUP BY c.category_type""",
+            params,
+        )
+        by_type = {row[0]: float(row[1] or 0) for row in cursor.fetchall()}
+        db_manager.close_connection(conn)
+        return ForecastResponse(
+            status="success",
+            data={
+                "expense_count": count or 0,
+                "company_wide_count": company_wide or 0,
+                "scenario_count": (count or 0) - (company_wide or 0),
+                "total_annual": float(annual_total or 0),
+                "total_monthly": float(annual_total or 0) / 12.0,
+                "factory_overhead_total": by_type.get("factory_overhead", 0.0),
+                "admin_expense_total": by_type.get("admin_expense", 0.0),
+                "cogs_total": by_type.get("cogs", 0.0),
+                "by_category_type": by_type,
+                "forecast_id": forecast_id,
+            },
+            message="Expense summary",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build expense summary: {str(e)}")
+
 @router.get("/report", response_model=ForecastResponse)
 async def get_expense_report(
     forecast_id: Optional[str] = Query(None, description="Filter by forecast ID")
@@ -578,7 +636,7 @@ async def get_expense_report(
                 SUM(CASE WHEN frequency = 'annually' THEN amount ELSE 0 END) as annual_total,
                 SUM(CASE WHEN frequency = 'one_time' THEN amount ELSE 0 END) as one_time_total
             FROM expenses WHERE is_active = 1{}
-        """.format(" AND forecast_id = ?" if forecast_id else "")
+        """.format(" AND (forecast_id = ? OR forecast_id IS NULL)" if forecast_id else "")
         params: List[Any] = [forecast_id] if forecast_id else []
         cursor.execute(freq_query, params)
         totals = cursor.fetchone()
@@ -599,7 +657,7 @@ async def get_expense_report(
             JOIN expense_categories c ON e.category_id = c.category_id
             WHERE e.is_active = 1{}
             GROUP BY c.category_type
-        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        """.format(" AND (e.forecast_id = ? OR e.forecast_id IS NULL)" if forecast_id else "")
         cursor.execute(cat_query, params)
         category_totals = {row[0]: row[1] for row in cursor.fetchall()}
         
@@ -616,7 +674,7 @@ async def get_expense_report(
             JOIN expense_categories c ON e.category_id = c.category_id
             WHERE a.period IN (?, ?) AND a.payment_status = 'pending'{}
             ORDER BY a.period, e.expense_name
-        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        """.format(" AND (e.forecast_id = ? OR e.forecast_id IS NULL)" if forecast_id else "")
         upcoming_params: List[Any] = [current_period, next_period]
         if forecast_id:
             upcoming_params.append(forecast_id)
@@ -638,7 +696,7 @@ async def get_expense_report(
             JOIN expense_categories c ON e.category_id = c.category_id
             WHERE a.period < ? AND a.payment_status = 'pending'{}
             ORDER BY a.period, e.expense_name
-        """.format(" AND e.forecast_id = ?" if forecast_id else "")
+        """.format(" AND (e.forecast_id = ? OR e.forecast_id IS NULL)" if forecast_id else "")
         overdue_params: List[Any] = [current_period]
         if forecast_id:
             overdue_params.append(forecast_id)

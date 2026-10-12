@@ -4,13 +4,17 @@ import { useForecast } from '../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { Card, CardContent } from '../ui/card';
 import { cn } from '../../lib/utils';
-import ScenarioSelector from './ScenarioSelectorNew';
 import DatabaseSaveModal from '../DatabaseModals/DatabaseSaveModal';
 import DatabaseLoadModal from '../DatabaseModals/DatabaseLoadModal';
 
 const navigationModules = {
+  "Scenarios": {
+    icon: "🗂️",
+    routes: {
+      "Manage Scenarios": "/scenarios"
+    }
+  },
   "Revenue Planning": {
     icon: "📊",
     routes: {
@@ -50,8 +54,8 @@ const navigationModules = {
   "Reporting & Analysis": {
     icon: "📈",
     routes: {
-      "Financial Reports": "/reporting",
-      "Scenario Comparison": "/reporting/comparison"
+      "Statements": "/reporting",
+      "Compare Scenarios": "/reporting/comparison"
     }
   }
 };
@@ -62,7 +66,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
   const [expandedModules, setExpandedModules] = useState({});
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
-  const { data, loading, error, actions } = useForecast();
+  const { data, actions } = useForecast();
 
   // Ensure data is always an object with expected properties
   const safeData = data || {};
@@ -219,9 +223,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         {!isCollapsed && (
           <div className="flex flex-col items-start">
             <h1 className="text-xl font-bold text-foreground">Forecast AI</h1>
-            <div className="mt-2 w-full">
-              <ScenarioSelector />
-            </div>
+            <p className="text-xs text-muted-foreground">Budget &amp; cash flow model</p>
           </div>
         )}
       </div>

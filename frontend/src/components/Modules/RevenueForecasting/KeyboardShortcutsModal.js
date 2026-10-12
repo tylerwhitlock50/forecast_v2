@@ -17,22 +17,29 @@ const KeyboardShortcutsModal = ({ open, onClose }) => {
         </ModalHeader>
         <ModalContent>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">Click any cell to focus the matrix first.</p>
+            <p className="text-sm text-gray-600">Click a cell in the matrix first. Edits save when you press Enter or leave the cell.</p>
             <div>
               <h3 className="font-semibold mb-2">Navigation</h3>
               <ul className="space-y-1 text-sm">
-                <li><Kbd>Arrow Keys</Kbd> — Navigate cells</li>
-                <li><Kbd>Enter</Kbd> or <Kbd>F2</Kbd> — Edit cell</li>
-                <li><Kbd>Tab</Kbd> — Next cell</li>
-                <li><Kbd>Esc</Kbd> — Cancel editing</li>
+                <li><Kbd>Arrow Keys</Kbd> — Move between cells</li>
+                <li><Kbd>Tab</Kbd> / <Kbd>Shift+Tab</Kbd> — Next / previous cell</li>
+                <li><Kbd>Enter</Kbd> or <Kbd>F2</Kbd> — Edit the selected cell</li>
+                <li>Type a number — Start editing with that value</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="font-semibold mb-2">While editing</h3>
+              <ul className="space-y-1 text-sm">
+                <li><Kbd>Enter</Kbd> — Save and move down</li>
+                <li><Kbd>Tab</Kbd> — Save and move right</li>
+                <li><Kbd>Esc</Kbd> — Cancel without saving</li>
               </ul>
             </div>
             <div>
               <h3 className="font-semibold mb-2">Actions</h3>
               <ul className="space-y-1 text-sm">
-                <li><Kbd>Ctrl+C</Kbd> — Copy cells</li>
-                <li><Kbd>Ctrl+V</Kbd> — Paste cells</li>
-                <li><Kbd>Delete</Kbd> — Clear cell</li>
+                <li><Kbd>Delete</Kbd> — Clear the cell (saves 0)</li>
+                <li><Kbd>Ctrl+C</Kbd> / <Kbd>Ctrl+V</Kbd> — Copy / paste one value</li>
                 <li><Kbd>?</Kbd> — Show this help</li>
               </ul>
             </div>

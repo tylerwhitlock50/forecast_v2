@@ -1,9 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from db import get_forecast_data, get_saved_forecast_results
 from db.models import ForecastResponse, SQLApplyRequest
 from db import execute_sql
 from utils.period_normalizer import normalize_period
+import re
 import uuid
 import sqlite3
 from datetime import datetime
@@ -31,163 +32,409 @@ async def get_forecast(forecast_id: Optional[str] = Query(None, description="Fil
         data=result["data"]
     )
 
+# ---------------------------------------------------------------------------
+# Scenarios
+#
+# A scenario is a row in `forecast`. Sales always belong to exactly one
+# scenario. Payroll, expenses and capex rows carry a forecast_id or NULL;
+# NULL means company-wide and is included in every scenario by the
+# statements engine (see services.financial_statements._scope_clause).
+# ---------------------------------------------------------------------------
+
+SCENARIO_TABLES = ("sales", "expenses", "payroll", "capital_expenditures", "financial_assumptions")
+
+
+def _next_forecast_id(cursor) -> str:
+    """Next FXXX id. Non-F ids (e.g. test fixtures) are ignored for numbering."""
+    cursor.execute("SELECT forecast_id FROM forecast WHERE forecast_id LIKE 'F%'")
+    numbers = []
+    for (fid,) in cursor.fetchall():
+        try:
+            numbers.append(int(str(fid)[1:]))
+        except ValueError:
+            continue
+    return f"F{(max(numbers) + 1) if numbers else 1:03d}"
+
+
+def _forecast_columns(cursor) -> List[str]:
+    cursor.execute("PRAGMA table_info(forecast)")
+    return [row[1] for row in cursor.fetchall()]
+
+
+def _scenario_summary(cursor, forecast_id: str) -> Dict[str, Any]:
+    """Row counts and the sales window for one scenario (used by the list and by delete confirmations)."""
+    cursor.execute(
+        """SELECT COUNT(*), COUNT(DISTINCT customer_id || '|' || unit_id), MIN(period), MAX(period),
+                  COALESCE(SUM(total_revenue), 0)
+           FROM sales WHERE forecast_id = ? AND period IS NOT NULL""",
+        (forecast_id,),
+    )
+    rows, lines, lo, hi, revenue = cursor.fetchone()
+    counts = {"sales_rows": rows or 0, "sales_lines": lines or 0, "revenue_total": float(revenue or 0)}
+    for table, key in (("expenses", "expense_count"), ("payroll", "employee_count"), ("capital_expenditures", "capex_count")):
+        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE forecast_id = ?", (forecast_id,))
+        counts[key] = cursor.fetchone()[0]
+    cursor.execute("SELECT 1 FROM financial_assumptions WHERE forecast_id = ?", (forecast_id,))
+    counts["has_assumptions"] = cursor.fetchone() is not None
+    counts["start_period"] = str(lo)[:7] if lo else None
+    counts["end_period"] = str(hi)[:7] if hi else None
+    return counts
+
+
+def _scenario_row(cursor, forecast_id: str) -> Optional[Dict[str, Any]]:
+    cursor.execute("SELECT * FROM forecast WHERE forecast_id = ?", (forecast_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    record = dict(zip([d[0] for d in cursor.description], row))
+    record["is_base"] = bool(record.get("is_base"))
+    record.update(_scenario_summary(cursor, forecast_id))
+    return record
+
+
+def _add_months(period: str, months: int) -> str:
+    year, month = (int(x) for x in period.split("-"))
+    month += months
+    year += (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    return f"{year:04d}-{month:02d}"
+
+
+def _set_base(cursor, forecast_id: str) -> None:
+    cursor.execute("UPDATE forecast SET is_base = 0")
+    cursor.execute("UPDATE forecast SET is_base = 1 WHERE forecast_id = ?", (forecast_id,))
+
+
 @router.get("/scenarios", response_model=ForecastResponse)
 async def get_forecast_scenarios():
-    """
-    Get all available forecast scenarios
-    """
+    """All scenarios with row counts, sales window and whether assumptions are set."""
     try:
         from db.database import db_manager
-        
+
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM forecast ORDER BY name")
-        forecasts = cursor.fetchall()
-        
-        # Convert to dictionaries
-        columns = [description[0] for description in cursor.description]
-        forecast_list = [dict(zip(columns, row)) for row in forecasts]
-        
-        db_manager.close_connection(conn)
-        
+        try:
+            cursor.execute("SELECT forecast_id FROM forecast ORDER BY is_base DESC, name")
+            ids = [row[0] for row in cursor.fetchall()]
+            scenarios = [_scenario_row(cursor, fid) for fid in ids]
+        finally:
+            db_manager.close_connection(conn)
+
         return ForecastResponse(
             status="success",
-            data={"scenarios": forecast_list},
-            message=f"Retrieved {len(forecast_list)} forecast scenarios"
+            data={"scenarios": scenarios},
+            message=f"Retrieved {len(scenarios)} forecast scenarios",
         )
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving forecast scenarios: {str(e)}")
 
+
+@router.get("/scenario/{forecast_id}", response_model=ForecastResponse)
+async def get_forecast_scenario(forecast_id: str):
+    """One scenario with its counts."""
+    from db.database import db_manager
+
+    conn = db_manager.get_connection()
+    try:
+        record = _scenario_row(conn.cursor(), forecast_id)
+    finally:
+        db_manager.close_connection(conn)
+    if not record:
+        raise HTTPException(status_code=404, detail="Forecast scenario not found")
+    return ForecastResponse(status="success", data=record)
+
+
 @router.post("/scenario", response_model=ForecastResponse)
 async def create_forecast_scenario(scenario_data: Dict[str, Any]):
-    """
-    Create a new forecast scenario with auto-generated FXXX ID
-    """
+    """Create an empty scenario with an auto-generated FXXX id."""
     try:
         from db.database import db_manager
-        
+
+        name = (scenario_data.get('name') or '').strip() or 'New Scenario'
+        description = scenario_data.get('description') or ''
+        notes = scenario_data.get('notes') or ''
+        make_base = bool(scenario_data.get('is_base'))
+
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
-        # Get the next available FXXX ID
-        cursor.execute("SELECT forecast_id FROM forecast WHERE forecast_id LIKE 'F%' ORDER BY forecast_id DESC LIMIT 1")
-        last_forecast = cursor.fetchone()
-        
-        if last_forecast:
-            # Extract the number from the last forecast_id (e.g., "F003" -> 3)
-            last_number = int(last_forecast[0][1:])
-            next_number = last_number + 1
-        else:
-            next_number = 1
-        
-        # Generate new forecast_id with FXXX format
-        forecast_id = f"F{next_number:03d}"  # F001, F002, F003, etc.
-        
-        name = scenario_data.get('name', 'New Scenario')
-        description = scenario_data.get('description', '')
-        notes = scenario_data.get('notes', '')
+        try:
+            forecast_id = _next_forecast_id(cursor)
+            # First scenario in an empty database becomes the base automatically.
+            cursor.execute("SELECT COUNT(*) FROM forecast")
+            if cursor.fetchone()[0] == 0:
+                make_base = True
+            cursor.execute(
+                "INSERT INTO forecast (forecast_id, name, description, notes, is_base) VALUES (?, ?, ?, ?, 0)",
+                (forecast_id, name, description, notes),
+            )
+            if make_base:
+                _set_base(cursor, forecast_id)
+            conn.commit()
+            record = _scenario_row(cursor, forecast_id)
+        finally:
+            db_manager.close_connection(conn)
 
-        cursor.execute("""
-            INSERT INTO forecast (forecast_id, name, description, notes)
-            VALUES (?, ?, ?, ?)
-        """, (forecast_id, name, description, notes))
-
-        conn.commit()
-        db_manager.close_connection(conn)
-
-        return ForecastResponse(
-            status="success",
-            data={"forecast_id": forecast_id, "name": name, "description": description, "notes": notes},
-            message=f"Forecast scenario {forecast_id} created successfully"
-        )
-        
+        return ForecastResponse(status="success", data=record, message=f"Forecast scenario {forecast_id} created successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating forecast scenario: {str(e)}")
 
+
+@router.put("/scenario/{forecast_id}", response_model=ForecastResponse)
+async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, Any]):
+    """Rename, edit description / notes, or mark as the base scenario."""
+    from db.database import db_manager
+
+    conn = db_manager.get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ?", (forecast_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Forecast scenario not found")
+
+        updates, params = [], []
+        for field in ("name", "description", "notes"):
+            if field in scenario_data:
+                value = scenario_data[field]
+                if field == "name" and not (value or '').strip():
+                    raise HTTPException(status_code=422, detail="name cannot be empty")
+                updates.append(f"{field} = ?")
+                params.append(value)
+        if updates:
+            cursor.execute(f"UPDATE forecast SET {', '.join(updates)} WHERE forecast_id = ?", params + [forecast_id])
+        if scenario_data.get("is_base"):
+            _set_base(cursor, forecast_id)
+        elif "is_base" in scenario_data:
+            cursor.execute("UPDATE forecast SET is_base = 0 WHERE forecast_id = ?", (forecast_id,))
+        conn.commit()
+        record = _scenario_row(cursor, forecast_id)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Error updating forecast scenario: {str(e)}")
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=record, message=f"Forecast scenario {forecast_id} updated")
+
+
 @router.post("/scenario/{forecast_id}/duplicate", response_model=ForecastResponse)
-async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Dict[str, Any] = None):
-    """Duplicate an existing forecast scenario and its related data"""
+async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[Dict[str, Any]] = None):
+    """
+    Branch a scenario in a single transaction.
+
+    Copies sales, scenario-specific expenses / payroll / capex, the financial
+    assumptions and the notes. Optional overrides (applied to the copy only):
+
+    * price_multiplier     - scales unit_price on every copied sales row
+    * quantity_multiplier  - scales quantity on every copied sales row
+    * extend_periods       - adds N monthly periods after the last sales
+                             month, repeating each customer/product line from
+                             that month (after the multipliers)
+    """
     try:
         from db.database import db_manager
 
+        body = scenario_data or {}
+
+        def _multiplier(key: str) -> float:
+            raw = body.get(key)
+            if raw is None or raw == "":
+                return 1.0
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{key} must be a positive number")
+            if value <= 0:
+                raise HTTPException(status_code=422, detail=f"{key} must be a positive number")
+            return value
+
+        price_multiplier = _multiplier("price_multiplier")
+        quantity_multiplier = _multiplier("quantity_multiplier")
+        try:
+            extend_periods = int(body.get("extend_periods", 0) or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="extend_periods must be a non-negative integer")
+        if extend_periods < 0:
+            raise HTTPException(status_code=422, detail="extend_periods must be a non-negative integer")
+        copy_expenses = body.get("copy_expenses", True)
+        copy_payroll = body.get("copy_payroll", True)
+        copy_capex = body.get("copy_capex", True)
+        copy_assumptions = body.get("copy_assumptions", True)
+
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT name, description, notes FROM forecast WHERE forecast_id = ?", (forecast_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Forecast scenario not found")
+            original_name, original_description, original_notes = row
 
-        # Verify source scenario exists
-        cursor.execute("SELECT name, description FROM forecast WHERE forecast_id = ?", (forecast_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Forecast scenario not found")
+            new_forecast_id = _next_forecast_id(cursor)
+            name = (body.get('name') or '').strip() or f"{original_name} Copy"
+            description = body.get('description') or original_description
+            notes = body.get('notes') or original_notes
 
-        original_name, original_description = row
-
-        # Generate new forecast ID
-        cursor.execute("SELECT forecast_id FROM forecast WHERE forecast_id LIKE 'F%' ORDER BY forecast_id DESC LIMIT 1")
-        last_forecast = cursor.fetchone()
-        next_number = int(last_forecast[0][1:]) + 1 if last_forecast else 1
-        new_forecast_id = f"F{next_number:03d}"
-
-        name = (scenario_data or {}).get('name', f"{original_name} Copy")
-        description = (scenario_data or {}).get('description', original_description)
-
-        cursor.execute(
-            "INSERT INTO forecast (forecast_id, name, description) VALUES (?, ?, ?)",
-            (new_forecast_id, name, description)
-        )
-
-        # Duplicate sales (normalize periods during duplication)
-        cursor.execute("SELECT customer_id, unit_id, period, quantity, unit_price, total_revenue FROM sales WHERE forecast_id = ?", (forecast_id,))
-        for s in cursor.fetchall():
-            # Normalize period if needed
-            period = s[2]  # period is at index 2
-            if period:
-                normalized_period = normalize_period(period)
-                if normalized_period:
-                    period = normalized_period
-            
             cursor.execute(
-                """
-                INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (f"SAL-{uuid.uuid4().hex[:8].upper()}", s[0], s[1], period, s[3], s[4], s[5], new_forecast_id)
+                "INSERT INTO forecast (forecast_id, name, description, notes, is_base) VALUES (?, ?, ?, ?, 0)",
+                (new_forecast_id, name, description, notes),
             )
 
-        # Duplicate expenses
-        cursor.execute("SELECT expense_name, category_id, amount, frequency, start_date, end_date, vendor, description, payment_method, approval_required, approved_by, approval_date, expense_allocation, amortization_months, department, cost_center, is_active FROM expenses WHERE forecast_id = ?", (forecast_id,))
-        for e in cursor.fetchall():
+            # --- Sales -------------------------------------------------------
             cursor.execute(
-                """
-                INSERT INTO expenses (expense_id, expense_name, category_id, amount, frequency, start_date, end_date, vendor, description, payment_method, approval_required, approved_by, approval_date, expense_allocation, amortization_months, department, cost_center, is_active, forecast_id, created_date, updated_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"EXP-{uuid.uuid4().hex[:8].upper()}", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], e[16], new_forecast_id, datetime.now().isoformat(), datetime.now().isoformat()
+                "SELECT customer_id, unit_id, period, quantity, unit_price FROM sales WHERE forecast_id = ?",
+                (forecast_id,),
+            )
+            copied_sales = 0
+            last_period = None
+            last_period_lines: Dict[Tuple[str, str], Tuple[float, float]] = {}
+            for customer_id, unit_id, period, quantity, unit_price in cursor.fetchall():
+                period = normalize_period(period) or period
+                qty = float(quantity or 0) * quantity_multiplier
+                price = float(unit_price or 0) * price_multiplier
+                cursor.execute(
+                    """INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (f"SAL-{uuid.uuid4().hex[:8].upper()}", customer_id, unit_id, period, qty, price, qty * price, new_forecast_id),
                 )
-            )
+                copied_sales += 1
+                if period and re.match(r"^\d{4}-\d{2}$", period):
+                    if last_period is None or period > last_period:
+                        last_period = period
+                        last_period_lines = {}
+                    if period == last_period:
+                        last_period_lines[(customer_id, unit_id)] = (qty, price)
 
-        # Duplicate payroll
-        cursor.execute("SELECT employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type, start_date, end_date, next_review_date, expected_raise, benefits_eligible, allocations FROM payroll WHERE forecast_id = ?", (forecast_id,))
-        for p in cursor.fetchall():
-            cursor.execute(
-                """
-                INSERT INTO payroll (employee_id, employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type, start_date, end_date, next_review_date, expected_raise, benefits_eligible, allocations, forecast_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"EMP-{int(datetime.now().timestamp())}{uuid.uuid4().hex[:4]}", p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], new_forecast_id
+            extended_rows = 0
+            if extend_periods and last_period:
+                for offset in range(1, extend_periods + 1):
+                    new_period = _add_months(last_period, offset)
+                    for (customer_id, unit_id), (qty, price) in last_period_lines.items():
+                        cursor.execute(
+                            """INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (f"SAL-{uuid.uuid4().hex[:8].upper()}", customer_id, unit_id, new_period, qty, price, qty * price, new_forecast_id),
+                        )
+                        extended_rows += 1
+
+            # --- Expenses (with their period allocations) ----------------------
+            copied_expenses = 0
+            if copy_expenses:
+                cursor.execute(
+                    """SELECT expense_id, expense_name, category_id, amount, frequency, start_date, end_date, vendor, description,
+                              payment_method, approval_required, approved_by, approval_date, expense_allocation, amortization_months,
+                              department, cost_center, is_active
+                       FROM expenses WHERE forecast_id = ?""",
+                    (forecast_id,),
                 )
-            )
+                now = datetime.now().isoformat()
+                for e in cursor.fetchall():
+                    old_expense_id, fields = e[0], e[1:]
+                    new_expense_id = f"EXP-{uuid.uuid4().hex[:8].upper()}"
+                    cursor.execute(
+                        """INSERT INTO expenses (expense_id, expense_name, category_id, amount, frequency, start_date, end_date, vendor,
+                                                 description, payment_method, approval_required, approved_by, approval_date,
+                                                 expense_allocation, amortization_months, department, cost_center, is_active,
+                                                 forecast_id, created_date, updated_date)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (new_expense_id, *fields, new_forecast_id, now, now),
+                    )
+                    cursor.execute(
+                        """SELECT period, allocated_amount, allocation_type, payment_status, notes
+                           FROM expense_allocations WHERE expense_id = ?""",
+                        (old_expense_id,),
+                    )
+                    for period, amount, alloc_type, status, alloc_notes in cursor.fetchall():
+                        cursor.execute(
+                            """INSERT INTO expense_allocations (allocation_id, expense_id, period, allocated_amount, allocation_type, payment_status, notes)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (f"ALLOC-{uuid.uuid4().hex[:8].upper()}", new_expense_id, period, amount, alloc_type, status, alloc_notes),
+                        )
+                    copied_expenses += 1
 
-        conn.commit()
-        db_manager.close_connection(conn)
+            # --- Payroll -----------------------------------------------------------
+            copied_employees = 0
+            if copy_payroll:
+                cursor.execute(
+                    """SELECT employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type, start_date, end_date,
+                              next_review_date, expected_raise, benefits_eligible, allocations
+                       FROM payroll WHERE forecast_id = ?""",
+                    (forecast_id,),
+                )
+                for p in cursor.fetchall():
+                    cursor.execute(
+                        """INSERT INTO payroll (employee_id, employee_name, department, weekly_hours, hourly_rate, rate_type, labor_type,
+                                                start_date, end_date, next_review_date, expected_raise, benefits_eligible, allocations, forecast_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (f"EMP-{uuid.uuid4().hex[:10].upper()}", *p, new_forecast_id),
+                    )
+                    copied_employees += 1
 
+            # --- Capex -------------------------------------------------------------
+            copied_capex = 0
+            if copy_capex:
+                cursor.execute(
+                    """SELECT asset_name, category, amount, purchase_period, useful_life_months, salvage_value, depreciation_method,
+                              description, is_active
+                       FROM capital_expenditures WHERE forecast_id = ?""",
+                    (forecast_id,),
+                )
+                for c in cursor.fetchall():
+                    cursor.execute(
+                        """INSERT INTO capital_expenditures (capex_id, forecast_id, asset_name, category, amount, purchase_period,
+                                                             useful_life_months, salvage_value, depreciation_method, description, is_active)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (f"CAPEX-{uuid.uuid4().hex[:8].upper()}", new_forecast_id, *c),
+                    )
+                    copied_capex += 1
+
+            # --- Assumptions -------------------------------------------------------
+            copied_assumptions = False
+            if copy_assumptions:
+                cursor.execute("SELECT * FROM financial_assumptions WHERE forecast_id = ?", (forecast_id,))
+                row = cursor.fetchone()
+                if row:
+                    columns = [d[0] for d in cursor.description]
+                    values = dict(zip(columns, row))
+                    values["forecast_id"] = new_forecast_id
+                    values.pop("updated_at", None)
+                    cols = list(values.keys())
+                    cursor.execute(
+                        f"INSERT INTO financial_assumptions ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                        [values[c] for c in cols],
+                    )
+                    copied_assumptions = True
+
+            conn.commit()
+            record = _scenario_row(cursor, new_forecast_id)
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            db_manager.close_connection(conn)
+
+        record["source_forecast_id"] = forecast_id
+        record["copied"] = {
+            "sales": copied_sales,
+            "sales_extended": extended_rows,
+            "expenses": copied_expenses,
+            "employees": copied_employees,
+            "capex": copied_capex,
+            "assumptions": copied_assumptions,
+        }
+        record["overrides"] = {
+            "price_multiplier": price_multiplier,
+            "quantity_multiplier": quantity_multiplier,
+            "extend_periods": extend_periods,
+        }
         return ForecastResponse(
             status="success",
-            data={"forecast_id": new_forecast_id, "name": name, "description": description},
-            message=f"Forecast scenario {forecast_id} duplicated as {new_forecast_id}"
+            data=record,
+            message=f"Forecast scenario {forecast_id} duplicated as {new_forecast_id}",
         )
 
     except HTTPException:
@@ -195,42 +442,68 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Dict[str,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error duplicating forecast scenario: {str(e)}")
 
+
 @router.delete("/scenario/{forecast_id}", response_model=ForecastResponse)
 async def delete_forecast_scenario(forecast_id: str):
-    """Delete a forecast scenario and its related data"""
+    """Delete a scenario and every row that belongs only to it (company-wide NULL rows are untouched)."""
     try:
         from db.database import db_manager
 
         conn = db_manager.get_connection()
         cursor = conn.cursor()
+        try:
+            record = _scenario_row(cursor, forecast_id)
+            if not record:
+                raise HTTPException(status_code=404, detail="Forecast scenario not found")
 
-        # Delete related data
-        for table in ["sales", "expenses", "payroll"]:
-            cursor.execute(f"DELETE FROM {table} WHERE forecast_id = ?", (forecast_id,))
-
-        # Delete scenario
-        cursor.execute("DELETE FROM forecast WHERE forecast_id = ?", (forecast_id,))
-
-        conn.commit()
-        db_manager.close_connection(conn)
+            cursor.execute(
+                "DELETE FROM expense_allocations WHERE expense_id IN (SELECT expense_id FROM expenses WHERE forecast_id = ?)",
+                (forecast_id,),
+            )
+            for table in SCENARIO_TABLES:
+                cursor.execute(f"DELETE FROM {table} WHERE forecast_id = ?", (forecast_id,))
+            cursor.execute("DELETE FROM forecast WHERE forecast_id = ?", (forecast_id,))
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            db_manager.close_connection(conn)
 
         return ForecastResponse(
             status="success",
-            message=f"Forecast scenario {forecast_id} deleted successfully"
+            data={
+                "forecast_id": forecast_id,
+                "deleted": {
+                    "sales": record["sales_rows"],
+                    "expenses": record["expense_count"],
+                    "employees": record["employee_count"],
+                    "capex": record["capex_count"],
+                    "assumptions": record["has_assumptions"],
+                },
+            },
+            message=f"Forecast scenario {forecast_id} deleted successfully",
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting forecast scenario: {str(e)}")
+
 
 @router.get("/comparison", response_model=ForecastResponse)
 async def compare_forecast_scenarios(
     forecast_ids: List[str] = Query(..., description="Forecast IDs to compare"),
-    start_period: Optional[str] = Query(None, description="Start period (YYYY-MM); defaults to each scenario's first sales month"),
-    end_period: Optional[str] = Query(None, description="End period (YYYY-MM); defaults to each scenario's last sales month"),
+    start_period: Optional[str] = Query(None, description="Start period (YYYY-MM); defaults to the earliest sales month across the selection"),
+    end_period: Optional[str] = Query(None, description="End period (YYYY-MM); defaults to the latest sales month across the selection"),
 ):
     """
-    Compare scenarios using the same statements engine as the reporting
-    module, so the numbers here match the income statement exactly.
+    Compare scenarios side by side using the statements engine, so the
+    numbers match the income statement exactly.
+
+    Every scenario is totalled over the SAME window. When no window is given
+    it is the union of the selected scenarios' sales months, so a branch
+    that was extended by N periods is still comparable to its source.
     """
     try:
         from db.database import db_manager
@@ -253,22 +526,24 @@ async def compare_forecast_scenarios(
         cursor = conn.cursor()
         comparison = []
         try:
-            for fid in ids:
-                cursor.execute("SELECT name FROM forecast WHERE forecast_id = ?", (fid,))
-                name_row = cursor.fetchone()
-                if start_period and end_period:
-                    window = (start_period, end_period)
-                else:
-                    cursor.execute(
-                        "SELECT MIN(period), MAX(period) FROM sales WHERE forecast_id = ? AND period IS NOT NULL",
-                        (fid,),
-                    )
-                    lo, hi = cursor.fetchone()
-                    window = (str(lo)[:7], str(hi)[:7]) if lo and hi else None
+            if start_period and end_period:
+                window = (start_period, end_period)
+            else:
+                placeholders = ",".join("?" for _ in ids)
+                cursor.execute(
+                    f"SELECT MIN(period), MAX(period) FROM sales WHERE forecast_id IN ({placeholders}) AND period IS NOT NULL",
+                    ids,
+                )
+                lo, hi = cursor.fetchone()
+                window = (str(lo)[:7], str(hi)[:7]) if lo and hi else None
 
+            for fid in ids:
+                cursor.execute("SELECT name, is_base FROM forecast WHERE forecast_id = ?", (fid,))
+                meta = cursor.fetchone()
                 row = {
                     "forecast_id": fid,
-                    "name": name_row[0] if name_row else fid,
+                    "name": meta[0] if meta else fid,
+                    "is_base": bool(meta[1]) if meta else False,
                     "start_period": window[0] if window else None,
                     "end_period": window[1] if window else None,
                     "revenue": 0.0, "cogs": 0.0, "gross_profit": 0.0,
@@ -294,7 +569,10 @@ async def compare_forecast_scenarios(
 
         return ForecastResponse(
             status="success",
-            data={"comparison": comparison},
+            data={
+                "comparison": comparison,
+                "window": {"start_period": window[0], "end_period": window[1]} if window else None,
+            },
             message=f"Compared {len(comparison)} forecast scenarios",
         )
     except HTTPException:
@@ -303,6 +581,7 @@ async def compare_forecast_scenarios(
         raise HTTPException(
             status_code=500, detail=f"Error comparing forecast scenarios: {str(e)}"
         )
+
 
 @router.get("/results", response_model=ForecastResponse)
 async def get_saved_forecast_results_endpoint(

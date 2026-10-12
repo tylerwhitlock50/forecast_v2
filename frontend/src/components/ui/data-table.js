@@ -4,6 +4,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Button } from "./button"
 import { Badge } from "./badge"
 
+// Parse YYYY-MM-DD as a local date (new Date('2026-01-01') is UTC and shows a day early in the US).
+const parseDateValue = (value) => {
+  if (value instanceof Date) return value;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+};
+
 const DataTable = ({ 
   data = [], 
   columns = [], 
@@ -30,7 +37,7 @@ const DataTable = ({
         return `${parseFloat(value).toFixed(2)}%`;
       
       case 'date':
-        return new Date(value).toLocaleDateString('en-US', {
+        return parseDateValue(value).toLocaleDateString('en-US', {
           year: 'numeric',
           month: 'short',
           day: 'numeric'

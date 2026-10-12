@@ -73,7 +73,9 @@ cd frontend && CI=true npm run build
 - **Context**: `frontend/src/context/ForecastContext.js` - Global state management with React Context
 - **Components**: Modular structure in `frontend/src/components/`
   - `Modules/` - Feature-specific modules (Revenue, Cost, Customer, etc.)
-  - `Common/` - Reusable components (EditableGrid, ValidationIndicator)
+  - `Common/` - Reusable components (ForecastGrid: the editable spreadsheet-style table used by the revenue matrix and expense grid; ValidationIndicator; ConfirmDialog)
+  - `Modules/Scenarios/` - Scenarios page (create, branch, rename, mark base, delete) and the per-screen scope map used by the scenario bar
+  - `Navigation/ScenarioBar.js` - Persistent bar above every screen: active scenario switcher and the screen's scope badge
   - `Navigation/` - Navigation and scenario management
 - **API Integration**: Uses Axios with proxy configuration pointing to backend
 
@@ -135,7 +137,8 @@ All API responses follow this pattern:
 
 ### Financial Statements Engine (`app/services/financial_statements.py`)
 - Periods are `YYYY-MM`; a reporting window is inclusive on both ends.
-- Scenario scoping: rows with `forecast_id` in the selected set OR `NULL` are included. `NULL` means company-wide (payroll, expenses, capex). Sales are always scenario-specific.
+- Scenario scoping: rows with `forecast_id` in the selected set OR `NULL` are included. `NULL` means company-wide (payroll, expenses, capex). Sales are always scenario-specific. The payroll / expense list endpoints and the generic `/data/{table}` read apply the same rule, so the module screens show what the statements use.
+- Scenario lifecycle (`forecast_routes.py`): `GET /forecast/scenarios` is enriched with counts and the sales window; branching (`POST /forecast/scenario/{id}/duplicate`) copies sales, scenario-specific expenses / payroll / capex, assumptions and notes in one transaction and applies price / quantity multipliers and period extension server-side; delete cascades the same tables. Exactly one scenario has `is_base = 1`. Tests: `tests/test_scenarios.py`. Workflow: `documentation/scenario_workflow_guide.md`.
 - Payroll is prorated to each calendar month from `start_date` / `end_date`, with raises applied from `next_review_date`. Never annualize payroll in reporting code; call `payroll_by_period`.
 - Working capital uses days assumptions: AR = revenue x DSO / 30.4, inventory = product COGS x DIO / 30.4, AP = purchases x DPO / 30.4.
 - Cash rolls forward from `opening_cash`: net income + depreciation - working capital change - capex + loan proceeds - principal.

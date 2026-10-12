@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 
 // Employee Modal for adding/editing employees
-export const EmployeeModal = ({ employee, departments, businessUnits, onSave, onCancel }) => {
+export const EmployeeModal = ({ employee, departments, businessUnits, onSave, onCancel, activeScenario = null, activeScenarioName = '' }) => {
   const [formData, setFormData] = useState({
     employee_name: '',
     department: '',
@@ -14,7 +14,8 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
     next_review_date: '',
     expected_raise: 0,
     benefits_eligible: true,
-    allocations: { 'Customer-Centric Brands': 100 }
+    allocations: { 'Customer-Centric Brands': 100 },
+    forecast_id: activeScenario || null
   });
 
   const [errors, setErrors] = useState({});
@@ -146,6 +147,25 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                   />
                 </div>
               )}
+
+              <div className="form-group">
+                <label>Scope</label>
+                <select
+                  value={formData.forecast_id || ''}
+                  onChange={(e) => setFormData({...formData, forecast_id: e.target.value || null})}
+                >
+                  <option value="">Company-wide (in every scenario)</option>
+                  {activeScenario && (
+                    <option value={activeScenario}>This scenario only ({activeScenarioName || activeScenario})</option>
+                  )}
+                  {formData.forecast_id && formData.forecast_id !== activeScenario && (
+                    <option value={formData.forecast_id}>Scenario {formData.forecast_id} only</option>
+                  )}
+                </select>
+                <small className="text-muted-foreground">
+                  Company-wide employees roll into every scenario's statements. Scenario-only employees are copied when that scenario is branched.
+                </small>
+              </div>
             </div>
 
             <div className="form-section">

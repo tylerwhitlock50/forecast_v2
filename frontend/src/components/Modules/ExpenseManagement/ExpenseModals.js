@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-export const ExpenseModal = ({ expense, categories, onSave, onClose }) => {
+export const ExpenseModal = ({ expense, categories, onSave, onClose, activeScenario = null, activeScenarioName = '' }) => {
   const [formData, setFormData] = useState({
     expense_name: '',
     category_id: '',
@@ -18,7 +18,8 @@ export const ExpenseModal = ({ expense, categories, onSave, onClose }) => {
     amortization_months: '',
     department: '',
     cost_center: '',
-    is_active: true
+    is_active: true,
+    forecast_id: activeScenario || null
   });
 
   const [errors, setErrors] = useState({});
@@ -42,7 +43,8 @@ export const ExpenseModal = ({ expense, categories, onSave, onClose }) => {
         amortization_months: expense.amortization_months || '',
         department: expense.department || '',
         cost_center: expense.cost_center || '',
-        is_active: expense.is_active !== undefined ? expense.is_active : true
+        is_active: expense.is_active !== undefined ? expense.is_active : true,
+        forecast_id: expense.forecast_id || null
       });
     }
   }, [expense]);
@@ -100,6 +102,7 @@ export const ExpenseModal = ({ expense, categories, onSave, onClose }) => {
         submitData[key] = null;
       }
     });
+    submitData.forecast_id = submitData.forecast_id || null;
 
     onSave(submitData);
   };
@@ -148,6 +151,25 @@ export const ExpenseModal = ({ expense, categories, onSave, onClose }) => {
                 ))}
               </select>
               {errors.category_id && <span className="error-text">{errors.category_id}</span>}
+            </div>
+
+            <div className="form-group">
+              <label>Scope</label>
+              <select
+                value={formData.forecast_id || ''}
+                onChange={(e) => handleChange('forecast_id', e.target.value || null)}
+              >
+                <option value="">Company-wide (in every scenario)</option>
+                {activeScenario && (
+                  <option value={activeScenario}>This scenario only ({activeScenarioName || activeScenario})</option>
+                )}
+                {formData.forecast_id && formData.forecast_id !== activeScenario && (
+                  <option value={formData.forecast_id}>Scenario {formData.forecast_id} only</option>
+                )}
+              </select>
+              <small className="text-muted-foreground">
+                Company-wide expenses roll into every scenario. Scenario-only expenses are copied when that scenario is branched.
+              </small>
             </div>
 
             <div className="form-group">
@@ -359,6 +381,7 @@ export const CategoryModal = ({ categories, onSave, onClose }) => {
         submitData[key] = null;
       }
     });
+    submitData.forecast_id = submitData.forecast_id || null;
 
     onSave(submitData);
   };
