@@ -38,6 +38,10 @@ async def load_table_endpoint(
         result = load_csv_to_table(table_name, csv_bytes, if_exists=mode)
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["error"])
+        if table_name == "forecast":
+            # An uploaded scenario list may lack is_base; keep exactly one base.
+            from db.database import db_manager
+            db_manager.ensure_base_scenario()
         return ForecastResponse(
             status="success",
             data={"rows_loaded": result["rows_loaded"]},

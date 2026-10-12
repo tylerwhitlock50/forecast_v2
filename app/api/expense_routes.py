@@ -17,6 +17,12 @@ from db.database import db_manager
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
+# Optional expense columns that a PUT may clear by sending null explicitly.
+NULLABLE_EXPENSE_FIELDS = frozenset({
+    "end_date", "vendor", "description", "payment_method", "approved_by", "approval_date",
+    "amortization_months", "department", "cost_center", "forecast_id",
+})
+
 # ========================
 # Expense Category Management
 # ========================
@@ -304,8 +310,9 @@ async def update_expense(expense_id: str, expense_update: ExpenseUpdate):
         params = []
         
         for field, value in expense_update.dict(exclude_unset=True).items():
-            # forecast_id may be set to null explicitly to make an expense company-wide.
-            if value is not None or field == "forecast_id":
+            # An explicit null clears an optional field (end date, vendor,
+            # scope, ...). Required columns ignore null so they are never blanked.
+            if value is not None or field in NULLABLE_EXPENSE_FIELDS:
                 updates.append(f"{field} = ?")
                 params.append(value)
         

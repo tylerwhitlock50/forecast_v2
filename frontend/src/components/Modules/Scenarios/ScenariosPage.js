@@ -68,15 +68,20 @@ const ScenariosPage = () => {
       title: `Delete "${scenario.name}" (${scenario.id})?`,
       body:
         `This permanently deletes ${parts.join(', ')}.\n\n` +
-        'Company-wide rows (payroll, expenses and capex without a scenario) are kept. This cannot be undone.',
+        'Company-wide rows (payroll, expenses and capex without a scenario) are kept. This cannot be undone.' +
+        (scenario.is_base ? '\n\nThis is the base scenario; another scenario will become the base.' : ''),
       confirmLabel: 'Delete scenario',
       variant: 'destructive',
     });
     if (!ok) return;
     setBusyId(scenario.id);
     try {
-      await actions.deleteScenario(scenario.id);
-      toast.success(`Deleted ${scenario.name}`);
+      const result = await actions.deleteScenario(scenario.id);
+      toast.success(
+        result?.promoted_base
+          ? `Deleted ${scenario.name}. ${scenarios?.[result.promoted_base]?.name || result.promoted_base} is now the base scenario.`
+          : `Deleted ${scenario.name}`
+      );
     } finally {
       setBusyId(null);
     }

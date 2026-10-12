@@ -35,6 +35,7 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
   if (!open) return null;
 
   const isEdit = Boolean(scenario?.id);
+  const isCurrentBase = isEdit && Boolean(scenario?.is_base);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -101,12 +102,15 @@ const ScenarioFormModal = ({ open, scenario = null, onClose, onSubmit }) => {
                 type="checkbox"
                 className="mt-1"
                 checked={values.is_base}
+                disabled={isCurrentBase}
                 onChange={(e) => setValues(v => ({ ...v, is_base: e.target.checked }))}
               />
               <span>
                 <span className="font-medium">Base scenario</span>
                 <span className="block text-muted-foreground">
-                  Compare shows every other scenario as a delta against the base. Only one scenario can be the base.
+                  {isCurrentBase
+                    ? 'This is the base scenario. To change the base, mark another scenario as the base; there is always exactly one.'
+                    : 'Compare shows every other scenario as a delta against the base. Only one scenario can be the base.'}
                 </span>
               </span>
             </label>

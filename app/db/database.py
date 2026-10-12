@@ -601,6 +601,31 @@ class DatabaseManager:
             conn.rollback()
         finally:
             self.close_connection(conn)
+        # Upgraded databases: scenarios may exist with none flagged as base.
+        self.ensure_base_scenario()
+
+    def ensure_base_scenario(self):
+        """
+        Keep the single-base invariant: if scenarios exist and none is flagged
+        as the base, the lowest forecast_id becomes the base. Idempotent. Runs
+        after the schema migration and after every CSV load, since a legacy
+        forecast.csv has no is_base column.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM forecast WHERE is_base = 1")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "UPDATE forecast SET is_base = 1 WHERE forecast_id = "
+                    "(SELECT forecast_id FROM forecast ORDER BY forecast_id LIMIT 1)"
+                )
+                conn.commit()
+        except Exception as e:
+            print(f"Error ensuring a base scenario: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
 
     def load_csv_data(self):
         """Load data from CSV files into the database using staging + transaction per table"""
@@ -760,6 +785,8 @@ class DatabaseManager:
             print(f"Error creating BOM definitions: {str(e)}")
         
         conn.close()
+        # A legacy forecast.csv has no is_base column; keep exactly one base.
+        self.ensure_base_scenario()
     
     def get_table_data(
         self,
