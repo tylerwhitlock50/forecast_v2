@@ -530,6 +530,19 @@ class TestCarryForward:
         assert list(march_only["detail"]["payroll_headcount"].keys()) == ["2026-03"]
         assert march_only["income_statement"]["totals"]["revenue"] == 0
         assert march_only["income_statement"]["totals"]["payroll"] == 5200
+        # The lathe was bought in February: carried into the balance sheet, but not purchased in this window.
+        lathe = next(i for i in march_only["detail"]["capex_items"] if i["capex_id"] == "CX1")
+        assert lathe["in_window"] is False
+        assert list(lathe["depreciation_by_period"].keys()) == ["2026-03"]
+        # The loan detail opens at the window start (after the Jan and Feb payments), matching the balance sheet.
+        loan = march_only["detail"]["loans"]["LN1"]
+        assert loan["opening_balance"] == 8000 == march_only["balance_sheet"]["opening"]["debt"]
+        assert list(loan["principal"].keys()) == ["2026-03"] and loan["principal"]["2026-03"] == 500
+
+    def test_detail_flags_match_a_window_that_starts_at_the_opening(self, statements):
+        lathe = next(i for i in statements["detail"]["capex_items"] if i["capex_id"] == "CX1")
+        assert lathe["in_window"] is True
+        assert statements["detail"]["loans"]["LN1"]["opening_balance"] == 9000 == statements["balance_sheet"]["opening"]["debt"]
 
     def test_warnings_only_for_the_window(self, engine_db):
         # Cash dips below the 4,000 minimum from Feb; a Jan-only window must not report Feb.
@@ -858,7 +871,17 @@ class TestLoanCalendar:
             assert all(principal[p] == 100 for p in fs.period_range("2026-04", "2027-01"))  # fixture loan ends Mar
             detail = stmt["detail"]["loans"][loan_id]
             assert detail["opening_balance"] == 0  # originated inside the window: proceeds in Jan, not opening debt
+            assert detail["proceeds"]["2026-01"] == 2400
             assert stmt["cash_flow"]["by_period"][0]["loan_proceeds"] == 2400
+            # A later window opens with the drawn balance less the principal paid in the carried months.
+            conn = engine_db.get_connection()
+            try:
+                later = fs.build_statements(conn.cursor(), [FORECAST], "2026-04", "2026-04")
+            finally:
+                conn.close()
+            new_loan = later["detail"]["loans"][loan_id]
+            assert new_loan["opening_balance"] == pytest.approx(2400 - 200, abs=0.01)
+            assert new_loan["opening_balance"] + later["detail"]["loans"]["LN1"]["opening_balance"] == pytest.approx(later["balance_sheet"]["opening"]["debt"], abs=0.01)
         finally:
             conn = engine_db.get_connection()
             conn.execute("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))

@@ -607,11 +607,13 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
         loan_entry = by_loan.setdefault(loan_id, {
             "loan_name": loan_name, "opening_balance": balance_before,
             "principal": _zero_by_period(periods), "interest": _zero_by_period(periods),
+            "proceeds": _zero_by_period(periods),
         })
 
         if originated and first_day <= originated <= last_day:
             p = originated.strftime("%Y-%m")
             proceeds[p] += float(principal_amount or 0)
+            loan_entry["proceeds"][p] += float(principal_amount or 0)
 
         for pay_date, p_amt, i_amt, total, _remaining in schedule:
             d = _parse_date(pay_date)
@@ -1102,10 +1104,27 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "payroll_headcount": _round_dict(_slice(payroll["headcount"], periods)),
             "payroll_employees": [_round_dict(e) for e in employee_rows],
             "loans": _round_dict({
-                lid: {**entry, "principal": _slice(entry["principal"], periods), "interest": _slice(entry["interest"], periods)}
+                lid: {
+                    **entry,
+                    # Balance at the start of the reported window: the modelled opening balance
+                    # rolled through the carried months' proceeds and principal payments.
+                    "opening_balance": entry["opening_balance"]
+                    + sum(entry["proceeds"][p] for p in carry_periods)
+                    - sum(entry["principal"][p] for p in carry_periods),
+                    "principal": _slice(entry["principal"], periods),
+                    "interest": _slice(entry["interest"], periods),
+                    "proceeds": _slice(entry["proceeds"], periods),
+                }
                 for lid, entry in loans["by_loan"].items()
             }),
-            "capex_items": [_round_dict({**i, "depreciation_by_period": _slice(i["depreciation_by_period"], periods)}) for i in capex["items"]],
+            "capex_items": [
+                _round_dict({
+                    **i,
+                    "in_window": i["purchase_period"] in window_set,
+                    "depreciation_by_period": _slice(i["depreciation_by_period"], periods),
+                })
+                for i in capex["items"]
+            ],
         },
     }
 
