@@ -342,6 +342,36 @@ def test_upsert_sales_and_delete_sale(mcp_client):
     assert is_error and "unit_id" in text
 
 
+def test_upsert_sales_relative_operations_respect_missing_rows(mcp_client):
+    client, mgr = mcp_client
+    # subtract from a row that does not exist: skipped, nothing created
+    out = ok(client, "forecast_upsert_sales", {"forecast_id": "F001", "operation": "subtract", "rows": [
+        {"customer_id": "C2", "unit_id": "P1", "period": "2026-05", "quantity": 3},
+        {"customer_id": "C1", "unit_id": "P1", "period": "2026-01", "quantity": 4},
+    ]})
+    assert out["updated_count"] == 1 and len(out["skipped"]) == 1
+    assert out["skipped"][0]["reason"] == "no existing row to subtract from"
+    assert db_rows(mgr, "SELECT COUNT(*) FROM sales WHERE period = '2026-05'") == [(0,)]
+    assert db_rows(mgr, "SELECT quantity, unit_price, total_revenue FROM sales WHERE sale_id = 'S1'") == [(6, 100, 600)]
+    # add to a row that does not exist without a price: refused, nothing created
+    text, is_error = call_tool(client, "forecast_upsert_sales", {"forecast_id": "F001", "operation": "add", "rows": [
+        {"customer_id": "C2", "unit_id": "P1", "period": "2026-05", "quantity": 3}]})
+    assert is_error and "unit_price" in text
+    assert db_rows(mgr, "SELECT COUNT(*) FROM sales WHERE period = '2026-05'") == [(0,)]
+    # add to a missing row with a price creates it; add to an existing row keeps its price
+    out = ok(client, "forecast_upsert_sales", {"forecast_id": "F001", "operation": "add", "rows": [
+        {"customer_id": "C2", "unit_id": "P1", "period": "2026-05", "quantity": 3, "unit_price": 120},
+        {"customer_id": "C1", "unit_id": "P1", "period": "2026-01", "quantity": 4},
+    ]})
+    assert out["updated_count"] == 2 and "skipped" not in out
+    assert db_rows(mgr, "SELECT quantity, unit_price, total_revenue FROM sales WHERE period = '2026-05'") == [(3, 120, 360)]
+    assert db_rows(mgr, "SELECT quantity, unit_price, total_revenue FROM sales WHERE sale_id = 'S1'") == [(10, 100, 1000)]
+    # all rows skipped: no API call, clear message
+    out = ok(client, "forecast_upsert_sales", {"forecast_id": "F001", "operation": "subtract", "rows": [
+        {"customer_id": "C9", "unit_id": "P9", "period": "2026-01", "quantity": 1}]})
+    assert out["updated_count"] == 0 and out["message"] == "No rows changed"
+
+
 def test_generic_record_crud(mcp_client):
     client, mgr = mcp_client
     ok(client, "forecast_create_record", {"table": "customers", "data": {"customer_id": "C9", "customer_name": "Initech", "region": "West"}})

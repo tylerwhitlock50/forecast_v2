@@ -122,8 +122,11 @@ async def adjust_material_costs_tool(
     """Bulk re-price BOM material lines, e.g. 'steel is going up 12%' =>
     material_contains='steel', price_multiplier=1.12. Keeps material_cost =
     qty x unit_price and reports the per-unit material cost change for every
-    product that uses the touched BOMs. BOM prices apply to all periods: to
-    phase a change in from a month, branch a scenario for that horizon."""
+    product that uses the touched BOMs. BOMs are company-wide, not scenario
+    data: the change applies to every scenario and every period, and
+    branching a scenario does not isolate it. Snapshot first with
+    forecast_save_database, preview with dry_run=true, and show the impact
+    by running forecast_financial_statements before and after."""
     conn = dbmod.db_manager.get_connection()
     try:
         result = adjust_material_costs(

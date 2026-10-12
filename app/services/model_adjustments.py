@@ -259,9 +259,9 @@ def adjust_material_costs(
     (case-insensitive) and/or that belong to the given BOM ids / version.
 
     Sets bom.unit_price and keeps bom.material_cost = qty * unit_price.
-    BOM prices are not time-phased in this model: a change applies to every
-    period that uses the BOM. To phase a change in, branch a scenario and
-    apply it there, or re-run with the inverse multiplier later.
+    BOM rows are company-wide and not time-phased: a change applies to every
+    scenario and every period that uses the BOM. Branching a scenario does
+    not isolate it; take a database snapshot first if it must be undoable.
     """
     op = _one_of(price_multiplier=price_multiplier, price_delta=price_delta, unit_price=unit_price)
     if op is None:
@@ -374,6 +374,6 @@ def adjust_material_costs(
         "products_affected": products,
         "preview": changes,
         "preview_truncated": len(rows) > len(changes),
-        "note": "BOM prices apply to every period. To phase a cost change in from a given month, branch a scenario for that horizon or apply it in a scenario you compare against the base.",
+        "note": "BOM prices are company-wide: this change applies to every scenario and every period. Branching a scenario does not isolate it.",
     }
 

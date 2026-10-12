@@ -13,9 +13,10 @@ Typical requests it can carry out end to end:
   months and show me the effect on cash." → `forecast_adjust_sales` with
   `periods=[2026-06, 2026-08, 2026-09]`, `price_multiplier=0.65`, then
   `forecast_financial_statements`.
-* "Steel is going up 12% from August." → branch the base scenario, then
-  `forecast_adjust_material_costs` with `material_contains="steel"`, `price_multiplier=1.12`
-  in the branch, then `forecast_compare_scenarios` (see *Time-phased costs* below).
+* "Steel is going up 12%." → `forecast_save_database`, `forecast_financial_statements` for the
+  baseline, then `forecast_adjust_material_costs` with `material_contains="steel"`,
+  `price_multiplier=1.12`, then the statements again for the delta. A rise that starts in a
+  given month is not something the model can express yet (see *Material costs* below).
 * "Add a second-shift operator from October and a $45k CNC purchase in November." →
   `forecast_create_employee`, `forecast_create_capex`.
 
@@ -146,22 +147,25 @@ product that uses the touched BOMs.
 
 Both live in `app/services/model_adjustments.py` and are covered by `tests/test_mcp_server.py`.
 
-### Time-phased costs
+### Material costs are company-wide
 
-BOM prices are not dated in this model: a BOM line has one `unit_price`, used for every
-period. "Steel goes up 12% in August" therefore cannot be expressed as a single edit to the
-base scenario. Two ways to model it today:
+BOMs, products, routings and machines are master data shared by every scenario: a BOM line has
+one `unit_price`, used for every scenario and every period. Two consequences for the assistant:
 
-* **Branch for the horizon.** Branch the base scenario, apply the material change in the
-  branch, and compare: the branch answers "what does the year look like if steel is 12% more
-  expensive", which is usually the planning question.
-* **Switch BOM versions.** Create version `2.0` of the affected BOMs with the new prices and
-  point the products at it from the month the change lands (edit `units.bom_version` when
-  that month arrives, or keep a scenario per BOM version).
+* **Branching does not isolate a material change.** `forecast_branch_scenario` copies sales,
+  scenario-specific expenses / payroll / capex and assumptions, not BOMs. A
+  `forecast_adjust_material_costs` call changes the base scenario and every branch at once, so
+  comparing scenarios cannot show its effect. To see the effect, run the statements before and
+  after (the tool also reports the per-unit material cost change per product). To be able to
+  undo it, `forecast_save_database` first.
+* **"Steel goes up 12% in August" cannot be expressed as one edit.** The nearest the model
+  gets today is a BOM version switch: create version `2.0` of the affected BOMs with the new
+  prices and point the products at it (`units.bom_version`) when that month arrives. That is
+  still a company-wide change.
 
-A dated material price adjustment inside the statements engine (effective-from period per
-BOM line, applied in `revenue_and_cogs_by_period`) would make this a one-step change; it is
-a contained follow-up in `app/services/financial_statements.py`.
+A dated, scenario-scoped material price adjustment inside the statements engine
+(effective-from period per BOM line, applied in `revenue_and_cogs_by_period`) would make both
+cases a one-step change; it is a contained follow-up in `app/services/financial_statements.py`.
 
 ## 5. Implementation notes
 

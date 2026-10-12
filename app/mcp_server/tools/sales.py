@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 import db.database as dbmod
 from services.model_adjustments import AdjustmentError, adjust_sales
+from utils.period_normalizer import normalize_period
 from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, mcp, require, strip_none
 
 Period = Annotated[Optional[str], Field(description="YYYY-MM")]
@@ -56,18 +57,34 @@ async def list_sales(
     }
 
 
+def _existing_sales_keys(forecast_id: str) -> set:
+    """(customer_id, unit_id, period) of every sales row in a scenario."""
+    conn = dbmod.db_manager.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT customer_id, unit_id, period FROM sales WHERE forecast_id = ?", (forecast_id,))
+        return {(c, u, str(p)[:7]) for c, u, p in cursor.fetchall()}
+    finally:
+        dbmod.db_manager.close_connection(conn)
+
+
 @mcp.tool(name="forecast_upsert_sales", annotations=UPSERT)
 async def upsert_sales(
     forecast_id: Annotated[str, Field(description="Scenario the rows belong to")],
     rows: Annotated[List[Dict[str, Any]], Field(
         description="Rows of {customer_id, unit_id, period (YYYY-MM), quantity, unit_price}. "
-                    "Matched on customer + product + period within the scenario; missing rows are inserted.",
+                    "Matched on customer + product + period within the scenario.",
         min_length=1)],
-    operation: Annotated[str, Field(description="replace (set quantity and price), add (add quantity, optionally set price) or subtract (reduce quantity)")] = "replace",
+    operation: Annotated[str, Field(description="replace (set quantity and price, creating missing rows), "
+                                                "add (add quantity to an existing row, or create it when unit_price is given) "
+                                                "or subtract (reduce an existing row's quantity; rows that do not exist are skipped)")] = "replace",
 ) -> Dict[str, Any]:
     """Create or update sales forecast rows. 'replace' sets quantity and
-    unit_price; 'add' / 'subtract' change quantity relative to the existing
-    row. total_revenue is recomputed as quantity x unit_price."""
+    unit_price and creates rows that do not exist. 'add' / 'subtract' change
+    quantity relative to the existing row and keep its price unless a new
+    unit_price is given; 'add' to a row that does not exist creates it (so
+    unit_price is required), 'subtract' from one that does not exist is
+    skipped and reported. total_revenue is recomputed as quantity x unit_price."""
     if operation not in ("replace", "add", "subtract"):
         raise ToolError("operation must be replace, add or subtract")
     fid = require(forecast_id, "forecast_id")
@@ -76,17 +93,47 @@ async def upsert_sales(
         for key in ("customer_id", "unit_id", "period"):
             if not row.get(key):
                 raise ToolError(f"rows[{i}] is missing {key}")
+        period = normalize_period(str(row["period"]))
+        if not period:
+            raise ToolError(f"rows[{i}] has an invalid period '{row['period']}'; use YYYY-MM")
         qty = float(row.get("quantity", 0) or 0)
         price = row.get("unit_price")
-        item = {"forecast_id": fid, "customer_id": row["customer_id"], "unit_id": row["unit_id"],
-                "period": row["period"], "quantity": qty}
+        item = {"forecast_id": fid, "customer_id": str(row["customer_id"]), "unit_id": str(row["unit_id"]),
+                "period": period, "quantity": qty}
         if price is not None:
             item["unit_price"] = float(price)
             item["total_revenue"] = qty * float(price)
         elif operation == "replace":
             raise ToolError(f"rows[{i}] needs unit_price for operation=replace")
         forecasts.append(item)
-    return await call("POST", "/forecast/bulk_update", json={"forecasts": forecasts, "operation": operation})
+
+    skipped: List[Dict[str, Any]] = []
+    if operation in ("add", "subtract"):
+        # The bulk endpoint inserts a missing row as submitted, which would turn
+        # a subtract into a positive sale or an add into a zero-price row.
+        existing = _existing_sales_keys(fid)
+        kept = []
+        for i, item in enumerate(forecasts):
+            key = (item["customer_id"], item["unit_id"], item["period"])
+            if key in existing:
+                kept.append(item)
+            elif operation == "subtract":
+                skipped.append({**{k: item[k] for k in ("customer_id", "unit_id", "period")},
+                                "reason": "no existing row to subtract from"})
+            elif "unit_price" in item:
+                kept.append(item)  # creates the row with the given quantity and price
+            else:
+                raise ToolError(
+                    f"rows[{i}] ({item['customer_id']} / {item['unit_id']} / {item['period']}) does not exist in "
+                    f"scenario {fid}; give unit_price to create it, or check ids and periods with forecast_list_sales"
+                )
+        forecasts = kept
+    if not forecasts:
+        return {"updated_count": 0, "skipped": skipped, "message": "No rows changed"}
+    result = await call("POST", "/forecast/bulk_update", json={"forecasts": forecasts, "operation": operation})
+    if skipped:
+        result["skipped"] = skipped
+    return result
 
 
 @mcp.tool(name="forecast_delete_sale", annotations=DESTRUCTIVE)
