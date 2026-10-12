@@ -9,6 +9,12 @@ import DatabaseSaveModal from '../DatabaseModals/DatabaseSaveModal';
 import DatabaseLoadModal from '../DatabaseModals/DatabaseLoadModal';
 
 const navigationModules = {
+  "Get Started": {
+    icon: "🚀",
+    routes: {
+      "Import Data": "/import"
+    }
+  },
   "Scenarios": {
     icon: "🗂️",
     routes: {
@@ -20,7 +26,8 @@ const navigationModules = {
     routes: {
       "Sales Forecasting": "/sales-forecast",
       "Customer Setup": "/customers",
-      "Product Setup": "/products"
+      "Product Setup": "/products",
+      "Pricing & Deductions": "/pricing"
     }
   },
   "Manufacturing Setup": {
@@ -55,6 +62,7 @@ const navigationModules = {
     icon: "📈",
     routes: {
       "Statements": "/reporting",
+      "COGS & Labor Forecast": "/reporting/cogs-labor",
       "Compare Scenarios": "/reporting/comparison"
     }
   }
