@@ -5,6 +5,7 @@ import { ForecastProvider } from './context/ForecastContext';
 import { ConfirmProvider } from './components/Common/ConfirmDialog';
 import GlobalLoadingBar from './components/Common/GlobalLoadingBar';
 import MainNavigation from './components/Navigation/MainNavigationNew';
+import ScenarioBar from './components/Navigation/ScenarioBar';
 import './App.css';
 
 // Module components
@@ -22,6 +23,7 @@ import ExpenseManagement from './components/Modules/ExpenseManagement/ExpenseMan
 import LoanManagement from './components/Modules/LoanManagement/LoanManagementNew';
 import ReportingDashboard from './components/Modules/ReportingAnalysis/ReportingDashboard';
 import ScenarioComparison from './components/Modules/ReportingAnalysis/ScenarioComparison';
+import ScenariosPage from './components/Modules/Scenarios/ScenariosPage';
 
 const AppLayout = ({ children }) => {
   const [navCollapsed, setNavCollapsed] = useState(false);
@@ -34,6 +36,7 @@ const AppLayout = ({ children }) => {
       />
 
       <div className={`main-content ${navCollapsed ? 'nav-collapsed' : ''}`}>
+        <ScenarioBar />
         {children}
       </div>
     </div>
@@ -50,6 +53,9 @@ function App() {
           <AppLayout>
             <Routes>
               <Route path="/" element={<Navigate to="/sales-forecast" replace />} />
+
+              {/* Scenarios */}
+              <Route path="/scenarios" element={<ScenariosPage />} />
 
               {/* Revenue Planning */}
               <Route path="/customers" element={<CustomerManagement />} />

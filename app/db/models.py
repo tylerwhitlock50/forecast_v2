@@ -332,6 +332,7 @@ class ExpenseUpdate(BaseModel):
     department: Optional[str] = None
     cost_center: Optional[str] = None
     is_active: Optional[bool] = None
+    forecast_id: Optional[str] = None
 
 class ExpenseAllocation(BaseModel):
     allocation_id: str

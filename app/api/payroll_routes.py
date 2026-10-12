@@ -60,7 +60,9 @@ async def get_employees(
             elif status == "inactive":
                 conditions.append("end_date IS NOT NULL AND end_date <= date('now')")
         if forecast_id:
-            conditions.append("forecast_id = ?")
+            # Company-wide employees (NULL forecast_id) belong to every
+            # scenario, exactly as the statements engine treats them.
+            conditions.append("(forecast_id = ? OR forecast_id IS NULL)")
             params.append(forecast_id)
         
         if conditions:
@@ -236,14 +238,15 @@ async def update_employee(employee_id: str, employee: PayrollBase):
             UPDATE payroll SET
                 employee_name = ?, department = ?, weekly_hours = ?, hourly_rate = ?,
                 rate_type = ?, labor_type = ?, start_date = ?, end_date = ?,
-                next_review_date = ?, expected_raise = ?, benefits_eligible = ?, allocations = ?
+                next_review_date = ?, expected_raise = ?, benefits_eligible = ?, allocations = ?,
+                forecast_id = ?
             WHERE employee_id = ?
         """, (
             employee.employee_name, employee.department, employee.weekly_hours,
             employee.hourly_rate, employee.rate_type, employee.labor_type,
             employee.start_date, employee.end_date, employee.next_review_date,
             employee.expected_raise, employee.benefits_eligible, allocations_json,
-            employee_id
+            employee.forecast_id, employee_id
         ))
         
         conn.commit()

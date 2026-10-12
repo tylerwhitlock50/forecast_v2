@@ -9,8 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 
 /**
  * BranchScenarioModal
- * Creates a duplicate of an existing scenario with optional
- * price / quantity multipliers and a period-extension length.
+ * Copies a scenario on the server in one transaction (sales, scenario-specific
+ * expenses / payroll / capex, assumptions and notes) with optional
+ * price / quantity multipliers and a period-extension length applied to the copy.
  *
  * Props:
  *  - open: boolean
@@ -183,6 +184,11 @@ const BranchScenarioModal = ({ open, onClose, scenarios = {}, activeScenarioId, 
               </CardContent>
             </Card>
 
+            <p className="text-xs text-muted-foreground">
+              The copy gets the source's sales lines, its scenario-specific expenses, employees and capex,
+              its financial assumptions and notes. Company-wide rows stay shared. The new scenario becomes active.
+            </p>
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Overrides (optional)</CardTitle>
@@ -240,7 +246,7 @@ const BranchScenarioModal = ({ open, onClose, scenarios = {}, activeScenarioId, 
                       placeholder="0"
                       className={errors.extendPeriods ? 'border-red-500' : ''}
                     />
-                    <p className="text-xs text-gray-500">Copies last period scaled by multipliers</p>
+                    <p className="text-xs text-gray-500">Repeats the last month's lines for N more months</p>
                     {errors.extendPeriods && (
                       <p className="text-sm text-red-500">{errors.extendPeriods}</p>
                     )}

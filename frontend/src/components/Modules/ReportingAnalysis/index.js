@@ -3,7 +3,7 @@ export { default as ReportingDashboard } from './ReportingDashboard';
 export { default as ScenarioComparison } from './ScenarioComparison';
 
 // Component exports
-export { default as ForecastSelector } from './components/ForecastSelector';
+export { default as ScenarioPicker } from './components/ScenarioPicker';
 export { default as IncomeStatement } from './components/IncomeStatement';
 export { default as BalanceSheet } from './components/BalanceSheet';
 export { default as CashFlowStatement } from './components/CashFlowStatement';

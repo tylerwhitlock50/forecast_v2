@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { useReporting, buildExportUrl } from './hooks/useReporting';
-import ForecastSelector from './components/ForecastSelector';
+import ScenarioPicker from './components/ScenarioPicker';
 import IncomeStatement from './components/IncomeStatement';
 import BalanceSheet from './components/BalanceSheet';
 import CashFlowStatement from './components/CashFlowStatement';
@@ -65,20 +65,33 @@ const ReportingDashboard = () => {
   const { statements, loading, error, fetchStatements } = useReporting();
 
   const [selectedForecasts, setSelectedForecasts] = useState([]);
+  const [consolidate, setConsolidate] = useState(false);
   const [reportingPeriod, setReportingPeriod] = useState(currentYearPeriod);
   const [activeTab, setActiveTab] = useState('income-statement');
   const [dismissedWarningsKey, setDismissedWarningsKey] = useState(null);
 
   const scenarios = useMemo(() => state.scenarios || {}, [state.scenarios]);
 
-  // Default selection: the active scenario, else the first one.
+  // Statements follow the active scenario unless the user is consolidating
+  // several scenarios on this page.
   useEffect(() => {
+    if (consolidate) return;
     const list = Object.values(scenarios);
-    if (list.length > 0 && selectedForecasts.length === 0) {
-      const preferred = activeScenario && scenarios[activeScenario] ? activeScenario : list[0].id;
-      setSelectedForecasts([preferred]);
+    if (list.length === 0) {
+      setSelectedForecasts([]);
+      return;
     }
-  }, [scenarios, activeScenario, selectedForecasts.length]);
+    const preferred = activeScenario && scenarios[activeScenario] ? activeScenario : list[0].id;
+    setSelectedForecasts(prev => (prev.length === 1 && prev[0] === preferred ? prev : [preferred]));
+  }, [scenarios, activeScenario, consolidate]);
+
+  const handleConsolidateChange = (value) => {
+    setConsolidate(value);
+    if (!value) {
+      const preferred = activeScenario && scenarios[activeScenario] ? activeScenario : selectedForecasts[0];
+      setSelectedForecasts(preferred ? [preferred] : []);
+    }
+  };
 
   const refetch = useCallback(() => {
     if (selectedForecasts.length > 0) {
@@ -108,7 +121,7 @@ const ReportingDashboard = () => {
       <div className="flex justify-between items-center flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Reporting & Analysis</h1>
-          <p className="text-gray-600">Income statement, balance sheet and cash flow generated from your forecasts</p>
+          <p className="text-gray-600">Income statement, balance sheet and cash flow for one scenario (or a consolidation of several)</p>
         </div>
         <div className="flex items-center gap-2">
           {loading && (
@@ -128,12 +141,18 @@ const ReportingDashboard = () => {
       <Card className="p-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div>
-            <h3 className="text-lg font-medium mb-4">Forecast Selection</h3>
-            <ForecastSelector
+            <h3 className="text-lg font-medium mb-4">Scenario</h3>
+            <ScenarioPicker
               scenarios={scenarios}
-              selectedForecasts={selectedForecasts}
-              onSelectionChange={setSelectedForecasts}
+              selected={selectedForecasts}
+              onChange={setSelectedForecasts}
+              mode="single"
+              consolidate={consolidate}
+              onConsolidateChange={handleConsolidateChange}
             />
+            <p className="mt-3 text-xs text-gray-500">
+              Looking for side-by-side numbers? Use <Link to="/reporting/comparison" className="underline">Compare scenarios</Link>.
+            </p>
           </div>
           <div>
             <h3 className="text-lg font-medium mb-4">Reporting Period</h3>
@@ -145,7 +164,7 @@ const ReportingDashboard = () => {
       {selectedForecasts.length > 0 && (
         <Card className="p-4">
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
-            <span>Selected Forecasts:</span>
+            <span>{consolidate && selectedForecasts.length > 1 ? 'Consolidating:' : 'Scenario:'}</span>
             {selectedForecasts.map(id => {
               const scenario = scenarios[id];
               return scenario ? (
@@ -234,8 +253,8 @@ const ReportingDashboard = () => {
       {selectedForecasts.length === 0 && (
         <Card className="p-12 text-center">
           <div className="text-gray-400">
-            <h3 className="text-xl font-medium text-gray-500 mb-2">Select Forecasts to Begin</h3>
-            <p className="text-gray-400">Choose one or more forecast scenarios to generate financial statements</p>
+            <h3 className="text-xl font-medium text-gray-500 mb-2">Select a scenario to begin</h3>
+            <p className="text-gray-400">Pick a scenario above, or create one under Scenarios</p>
           </div>
         </Card>
       )}

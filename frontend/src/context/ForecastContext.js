@@ -21,6 +21,33 @@ const mapProductForBackend = (productData) => {
   return payload;
 };
 
+// Shape the enriched rows from GET /forecast/scenarios into the map the UI
+// keys by forecast_id. Counts / window / is_base come straight from the API.
+const toScenarioMap = (list, activeId = null) => {
+  const map = {};
+  (list || []).forEach(scenario => {
+    if (!scenario || !scenario.forecast_id) return;
+    map[scenario.forecast_id] = {
+      ...scenario,
+      id: scenario.forecast_id,
+      name: scenario.name || 'Unnamed Scenario',
+      description: scenario.description || '',
+      notes: scenario.notes || '',
+      is_base: Boolean(scenario.is_base),
+      isActive: scenario.forecast_id === activeId
+    };
+  });
+  return map;
+};
+
+const readStoredScenario = () => {
+  try {
+    return localStorage.getItem('activeScenario');
+  } catch {
+    return null;
+  }
+};
+
 // Initial state
 const initialState = {
   scenarios: {}, // Will be populated from database
@@ -91,22 +118,14 @@ const forecastReducer = (state, action) => {
         lastUpdated: new Date()
       };
     
-    case actionTypes.SWITCH_SCENARIO:
-      return {
-        ...state,
-        activeScenario: action.payload,
-        scenarios: {
-          ...state.scenarios,
-          [state.activeScenario]: {
-            ...state.scenarios[state.activeScenario],
-            isActive: false
-          },
-          [action.payload]: {
-            ...state.scenarios[action.payload],
-            isActive: true
-          }
-        }
-      };
+    case actionTypes.SWITCH_SCENARIO: {
+      const nextId = action.payload || null;
+      const scenarios = {};
+      Object.entries(state.scenarios || {}).forEach(([id, scenario]) => {
+        scenarios[id] = { ...scenario, isActive: id === nextId };
+      });
+      return { ...state, activeScenario: nextId, scenarios };
+    }
     
     case actionTypes.UPDATE_SCENARIO:
       if (action.payload.scenarios) {
@@ -231,22 +250,15 @@ const ForecastContext = createContext();
 let pendingUpdates = [];
 let previousSalesState = null;
 
-// Request deduplication cache
+// Deduplicate concurrent requests for the same URL. There is deliberately
+// no time-based cache: a reload right after a save must show the saved data.
 const requestCache = new Map();
-const CACHE_TTL = 5000; // 5 seconds
 
 // Helper to check if request is in progress
 const inFlightRequests = new Set();
 
 // Helper function to fetch single data type
 const fetchDataType = async (url, key, suppressErrorToast = true) => {
-  // Check cache first
-  const cacheKey = `${url}-${Date.now()}`;
-  const cached = requestCache.get(url);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
-  
   // Check if request is in flight
   if (inFlightRequests.has(url)) {
     // Wait for existing request
@@ -286,30 +298,36 @@ const fetchDataType = async (url, key, suppressErrorToast = true) => {
 export const ForecastProvider = ({ children }) => {
   const [state, dispatch] = useReducer(forecastReducer, initialState);
   
-  // Debounced save function for batching updates
+  // Debounced save. lodash.debounce only passes the LAST call's arguments,
+  // so edits are queued in `pendingUpdates` and the whole queue is flushed
+  // here, grouped by operation. Later edits to the same cell replace earlier ones.
   const debouncedSaveRef = useRef(
-    debounce(async (salesData, operation, activeScenario, dispatchRef, previousSales) => {
+    debounce(async (_salesData, _operation, activeScenario, dispatchRef, previousSales) => {
+      const queue = pendingUpdates.splice(0);
+      if (queue.length === 0) return;
       try {
-        // Transform sales data to the format expected by the backend
-        const forecasts = salesData.map(sale => ({
-          unit_id: sale.unit_id,
-          customer_id: sale.customer_id,
-          period: sale.period ? `${sale.period}-01` : sale.period,
-          quantity: sale.quantity,
-          unit_price: sale.unit_price,
-          total_revenue: sale.total_revenue,
-          forecast_id: sale.forecast_id || activeScenario
-        }));
-        
-        await api.post('/forecast/bulk_update', { 
-          forecasts,
-          operation 
-        }, { suppressSuccessToast: true });
-        
-        // Clear pending updates on success
-        pendingUpdates = [];
+        const byOperation = new Map();
+        queue.forEach(({ sale, operation }) => {
+          if (!byOperation.has(operation)) byOperation.set(operation, new Map());
+          const key = `${sale.unit_id}|${sale.customer_id}|${sale.period}|${sale.forecast_id || activeScenario}`;
+          byOperation.get(operation).set(key, sale);
+        });
+        for (const [operation, sales] of byOperation.entries()) {
+          const forecasts = Array.from(sales.values()).map(sale => ({
+            unit_id: sale.unit_id,
+            customer_id: sale.customer_id,
+            period: sale.period ? `${sale.period}-01` : sale.period,
+            quantity: sale.quantity,
+            unit_price: sale.unit_price,
+            total_revenue: sale.total_revenue,
+            forecast_id: sale.forecast_id || activeScenario
+          }));
+          // eslint-disable-next-line no-await-in-loop
+          await api.post('/forecast/bulk_update', { forecasts, operation }, { suppressSuccessToast: true });
+        }
       } catch (error) {
         console.error('Error saving forecast updates:', error);
+        toast.error('Failed to save forecast changes');
         // Rollback on error
         if (previousSales) {
           dispatchRef({ 
@@ -319,7 +337,7 @@ export const ForecastProvider = ({ children }) => {
         }
         throw error;
       }
-    }, 2000)
+    }, 1500)
   );
 
   // Actions
@@ -333,38 +351,35 @@ export const ForecastProvider = ({ children }) => {
     updateData: (type, data) => dispatch({ type: actionTypes.UPDATE_DATA, payload: { type, data } }),
     
     switchScenario: (scenarioId) => {
-      if (scenarioId) {
-        try {
-          localStorage.setItem('activeScenario', scenarioId);
-        } catch (err) {
-          console.warn('Unable to persist active scenario', err);
-        }
+      try {
+        if (scenarioId) localStorage.setItem('activeScenario', scenarioId);
+        else localStorage.removeItem('activeScenario');
+      } catch (err) {
+        console.warn('Unable to persist active scenario', err);
       }
-      dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarioId });
+      dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarioId || null });
     },
     
     updateScenarioLocal: (id, data) => dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id, data } }),
 
     updateScenario: async (scenarioId, updates) => {
       try {
-        if (!scenarioId) return;
+        if (!scenarioId) return null;
         // Optimistically update local state so UI feels responsive
         dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { id: scenarioId, data: updates } });
-
-        await api.post('/forecast/update', {
-          table: 'forecast',
-          id: scenarioId,
-          updates,
-        });
-
-        // Refresh to reflect persisted state
+        const response = await api.put(`/forecast/scenario/${scenarioId}`, updates, { suppressErrorToast: true });
         await actions.fetchScenarios();
+        return response?.data || null;
       } catch (error) {
         console.error('Error updating scenario:', error);
-        toast.error('Failed to update scenario');
+        toast.error(error?.userMessage || 'Failed to update scenario');
+        await actions.fetchScenarios();
         throw error;
       }
     },
+
+    // Exactly one scenario is the base; Compare shows deltas against it.
+    setBaseScenario: async (scenarioId) => actions.updateScenario(scenarioId, { is_base: true }),
     
     addValidationError: (error) => dispatch({ type: actionTypes.ADD_VALIDATION_ERROR, payload: error }),
     
@@ -405,7 +420,7 @@ export const ForecastProvider = ({ children }) => {
           { url: `/data/router_definitions`, key: 'routerDefinitions' },
           { url: `/data/router_operations`, key: 'routerOperations' },
           { url: `/data/labor_rates`, key: 'laborRates' },
-          { url: `/data/forecast`, key: 'forecast' }
+          { url: `/forecast/scenarios`, key: 'forecast' }
         ];
 
         // Execute API calls in parallel with caching
@@ -441,7 +456,7 @@ export const ForecastProvider = ({ children }) => {
         const router_definitions = routerDefinitionsRes?.data || [];
         const router_operations = routerOperationsRes?.data || [];
         const labor_rates = laborRatesRes?.data || [];
-        const forecast = forecastRes?.data || [];
+        const forecast = forecastRes?.data?.scenarios || [];
 
         // Transform units to products format - keep original field names for consistency
         const products = units.map(unit => ({
@@ -506,38 +521,24 @@ export const ForecastProvider = ({ children }) => {
           operation_description: operation.operation_description
         }));
 
-        // Process forecast data for scenarios
-        const scenarioMap = {};
-        forecast.forEach(scenario => {
-          scenarioMap[scenario.forecast_id] = {
-            id: scenario.forecast_id,
-            name: scenario.name || 'Unnamed Scenario',
-            description: scenario.description || '',
-            notes: scenario.notes || '',
-            isActive: false
-          };
-        });
-
-        // Set first scenario as active if no active scenario
-        const storedScenario = (() => {
-          try {
-            return localStorage.getItem('activeScenario');
-          } catch {
-            return null;
-          }
-        })();
-
-        if (storedScenario && scenarioMap[storedScenario]) {
-          scenarioMap[storedScenario].isActive = true;
-          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: storedScenario });
-        } else if (forecast.length > 0 && !state.activeScenario) {
-          scenarioMap[forecast[0].forecast_id].isActive = true;
-          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: forecast[0].forecast_id });
+        // Scenarios: keep the stored choice if it still exists, else the
+        // base scenario, else the first one. An empty database has no
+        // active scenario (there is no pretend "default").
+        const storedScenario = readStoredScenario();
+        let nextActive = state.activeScenario;
+        const ids = forecast.map(f => f.forecast_id);
+        if (storedScenario && ids.includes(storedScenario)) {
+          nextActive = storedScenario;
+        } else if (!nextActive || !ids.includes(nextActive)) {
+          const base = forecast.find(f => f.is_base);
+          nextActive = base ? base.forecast_id : (ids[0] || null);
         }
-
-        // Store scenarios
+        const scenarioMap = toScenarioMap(forecast, nextActive);
         dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
         dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
+        if (nextActive !== state.activeScenario) {
+          actions.switchScenario(nextActive);
+        }
 
         const data = {
           products,
@@ -596,213 +597,116 @@ export const ForecastProvider = ({ children }) => {
 
     fetchScenarios: async () => {
       try {
-        console.log('Fetching scenarios...');
-        const response = await api.get('/data/forecast', { suppressErrorToast: true });
-        console.log('Forecast response:', response);
-        
-        const scenarios = response?.data || [];
-        console.log('Raw scenarios:', scenarios);
-        
-        const scenarioMap = {};
-        
-        if (scenarios.length === 0) {
-          console.log('No scenarios found - creating default scenario');
-          // Create a default scenario for empty database
-          scenarioMap['default'] = {
-            id: 'default',
-            name: 'Default Scenario',
-            description: 'Default scenario for new database',
-            isActive: true
-          };
-          dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: 'default' });
-        } else {
-          scenarios.forEach(scenario => {
-            scenarioMap[scenario.forecast_id] = {
-              id: scenario.forecast_id,
-              name: scenario.name || 'Unnamed Scenario',
-              description: scenario.description || '',
-              notes: scenario.notes || '',
-              isActive: false
-            };
-          });
-          
-          // Set first scenario as active if no active scenario
-          if (!state.activeScenario) {
-            scenarioMap[scenarios[0].forecast_id].isActive = true;
-            dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: scenarios[0].forecast_id });
-          }
+        const response = await api.get('/forecast/scenarios', { suppressErrorToast: true });
+        const list = response?.data?.scenarios || [];
+        const ids = list.map(s => s.forecast_id);
+        let nextActive = state.activeScenario;
+        if (!nextActive || !ids.includes(nextActive)) {
+          const stored = readStoredScenario();
+          const base = list.find(s => s.is_base);
+          nextActive = (stored && ids.includes(stored)) ? stored : (base ? base.forecast_id : (ids[0] || null));
         }
-        
-        console.log('Processed scenario map:', scenarioMap);
-        
-        // Store scenarios in both locations for compatibility
+        const scenarioMap = toScenarioMap(list, nextActive);
         dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: scenarioMap } });
         dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: scenarioMap } });
-        
-        console.log('Scenarios loaded successfully');
+        if (nextActive !== state.activeScenario) {
+          actions.switchScenario(nextActive);
+        }
+        return list;
       } catch (error) {
         console.error('Error fetching scenarios:', error);
-        // Create a default scenario on error
-        const defaultScenarioMap = {
-          'default': {
-            id: 'default',
-            name: 'Default Scenario',
-            description: 'Default scenario (database unavailable)',
-            isActive: true
-          }
-        };
-        dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'scenarios', data: defaultScenarioMap } });
-        dispatch({ type: actionTypes.UPDATE_SCENARIO, payload: { scenarios: defaultScenarioMap } });
-        dispatch({ type: actionTypes.SWITCH_SCENARIO, payload: 'default' });
         toast.error('Failed to load forecast scenarios');
+        return [];
       }
     },
 
     createScenario: async (scenarioData) => {
       try {
         const response = await api.post('/forecast/scenario', scenarioData);
-        const newScenario = response.data;
-        
-        // Refresh scenarios and switch to the new one
+        const newScenario = response?.data;
         await actions.fetchScenarios();
-        actions.switchScenario(newScenario.forecast_id);
-        
+        if (newScenario?.forecast_id) actions.switchScenario(newScenario.forecast_id);
         return newScenario;
       } catch (error) {
         console.error('Error creating scenario:', error);
-        // Error is already handled by API client
+        throw error;
       }
     },
 
+    /**
+     * Branch a scenario. The server copies sales, scenario-specific
+     * expenses / payroll / capex, assumptions and notes in one transaction
+     * and applies the overrides to the copy:
+     *   { priceMultiplier, quantityMultiplier, extendPeriods }
+     */
     duplicateScenario: async (scenarioId, scenarioData = {}, overrides = {}) => {
       try {
-        const response = await api.post(`/forecast/scenario/${scenarioId}/duplicate`, scenarioData);
-        const newScenario = response.data;
+        const payload = {
+          name: scenarioData.name,
+          description: scenarioData.description,
+          price_multiplier: overrides.priceMultiplier ?? 1,
+          quantity_multiplier: overrides.quantityMultiplier ?? 1,
+          extend_periods: overrides.extendPeriods ?? 0,
+        };
+        const response = await api.post(`/forecast/scenario/${scenarioId}/duplicate`, payload, { suppressErrorToast: true });
+        const newScenario = response?.data;
         await actions.fetchScenarios();
-        actions.switchScenario(newScenario.forecast_id);
-
-        // Apply optional overrides (price / qty multipliers, extend periods).
-        const priceMultiplier = Number.isFinite(Number(overrides.priceMultiplier))
-          ? Number(overrides.priceMultiplier)
-          : 1;
-        const quantityMultiplier = Number.isFinite(Number(overrides.quantityMultiplier))
-          ? Number(overrides.quantityMultiplier)
-          : 1;
-        const extendPeriods = Math.max(0, parseInt(overrides.extendPeriods, 10) || 0);
-
-        const hasScaleOverride = priceMultiplier !== 1 || quantityMultiplier !== 1;
-        const hasExtendOverride = extendPeriods > 0;
-
-        if (!hasScaleOverride && !hasExtendOverride) {
-          return newScenario;
-        }
-
-        try {
-          // Fetch newly duplicated scenario's sales.
-          const salesRes = await api.get(
-            `/data/sales?forecast_id=${newScenario.forecast_id}`,
-            { suppressErrorToast: true }
-          );
-          const sales = salesRes?.data || [];
-
-          // Build override records in memory.
-          const overrideRecords = [];
-
-          if (hasScaleOverride) {
-            sales.forEach(sale => {
-              const newQty = Number(sale.quantity || 0) * quantityMultiplier;
-              const newPrice = Number(sale.unit_price || 0) * priceMultiplier;
-              overrideRecords.push({
-                unit_id: sale.unit_id,
-                customer_id: sale.customer_id,
-                period: normalizePeriod(sale.period),
-                quantity: newQty,
-                unit_price: newPrice,
-                total_revenue: newQty * newPrice,
-                forecast_id: newScenario.forecast_id,
-              });
-            });
-          }
-
-          if (hasExtendOverride && sales.length > 0) {
-            // Lazy-load period helper to avoid a static cycle.
-            const { getNextNPeriods, inferPeriodType } = await import(
-              '../components/Modules/RevenueForecasting/periodUtils'
-            );
-
-            const normalizedSales = sales.map(s => ({
-              ...s,
-              _normalizedPeriod: normalizePeriod(s.period),
-            }));
-            const lastPeriod = normalizedSales
-              .map(s => s._normalizedPeriod)
-              .filter(Boolean)
-              .sort()
-              .slice(-1)[0];
-
-            if (lastPeriod) {
-              const periodType = inferPeriodType(lastPeriod) || 'monthly';
-              const nextPeriods = getNextNPeriods(lastPeriod, extendPeriods, periodType);
-
-              // One row per unit/customer combo that appears in the last period.
-              const lastSlice = normalizedSales.filter(s => s._normalizedPeriod === lastPeriod);
-              const comboMap = new Map();
-              lastSlice.forEach(s => {
-                const key = `${s.unit_id}||${s.customer_id}`;
-                comboMap.set(key, s);
-              });
-
-              comboMap.forEach(sale => {
-                const newQty = Number(sale.quantity || 0) * quantityMultiplier;
-                const newPrice = Number(sale.unit_price || 0) * priceMultiplier;
-                nextPeriods.forEach(periodKey => {
-                  overrideRecords.push({
-                    unit_id: sale.unit_id,
-                    customer_id: sale.customer_id,
-                    period: periodKey,
-                    quantity: newQty,
-                    unit_price: newPrice,
-                    total_revenue: newQty * newPrice,
-                    forecast_id: newScenario.forecast_id,
-                  });
-                });
-              });
-            }
-          }
-
-          if (overrideRecords.length > 0) {
-            // Chunk to 500 records per request.
-            const CHUNK = 500;
-            for (let i = 0; i < overrideRecords.length; i += CHUNK) {
-              const chunk = overrideRecords.slice(i, i + CHUNK);
-              // eslint-disable-next-line no-await-in-loop
-              await actions.bulkUpdateForecast(chunk, 'replace', true);
-            }
-          }
-        } catch (overrideError) {
-          console.error('Error applying scenario branch overrides:', overrideError);
-          toast.error(`Branched; overrides partially applied: ${overrideError?.message || 'unknown error'}`);
-          return newScenario;
-        }
-
+        if (newScenario?.forecast_id) actions.switchScenario(newScenario.forecast_id);
         return newScenario;
       } catch (error) {
         console.error('Error duplicating scenario:', error);
+        toast.error(error?.userMessage || 'Failed to branch scenario');
+        throw error;
       }
     },
 
     deleteScenario: async (scenarioId) => {
       try {
-        await api.delete(`/forecast/scenario/${scenarioId}`);
-        const response = await api.get('/data/forecast', { suppressErrorToast: true });
-        await actions.fetchScenarios();
+        const response = await api.delete(`/forecast/scenario/${scenarioId}`, { suppressErrorToast: true });
         if (state.activeScenario === scenarioId) {
-          const nextId = response?.data?.[0]?.forecast_id || null;
-          actions.switchScenario(nextId);
+          actions.switchScenario(null);
         }
+        await actions.fetchScenarios();
+        return response?.data;
       } catch (error) {
         console.error('Error deleting scenario:', error);
+        toast.error(error?.userMessage || 'Failed to delete scenario');
+        throw error;
       }
+    },
+
+    // ---- Payroll (employees) ------------------------------------------------
+    // Employees are scenario-scoped like expenses: forecast_id null means
+    // company-wide (included in every scenario).
+    refreshPayroll: async () => {
+      const url = `/data/payroll${state.activeScenario ? `?forecast_id=${encodeURIComponent(state.activeScenario)}` : ''}`;
+      const res = await api.get(url, { suppressErrorToast: true });
+      const payroll = res?.data || [];
+      dispatch({ type: actionTypes.UPDATE_DATA, payload: { type: 'payroll', data: payroll } });
+      return payroll;
+    },
+
+    createEmployee: async (employee) => {
+      const payload = { ...employee, labor_type: employee.labor_type || employee.department };
+      if (!('forecast_id' in payload)) payload.forecast_id = state.activeScenario || null;
+      const res = await api.post('/payroll/employees', payload, { suppressErrorToast: true });
+      await actions.refreshPayroll();
+      return res?.data;
+    },
+
+    updateEmployee: async (employeeId, employee) => {
+      const payload = { ...employee, labor_type: employee.labor_type || employee.department };
+      delete payload.employee_id;
+      delete payload.status;
+      const res = await api.put(`/payroll/employees/${employeeId}`, payload, { suppressErrorToast: true });
+      await actions.refreshPayroll();
+      return res?.data;
+    },
+
+    deleteEmployee: async (employeeId) => {
+      const res = await api.delete(`/payroll/employees/${employeeId}`, { suppressErrorToast: true });
+      await actions.refreshPayroll();
+      return res?.data;
     },
 
     bulkUpdateForecast: async (salesData, operation = 'add', skipOptimistic = false) => {
@@ -821,8 +725,8 @@ export const ForecastProvider = ({ children }) => {
             }
           });
           
-          // Add to pending updates and debounce save
-          pendingUpdates.push(...salesData);
+          // Queue and debounce; the flush sends every queued edit.
+          salesData.forEach(sale => pendingUpdates.push({ sale, operation }));
           debouncedSaveRef.current(salesData, operation, state.activeScenario, dispatch, previousSalesState);
         } else {
           // Direct save without optimistic update (for initial loads, etc.)
@@ -887,7 +791,9 @@ export const ForecastProvider = ({ children }) => {
       
       // Save immediately for single edits (flush any pending debounced saves first)
       debouncedSaveRef.current.flush();
+      salesData.forEach(sale => pendingUpdates.push({ sale, operation }));
       debouncedSaveRef.current(salesData, operation, state.activeScenario, dispatch, previousSalesState);
+      debouncedSaveRef.current.flush();
     },
 
     // Removed updateSalesRecord function - use bulkUpdateForecast instead
@@ -1602,9 +1508,11 @@ export const ForecastProvider = ({ children }) => {
     createExpense: async (expenseData) => {
       try {
         actions.setLoading(true);
+        // Scope is explicit: forecast_id null means company-wide. Only
+        // default to the active scenario when the caller did not decide.
         const payload = { ...expenseData };
-        if (state.activeScenario && !payload.forecast_id) {
-          payload.forecast_id = state.activeScenario;
+        if (!('forecast_id' in payload)) {
+          payload.forecast_id = state.activeScenario || null;
         }
         const response = await api.post('/expenses/', payload);
         
@@ -1624,9 +1532,6 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         const payload = { ...expenseData };
-        if (state.activeScenario && !payload.forecast_id) {
-          payload.forecast_id = state.activeScenario;
-        }
         const response = await api.put(`/expenses/${expenseId}`, payload);
         
         // Refresh expenses data

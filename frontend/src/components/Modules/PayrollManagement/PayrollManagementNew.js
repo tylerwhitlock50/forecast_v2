@@ -71,7 +71,8 @@ const serverForecastToView = (forecast, cfg = {}) => forecast.map((run) => ({
 }));
 
 const PayrollManagement = () => {
-  const { data, actions, activeScenario } = useForecast();
+  const { data, actions, activeScenario, scenarios } = useForecast();
+  const activeScenarioName = activeScenario && scenarios?.[activeScenario] ? scenarios[activeScenario].name : '';
   const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('employees');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -81,7 +82,8 @@ const PayrollManagement = () => {
   const [forecastHorizon, setForecastHorizon] = useState(26); // 26 pay periods = 1 year
   const [filters, setFilters] = useState({
     department: '',
-    status: 'active'
+    status: 'active',
+    scope: ''
   });
 
   // Configuration state for taxes and benefits
@@ -159,7 +161,7 @@ const PayrollManagement = () => {
       next_review_date: emp.next_review_date || getNextReviewDate(emp.start_date),
       expected_raise: emp.expected_raise || 0,
       allocations: emp.allocations || { 'Customer-Centric Brands': 100 },
-      benefits_eligible: emp.benefits_eligible !== false,
+      benefits_eligible: !(emp.benefits_eligible === false || emp.benefits_eligible === 0 || emp.benefits_eligible === '0'),
       status: emp.end_date && new Date(emp.end_date) < new Date() ? 'inactive' : 'active'
     }));
   }, [data?.payroll]);
@@ -231,6 +233,8 @@ const PayrollManagement = () => {
     return employees.filter(emp => {
       if (filters.department && emp.department !== filters.department) return false;
       if (filters.status && emp.status !== filters.status) return false;
+      if (filters.scope === 'company' && emp.forecast_id) return false;
+      if (filters.scope === 'scenario' && !emp.forecast_id) return false;
       return true;
     });
   }, [employees, filters]);
@@ -253,7 +257,8 @@ const PayrollManagement = () => {
       next_review_date: '',
       expected_raise: 0,
       benefits_eligible: true,
-      allocations: { 'Customer-Centric Brands': 100 }
+      allocations: { 'Customer-Centric Brands': 100 },
+      forecast_id: activeScenario || null
     });
     setShowEmployeeModal(true);
   };
@@ -273,18 +278,16 @@ const PayrollManagement = () => {
       }
 
       // Save employee data
+      const payload = {
+        ...employee,
+        next_review_date: employee.next_review_date || getNextReviewDate(employee.start_date),
+        end_date: employee.end_date || null,
+      };
       if (employee.employee_id) {
-        // Update existing
-        await actions.updateData('payroll', employee.employee_id, employee);
+        await actions.updateEmployee(employee.employee_id, payload);
         toast.success('Employee updated successfully');
       } else {
-        // Create new
-        const newEmployee = {
-          ...employee,
-          employee_id: `EMP-${Date.now()}`,
-          next_review_date: employee.next_review_date || getNextReviewDate(employee.start_date)
-        };
-        await actions.addData('payroll', newEmployee);
+        await actions.createEmployee(payload);
         toast.success('Employee added successfully');
       }
       
@@ -303,7 +306,7 @@ const PayrollManagement = () => {
       variant: 'destructive',
     })) {
       try {
-        await actions.deleteData('payroll', employeeId);
+        await actions.deleteEmployee(employeeId);
         toast.success('Employee deleted successfully');
       } catch (error) {
         toast.error('Error deleting employee: ' + error.message);
@@ -323,7 +326,10 @@ const PayrollManagement = () => {
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString('en-US', {
+    // Date-only strings are local dates, not UTC midnight.
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateString));
+    const date = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateString);
+    return date.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric'
@@ -356,6 +362,15 @@ const PayrollManagement = () => {
         };
         return <Badge variant={variants[dept] || 'default'}>{dept}</Badge>;
       }
+    },
+    {
+      key: 'forecast_id',
+      title: 'Scope',
+      render: (value) => (
+        value
+          ? <Badge variant="warning" title={`Only in scenario ${value}`}>{value === activeScenario ? 'This scenario' : value}</Badge>
+          : <Badge variant="secondary" title="Included in every scenario">Company-wide</Badge>
+      )
     },
     {
       key: 'rate_type',
@@ -478,6 +493,14 @@ const PayrollManagement = () => {
       {/* Filter Controls */}
       <div className="flex flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-2">
+          <Label>Scope:</Label>
+          <Select value={filters.scope} onChange={(e) => setFilters(prev => ({ ...prev, scope: e.target.value }))}>
+            <SelectOption value="">Company-wide + this scenario</SelectOption>
+            <SelectOption value="company">Company-wide only</SelectOption>
+            <SelectOption value="scenario">This scenario only</SelectOption>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
           <Label>Department:</Label>
           <Select value={filters.department} onChange={(e) => setFilters(prev => ({ ...prev, department: e.target.value }))}>
             <SelectOption value="">All Departments</SelectOption>
@@ -566,6 +589,8 @@ const PayrollManagement = () => {
           departments={departments}
           businessUnits={businessUnits}
           onSave={handleSaveEmployee}
+          activeScenario={activeScenario}
+          activeScenarioName={activeScenarioName}
           onCancel={() => {
             setShowEmployeeModal(false);
             setSelectedEmployee(null);

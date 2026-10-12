@@ -107,7 +107,8 @@ class DatabaseManager:
                 forecast_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
-                notes TEXT
+                notes TEXT,
+                is_base INTEGER DEFAULT 0
             )
         ''')
         
@@ -574,19 +575,25 @@ class DatabaseManager:
             self.close_connection(conn)
 
     def migrate_forecast_table(self):
-        """Add notes column to forecast table if missing (idempotent)"""
+        """Add notes / is_base columns to the forecast table if missing (idempotent)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute("PRAGMA table_info(forecast)")
             columns = [col[1] for col in cursor.fetchall()]
-            if 'notes' not in columns:
-                try:
-                    cursor.execute('ALTER TABLE forecast ADD COLUMN notes TEXT')
-                except sqlite3.OperationalError as alter_err:
-                    # Column may already exist under a concurrent startup; ignore
-                    if 'duplicate column name' not in str(alter_err).lower():
-                        raise
+            for column, ddl in (
+                ('notes', 'ALTER TABLE forecast ADD COLUMN notes TEXT'),
+                # Exactly one scenario may be flagged as the base; the
+                # comparison screen shows deltas against it.
+                ('is_base', 'ALTER TABLE forecast ADD COLUMN is_base INTEGER DEFAULT 0'),
+            ):
+                if column not in columns:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError as alter_err:
+                        # Column may already exist under a concurrent startup; ignore
+                        if 'duplicate column name' not in str(alter_err).lower():
+                            raise
             conn.commit()
             print("Forecast table migration completed successfully")
         except Exception as e:
@@ -776,9 +783,14 @@ class DatabaseManager:
             params = []
             where_clauses = []
 
-            # Apply forecast filtering when column exists
+            # Apply forecast filtering when column exists. Sales always belong
+            # to one scenario; every other table treats NULL as company-wide
+            # (included in every scenario), matching the statements engine.
             if forecast_id and "forecast_id" in columns:
-                where_clauses.append("forecast_id = ?")
+                if table_name == "sales":
+                    where_clauses.append("forecast_id = ?")
+                else:
+                    where_clauses.append("(forecast_id = ? OR forecast_id IS NULL)")
                 params.append(forecast_id)
 
             # Apply column filters
