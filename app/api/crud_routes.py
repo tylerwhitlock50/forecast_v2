@@ -67,6 +67,7 @@ async def get_forecast_scenarios():
     """
     Get all available forecast scenarios
     """
+    conn = None
     try:
         from db.database import db_manager
 
@@ -88,14 +89,20 @@ async def get_forecast_scenarios():
             message=f"Retrieved {len(forecast_list)} forecast scenarios"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving forecast scenarios: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.post("/scenario", response_model=ForecastResponse)
 async def create_forecast_scenario(scenario_data: Dict[str, Any]):
     """
     Create a new forecast scenario with auto-generated FXXX ID
     """
+    conn = None
     try:
         from db.database import db_manager
 
@@ -133,8 +140,13 @@ async def create_forecast_scenario(scenario_data: Dict[str, Any]):
             message=f"Forecast scenario {forecast_id} created successfully"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating forecast scenario: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _text(value: Any) -> Optional[str]:

@@ -147,6 +147,7 @@ def generate_amortization_schedule(
 @router.post("/", response_model=ForecastResponse)
 async def create_loan(loan_data: LoanCreate):
     """Create a new loan and generate its amortization schedule"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -220,12 +221,18 @@ async def create_loan(loan_data: LoanCreate):
             message=f"Loan '{loan_data.loan_name}' created successfully with {len(payments)} scheduled payments"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating loan: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/", response_model=ForecastResponse)
 async def get_loans(active_only: bool = Query(True)):
     """Get all loans with summary information"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -363,15 +370,21 @@ async def get_loans(active_only: bool = Query(True)):
             message=f"Retrieved {len(loans)} loans"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         print(f"Error in get_loans: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error retrieving loans: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/{loan_id}/schedule", response_model=ForecastResponse)
 async def get_amortization_schedule(loan_id: str):
     """Get the complete amortization schedule for a loan"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -438,12 +451,18 @@ async def get_amortization_schedule(loan_id: str):
             message=f"Retrieved amortization schedule with {len(payments)} payments"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving amortization schedule: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/summary", response_model=ForecastResponse)
 async def get_loan_summary():
     """Get comprehensive loan portfolio summary"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -558,11 +577,16 @@ async def get_loan_summary():
             message="Retrieved loan portfolio summary"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         print(f"Error in get_loan_summary: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error retrieving loan summary: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/cash-flow", response_model=ForecastResponse)
 async def get_loan_cash_flow_projection(
@@ -570,6 +594,7 @@ async def get_loan_cash_flow_projection(
     end_period: str = Query(..., description="End period in YYYY-MM format")
 ):
     """Get loan payment cash flow projection for specified period range"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -649,12 +674,18 @@ async def get_loan_cash_flow_projection(
             message=f"Retrieved cash flow projections for {len(projection_list)} periods"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving cash flow projection: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.put("/{loan_id}", response_model=ForecastResponse)
 async def update_loan(loan_id: str, loan_update: LoanUpdate):
     """Update loan information and regenerate amortization schedule if needed"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -740,12 +771,18 @@ async def update_loan(loan_id: str, loan_update: LoanUpdate):
             message="Loan updated successfully"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating loan: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.delete("/{loan_id}", response_model=ForecastResponse)
 async def delete_loan(loan_id: str):
     """Delete a loan and its payment schedule"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -775,5 +812,10 @@ async def delete_loan(loan_id: str):
             message=f"Loan '{loan_name}' deleted successfully"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting loan: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()

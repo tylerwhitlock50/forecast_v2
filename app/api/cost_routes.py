@@ -63,6 +63,7 @@ async def get_unit_cost_preview(
     router pairing. Used by Product edit / BOM / Router modals to show a
     live "≈ $X/unit" preview before the pairing is committed.
     """
+    conn = None
     try:
         from db.database import db_manager
 
@@ -89,8 +90,13 @@ async def get_unit_cost_preview(
             },
             message="Unit cost preview computed",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error computing unit cost: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @router.get("/cost-summary", response_model=ForecastResponse)

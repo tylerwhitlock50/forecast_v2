@@ -12,6 +12,7 @@ router = APIRouter(prefix="/data", tags=["data"])
 @router.get("/health")
 async def data_health_check():
     """Quick health check for data endpoints - returns database status"""
+    conn = None
     try:
         from db.database import db_manager
         
@@ -53,6 +54,9 @@ async def data_health_check():
             "database_healthy": False,
             "error": str(e)
         }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @router.get("/{table_name}")

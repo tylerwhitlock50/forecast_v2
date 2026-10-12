@@ -35,6 +35,7 @@ async def get_expense_categories(
     """
     Get all expense categories with optional filtering
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -93,6 +94,7 @@ async def create_expense_category(category: ExpenseCategoryCreate):
     """
     Create a new expense category
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -138,6 +140,7 @@ async def get_expenses(
     """
     Get all expenses with optional filtering and category details
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -244,6 +247,7 @@ async def create_expense(expense: ExpenseCreate):
     """
     Create a new expense and generate allocations
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -301,6 +305,7 @@ async def update_expense(expense_id: str, expense_update: ExpenseUpdate):
     """
     Update an existing expense and regenerate allocations if necessary
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -386,6 +391,7 @@ async def delete_expense(expense_id: str):
     """
     Delete an expense and its allocations
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -426,6 +432,7 @@ async def get_expense_allocations(
     """
     Get expense allocations with filtering
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -508,6 +515,7 @@ async def get_expense_forecast(
     """
     Get expense forecast for a period range
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -575,6 +583,7 @@ async def get_expense_summary(
     Headline totals for the expense overview: monthly-equivalent run rate,
     annual total and annual totals by category type, over active expenses.
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()
@@ -621,8 +630,13 @@ async def get_expense_summary(
             },
             message="Expense summary",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build expense summary: {str(e)}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 @router.get("/report", response_model=ForecastResponse)
 async def get_expense_report(
@@ -631,6 +645,7 @@ async def get_expense_report(
     """
     Get comprehensive expense report with summary statistics
     """
+    conn = None
     try:
         conn = db_manager.get_connection()
         cursor = conn.cursor()

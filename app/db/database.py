@@ -1,8 +1,61 @@
 import sqlite3
 import os
 import re
+import uuid
+from contextlib import contextmanager
+from datetime import datetime
 import pandas as pd
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Iterator, List, Optional, Tuple
+
+# Prefixes of the snapshot files the app writes on its own (before a load,
+# a revert, a reset ...). /database/list reports them as "system_backup".
+SYSTEM_BACKUP_PREFIXES = (
+    'current_backup_', 'pre_revert_backup_', 'reset_backup_', 'start_clean_backup_',
+    'clear_data_backup_', 'force_reload_backup_',
+)
+AUTOSAVE_PREFIX = 'autosave_'
+SQLITE_HEADER = b'SQLite format 3\x00'
+
+
+def snapshot_kind(filename: str) -> str:
+    """manual_save / autosave / system_backup, from a snapshot's file name."""
+    if filename.startswith(AUTOSAVE_PREFIX):
+        return 'autosave'
+    if filename.startswith(SYSTEM_BACKUP_PREFIXES):
+        return 'system_backup'
+    return 'manual_save'
+
+
+def timestamp_slug() -> str:
+    """Sortable local timestamp with milliseconds, for snapshot file names."""
+    return datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+
+
+def is_sqlite_file(path: str) -> bool:
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read(16) == SQLITE_HEADER
+    except OSError:
+        return False
+
+
+def _remove_sidecars(path: str) -> None:
+    """Delete a database file's -wal / -shm / -journal leftovers, if any."""
+    for suffix in ('-wal', '-shm', '-journal'):
+        try:
+            os.remove(path + suffix)
+        except FileNotFoundError:
+            pass
+
+
+def _remove_db_file(path: str) -> None:
+    for candidate in (path, path + '-wal', path + '-shm', path + '-journal'):
+        try:
+            os.remove(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:  # pragma: no cover - best effort clean-up
+            print(f"Warning: could not remove {candidate}: {exc}")
 
 
 def _normalize_bom_version(value: Any) -> str:
@@ -21,6 +74,10 @@ def _bom_version_key(version: Any) -> Tuple:
     """Sort key so '10.0' > '9.0' > '2.0' > '1.0' (text parts sort after numbers)."""
     parts = re.split(r"[.\-_\s]+", str(version or "").strip().lstrip("vV"))
     return tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in parts if p)
+
+
+class _ReloadRefused(Exception):
+    """A seed-CSV reload would orphan rows; the whole reload is rolled back."""
 
 
 class DatabaseManager:
@@ -88,6 +145,15 @@ class DatabaseManager:
         """Close a database connection"""
         if conn:
             conn.close()
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        """``with db_manager.connection() as conn:`` - always closed, even on error."""
+        conn = self.get_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     def close_all_connections(self):
         """Close all database connections - placeholder for SQLite"""
@@ -98,10 +164,15 @@ class DatabaseManager:
         pass
     
     def create_tables(self):
-        """Create database tables"""
+        """Create every table and index that does not exist yet (idempotent)."""
         conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        try:
+            self._create_tables(conn.cursor())
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _create_tables(self, cursor):
         # Create customers table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS customers (
@@ -290,7 +361,8 @@ class DatabaseManager:
                 unemployment_rate REAL DEFAULT 0.006,
                 benefits_rate REAL DEFAULT 0.25,
                 workers_comp_rate REAL DEFAULT 0.015,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                pay_frequency TEXT DEFAULT 'biweekly'
             )
         ''')
         
@@ -565,9 +637,6 @@ class DatabaseManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sales_forecast_period ON sales (forecast_id, period)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_expense_alloc_period ON expense_allocations (period)')
 
-        conn.commit()
-        conn.close()
-
     def migrate_financial_assumptions_table(self):
         """Add excise_payable_days to financial_assumptions if missing (idempotent)."""
         conn = self.get_connection()
@@ -727,170 +796,214 @@ class DatabaseManager:
         finally:
             self.close_connection(conn)
 
-    def load_csv_data(self):
-        """Load data from CSV files into the database using staging + transaction per table"""
-        conn = self.get_connection()
+    # Seed CSV file -> table. Parents come before the tables that reference
+    # them; with foreign keys suspended during the load the order only
+    # matters for the per-table reference check, which needs parents loaded.
+    CSV_TABLES = (
+        # 1. Root tables (no FK dependencies)
+        ('customers.csv', 'customers'),
+        ('units.csv', 'units'),
+        ('forecast.csv', 'forecast'),
+        ('machines.csv', 'machines'),
+        ('labor_rates.csv', 'labor_rates'),
+        ('bom_definitions.csv', 'bom_definitions'),
+        ('routers.csv', 'router_definitions'),
+        ('expense_categories.csv', 'expense_categories'),
+        ('loans.csv', 'loans'),
+        ('payroll_config.csv', 'payroll_config'),
+        # 2. Tables that depend on the roots
+        ('bom.csv', 'bom'),
+        ('router_operations.csv', 'router_operations'),   # -> router_definitions, machines, labor_rates
+        ('routers_legacy.csv', 'routers'),                # -> units, machines, labor_rates
+        ('sales.csv', 'sales'),                           # -> customers, units, forecast
+        ('payroll.csv', 'payroll'),                       # -> forecast
+        ('expenses.csv', 'expenses'),                     # -> expense_categories
+        ('loan_payments.csv', 'loan_payments'),           # -> loans
+        # 3. Tables that depend on the layer above
+        ('expense_allocations.csv', 'expense_allocations'),  # -> expenses
+    )
+
+    @staticmethod
+    def _prepare_csv_frame(table_name: str, df: pd.DataFrame, bom_names: Dict[str, str]) -> pd.DataFrame:
+        """Per-table clean-up of a seed CSV (read as text) before it is inserted."""
+        if table_name == 'bom':
+            # '1' / 1 / 1.0 -> '1.0' so lines match units.bom_version
+            df['version'] = (df['version'].map(_normalize_bom_version)
+                             if 'version' in df.columns else '1.0')
+            # material_cost = qty x unit_price unless the file gives it
+            if {'qty', 'unit_price'} <= set(df.columns):
+                extended = (pd.to_numeric(df['qty'], errors='coerce')
+                            * pd.to_numeric(df['unit_price'], errors='coerce'))
+                df['material_cost'] = (pd.to_numeric(df['material_cost'], errors='coerce').fillna(extended)
+                                       if 'material_cost' in df.columns else extended)
+            # An optional bom_name column names the auto-created headers
+            if 'bom_name' in df.columns:
+                for bom_id, name in zip(df['bom_id'], df['bom_name']):
+                    if isinstance(name, str) and name.strip() and bom_id not in bom_names:
+                        bom_names[bom_id] = name.strip()
+        elif table_name == 'sales':
+            # Every sale needs an id: the UI and MCP edit / delete rows by sale_id.
+            if 'sale_id' not in df.columns:
+                df['sale_id'] = None
+            missing = df['sale_id'].isna() | (df['sale_id'].astype(str).str.strip() == '')
+            if missing.any():
+                df.loc[missing, 'sale_id'] = [str(uuid.uuid4()) for _ in range(int(missing.sum()))]
+            if {'quantity', 'unit_price'} <= set(df.columns):
+                extended = (pd.to_numeric(df['quantity'], errors='coerce')
+                            * pd.to_numeric(df['unit_price'], errors='coerce'))
+                df['total_revenue'] = (pd.to_numeric(df['total_revenue'], errors='coerce').fillna(extended)
+                                       if 'total_revenue' in df.columns else extended)
+        elif table_name == 'routers':
+            if 'version' not in df.columns:
+                df['version'] = '1.0'
+            if 'labor_type_id' not in df.columns:
+                df['labor_type_id'] = 'RATE-001'  # Default to general rate
+        elif table_name == 'loans':
+            # Normalize critical fields to avoid NULLs breaking API models
+            df['payment_frequency'] = df['payment_frequency'].fillna('monthly') if 'payment_frequency' in df.columns else 'monthly'
+            df['payment_type'] = df['payment_type'].fillna('amortizing') if 'payment_type' in df.columns else 'amortizing'
+            if 'is_active' in df.columns:
+                flags = {'true': 1, 'yes': 1, '1': 1, '1.0': 1, 'false': 0, 'no': 0, '0': 0, '0.0': 0}
+                df['is_active'] = df['is_active'].map(
+                    lambda v: 1 if v is None or (isinstance(v, float) and v != v)
+                    else flags.get(str(v).strip().lower(), v))
+            if 'current_balance' in df.columns and 'principal_amount' in df.columns:
+                df['current_balance'] = df['current_balance'].fillna(df['principal_amount'])
+            if 'monthly_payment_amount' in df.columns:
+                df['monthly_payment_amount'] = df['monthly_payment_amount'].fillna(0)
+        elif table_name == 'units':
+            if 'bom_id' not in df.columns and 'bom' in df.columns:
+                df['bom_id'] = df['bom']
+            if 'router_id' not in df.columns and 'router' in df.columns:
+                df['router_id'] = df['router']
+            if 'bom_version' not in df.columns:
+                df['bom_version'] = '1.0'
+            if 'router_version' not in df.columns:
+                df['router_version'] = '1.0'
+        elif table_name == 'machines':
+            if 'available_minutes_per_month' not in df.columns:
+                df['available_minutes_per_month'] = 10000  # Default capacity
+        return df
+
+    def _seed_csv_files(self) -> List[Tuple[str, str]]:
+        """(csv file, table) for every seed CSV present in data_dir, parents first."""
+        return [(csv_file, table) for csv_file, table in self.CSV_TABLES
+                if os.path.exists(os.path.join(self.data_dir, csv_file))]
+
+    @staticmethod
+    def _fk_violations(cursor, table: Optional[str] = None) -> List[Tuple]:
+        sql = f'PRAGMA foreign_key_check("{table}")' if table else 'PRAGMA foreign_key_check'
+        return [tuple(row) for row in cursor.execute(sql).fetchall()]
+
+    def load_csv_data(self) -> Dict[str, Any]:
+        """
+        Load the seed CSVs in ``data_dir`` into their tables (each file
+        replaces its table's rows), all in ONE transaction with foreign keys
+        suspended, so parents and children reload together:
+
+        * a table whose own rows reference a missing parent (a sale of an
+          unknown product, ...) is not loaded and keeps its previous rows; the
+          error names the table;
+        * if replacing a parent would orphan rows of a table that is not being
+          reloaded (an existing sale of a customer that customers.csv no longer
+          has, assumptions of a scenario forecast.csv drops, ...), the whole
+          reload is refused and nothing changes (``status: refused``).
+
+        Sales without a sale_id get a generated one; missing total_revenue is
+        quantity x unit_price. Returns ``{status, loaded, errors, refused}``.
+        """
+        present = self._seed_csv_files()
+        result: Dict[str, Any] = {"status": "success", "loaded": {}, "errors": {}, "refused": None}
+        if not present:
+            print(f"No seed CSV files in {self.data_dir} - nothing to load")
+            return result
+
+        conn = sqlite3.connect(self.database_path, timeout=30.0)
+        conn.isolation_level = None          # explicit BEGIN / COMMIT below
         cursor = conn.cursor()
-
-        # CSV load order matters: parent tables must land before tables
-        # that reference them via FOREIGN KEY. The previous ordering was
-        # alphabetical-ish and caused sales/router_operations/payroll
-        # loads to fail with FOREIGN KEY constraint errors.
-        csv_mappings = {
-            # 1. Root tables (no FK dependencies)
-            'customers.csv': 'customers',
-            'units.csv': 'units',
-            'forecast.csv': 'forecast',
-            'machines.csv': 'machines',
-            'labor_rates.csv': 'labor_rates',
-            'bom_definitions.csv': 'bom_definitions',
-            'routers.csv': 'router_definitions',
-            'expense_categories.csv': 'expense_categories',
-            'loans.csv': 'loans',
-            'payroll_config.csv': 'payroll_config',
-
-            # 2. Tables that depend on the roots
-            'bom.csv': 'bom',
-            'router_operations.csv': 'router_operations',   # -> router_definitions, machines, labor_rates
-            'routers_legacy.csv': 'routers',                # -> units, machines, labor_rates
-            'sales.csv': 'sales',                           # -> customers, units, forecast
-            'payroll.csv': 'payroll',                       # -> forecast
-            'expenses.csv': 'expenses',                     # -> expense_categories
-            'loan_payments.csv': 'loan_payments',           # -> loans
-
-            # 3. Tables that depend on the layer above
-            'expense_allocations.csv': 'expense_allocations',  # -> expenses
-        }
-        
         bom_names: Dict[str, str] = {}
-        for csv_file, table_name in csv_mappings.items():
-            csv_path = os.path.join(self.data_dir, csv_file)
-            if os.path.exists(csv_path):
-                try:
-                    df = pd.read_csv(csv_path)
-
-                    # Handle versioning for BOM and routing tables
-                    if table_name == 'bom':
-                        # '1' / 1 / 1.0 -> '1.0' so lines match units.bom_version
-                        df['version'] = (df['version'].map(_normalize_bom_version)
-                                         if 'version' in df.columns else '1.0')
-                        # material_cost = qty x unit_price unless the file gives it
-                        if {'qty', 'unit_price'} <= set(df.columns):
-                            extended = (pd.to_numeric(df['qty'], errors='coerce')
-                                        * pd.to_numeric(df['unit_price'], errors='coerce'))
-                            df['material_cost'] = (pd.to_numeric(df['material_cost'], errors='coerce').fillna(extended)
-                                                   if 'material_cost' in df.columns else extended)
-                        # An optional bom_name column names the auto-created headers
-                        if 'bom_name' in df.columns:
-                            for bom_id, name in zip(df['bom_id'], df['bom_name']):
-                                if isinstance(name, str) and name.strip() and bom_id not in bom_names:
-                                    bom_names[bom_id] = name.strip()
-                        if 'labor_type_id' not in df.columns:
-                            df['labor_type_id'] = 'RATE-001'  # Default to general rate
-                    elif table_name == 'routers':
-                        if 'version' not in df.columns:
-                            df['version'] = '1.0'
-                        if 'labor_type_id' not in df.columns:
-                            df['labor_type_id'] = 'RATE-001'  # Default to general rate
-                    elif table_name == 'loans':
-                        # Normalize critical fields to avoid NULLs breaking API models
-                        if 'payment_frequency' not in df.columns:
-                            df['payment_frequency'] = 'monthly'
-                        else:
-                            df['payment_frequency'] = df['payment_frequency'].fillna('monthly')
-                        if 'payment_type' not in df.columns:
-                            df['payment_type'] = 'amortizing'
-                        else:
-                            df['payment_type'] = df['payment_type'].fillna('amortizing')
-                        if 'is_active' in df.columns:
-                            df['is_active'] = df['is_active'].fillna(1).astype(int)
-                        if 'current_balance' in df.columns and 'principal_amount' in df.columns:
-                            df['current_balance'] = df['current_balance'].fillna(df['principal_amount'])
-                        if 'monthly_payment_amount' in df.columns:
-                            df['monthly_payment_amount'] = df['monthly_payment_amount'].fillna(0)
-                        if 'next_payment_date' in df.columns and 'start_date' in df.columns:
-                            # If next_payment_date missing, leave it null here; app will compute fallback
-                            df['next_payment_date'] = df['next_payment_date']
-                    elif table_name == 'units':
-                        # Update units table to support versioning
-                        if 'bom_id' not in df.columns and 'bom' in df.columns:
-                            df['bom_id'] = df['bom']
-                        if 'router_id' not in df.columns and 'router' in df.columns:
-                            df['router_id'] = df['router']
-                        if 'bom_version' not in df.columns:
-                            df['bom_version'] = '1.0'
-                        if 'router_version' not in df.columns:
-                            df['router_version'] = '1.0'
-                    elif table_name == 'machines':
-                        # Add available_minutes_per_month if not present
-                        if 'available_minutes_per_month' not in df.columns:
-                            df['available_minutes_per_month'] = 10000  # Default capacity
-
-                    # Align DataFrame with existing table schema
-                    cursor.execute(f"PRAGMA table_info({table_name})")
-                    existing_cols = [col[1] for col in cursor.fetchall()]
-                    dropped_cols = [c for c in df.columns if c not in existing_cols]
-                    if dropped_cols:
-                        print(f"Warning: The following columns in {csv_file} are not present in the {table_name} table schema and will be dropped: {dropped_cols}")
-                    df = df[[c for c in df.columns if c in existing_cols]]
-
-                    # Use a staging table to ensure atomic replace
-                    staging = f"{table_name}__staging"
-                    # Replace staging with DataFrame schema and data
-                    df.to_sql(staging, conn, if_exists='replace', index=False)
-
-                    # Build column list for deterministic insert order
-                    cols_csv = ', '.join(df.columns)
-                    try:
-                        cursor.execute("BEGIN")
-                        cursor.execute(f"DELETE FROM {table_name}")
-                        cursor.execute(f"INSERT INTO {table_name} ({cols_csv}) SELECT {cols_csv} FROM {staging}")
-                        cursor.execute(f"DROP TABLE IF EXISTS {staging}")
-                        conn.commit()
-                        print(f"Loaded {csv_file} into {table_name} table (transactional)")
-                    except Exception as tx_err:
-                        conn.rollback()
-                        # Drop staging to avoid clutter, ignore errors
-                        try:
-                            cursor.execute(f"DROP TABLE IF EXISTS {staging}")
-                            conn.commit()
-                        except Exception:
-                            pass
-                        raise tx_err
-                except Exception as e:
-                    print(f"Error loading {csv_file}: {str(e)}")
-            else:
-                print(f"CSV file not found: {csv_path}")
-        
-        # Create BOM definitions from existing BOM data: one header per BOM,
-        # named after the BOM (or a bom_name column), showing its newest version.
         try:
-            cursor = conn.cursor()
+            # Must be set outside a transaction, or SQLite ignores it.
+            cursor.execute("PRAGMA foreign_keys=OFF")
+            cursor.execute("BEGIN IMMEDIATE")
+            baseline = set(self._fk_violations(cursor))
+            try:
+                for csv_file, table_name in present:
+                    csv_path = os.path.join(self.data_dir, csv_file)
+                    cursor.execute("SAVEPOINT load_table")
+                    try:
+                        df = pd.read_csv(csv_path, dtype=str, encoding='utf-8-sig')
+                        df = self._prepare_csv_frame(table_name, df, bom_names)
 
-            cursor.execute("SELECT DISTINCT bom_id, version FROM bom WHERE bom_id IS NOT NULL")
-            newest: Dict[str, str] = {}
-            for bom_id, version in cursor.fetchall():
-                version = version or '1.0'
-                if bom_id not in newest or _bom_version_key(version) > _bom_version_key(newest[bom_id]):
-                    newest[bom_id] = version
+                        existing_cols = [col[1] for col in cursor.execute(f'PRAGMA table_info("{table_name}")')]
+                        dropped_cols = [c for c in df.columns if c not in existing_cols]
+                        if dropped_cols:
+                            print(f"Warning: The following columns in {csv_file} are not present in the "
+                                  f"{table_name} table schema and will be dropped: {dropped_cols}")
+                        df = df[[c for c in df.columns if c in existing_cols]]
+                        if df.columns.empty:
+                            raise ValueError(f"no column of {csv_file} matches the {table_name} table")
 
-            for bom_id, version in sorted(newest.items()):
-                # Check if BOM definition already exists
-                cursor.execute("SELECT COUNT(*) FROM bom_definitions WHERE bom_id = ?", (bom_id,))
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("""
-                        INSERT INTO bom_definitions (bom_id, bom_name, bom_description, version)
-                        VALUES (?, ?, ?, ?)
-                    """, (bom_id, bom_names.get(bom_id, bom_id), f"Bill of Materials for {bom_id}", version))
-            
-            conn.commit()
+                        rows = df.astype(object).where(pd.notna(df), None).values.tolist()
+                        cols_sql = ', '.join(f'"{c}"' for c in df.columns)
+                        marks = ', '.join('?' for _ in df.columns)
+                        cursor.execute(f'DELETE FROM "{table_name}"')
+                        cursor.executemany(f'INSERT INTO "{table_name}" ({cols_sql}) VALUES ({marks})', rows)
+
+                        own = self._fk_violations(cursor, table_name)
+                        if own:
+                            parents = sorted({v[2] for v in own})
+                            raise ValueError(f"{len(own)} row(s) reference missing {', '.join(parents)} rows")
+                        cursor.execute("RELEASE load_table")
+                        result["loaded"][table_name] = len(rows)
+                        print(f"Loaded {csv_file} into {table_name} table ({len(rows)} rows)")
+                    except Exception as e:
+                        cursor.execute("ROLLBACK TO load_table")
+                        cursor.execute("RELEASE load_table")
+                        result["errors"][csv_file] = str(e)
+                        print(f"Error loading {csv_file}: {str(e)} - {table_name} keeps its previous rows")
+
+                # One header per BOM, named after the BOM (or a bom_name column),
+                # showing its newest version.
+                newest: Dict[str, str] = {}
+                for bom_id, version in cursor.execute(
+                        "SELECT DISTINCT bom_id, version FROM bom WHERE bom_id IS NOT NULL").fetchall():
+                    version = version or '1.0'
+                    if bom_id not in newest or _bom_version_key(version) > _bom_version_key(newest[bom_id]):
+                        newest[bom_id] = version
+                for bom_id, version in sorted(newest.items()):
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO bom_definitions (bom_id, bom_name, bom_description, version) "
+                        "VALUES (?, ?, ?, ?)",
+                        (bom_id, bom_names.get(bom_id, bom_id), f"Bill of Materials for {bom_id}", version))
+
+                orphaned = [v for v in self._fk_violations(cursor) if v not in baseline]
+                if orphaned:
+                    by_table: Dict[Tuple[str, str], int] = {}
+                    for child, _rowid, parent, _fk in orphaned:
+                        by_table[(child, parent)] = by_table.get((child, parent), 0) + 1
+                    detail = '; '.join(f"{n} {child} row(s) would lose their {parent} row"
+                                       for (child, parent), n in sorted(by_table.items()))
+                    raise _ReloadRefused(
+                        "CSV reload refused, nothing changed: " + detail +
+                        ". Add the missing rows to the CSVs (or start clean with "
+                        "POST /database/start-clean) and restart.")
+                cursor.execute("COMMIT")
+            except _ReloadRefused as refused:
+                cursor.execute("ROLLBACK")
+                result.update(status="refused", refused=str(refused), loaded={})
+                print("=" * 72 + f"\n{refused}\n" + "=" * 72)
+            except Exception:
+                cursor.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+
+        if result["status"] == "success":
             print("Created BOM definitions from existing BOM data")
-        except Exception as e:
-            print(f"Error creating BOM definitions: {str(e)}")
-        
-        conn.close()
-        # A legacy forecast.csv has no is_base column; keep exactly one base.
-        self.ensure_base_scenario()
+            # A legacy forecast.csv has no is_base column; keep exactly one base.
+            self.ensure_base_scenario()
+        return result
     
     def get_table_data(
         self,
@@ -1249,59 +1362,76 @@ class DatabaseManager:
         
         conn.commit()
     
-    def initialize(self):
-        """Initialize database - create tables and load data"""
-        print(f"Initializing database at: {self.database_path}")
-        print(f"Data directory: {self.data_dir}")
-        
-        # Check if database already exists and has data
-        database_exists = os.path.exists(self.database_path)
-        has_existing_data = False
-        
-        if database_exists:
-            try:
-                conn = self.get_connection()
-                cursor = conn.cursor()
-                # Check if key tables have data
+    def initialize_schema(self):
+        """
+        Bring the live database to the current schema: create missing tables
+        and indexes, run every column migration and keep exactly one base
+        scenario. Idempotent; runs at startup and after every snapshot load,
+        revert, switch and reset, so an older snapshot is upgraded on load.
+        """
+        self.create_tables()
+        self.migrate_payroll_table()
+        self.migrate_expenses_table()
+        self.migrate_forecast_table()          # also ensures a base scenario
+        self.migrate_payroll_config_table()
+        self.migrate_financial_assumptions_table()
+        self.ensure_base_scenario()
+
+    def _has_seed_data(self) -> bool:
+        """True when any of customers / units / sales / bom has rows."""
+        if not os.path.exists(self.database_path):
+            return False
+        try:
+            with self.connection() as conn:
                 for table in ['customers', 'units', 'sales', 'bom']:
                     try:
-                        cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                        count = cursor.fetchone()[0]
-                        if count > 0:
-                            has_existing_data = True
-                            break
-                    except:
+                        if conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > 0:
+                            return True
+                    except sqlite3.Error:
                         continue  # Table might not exist yet
-                conn.close()
-            except:
-                pass  # Database might be corrupted or inaccessible
-        
-        self.create_tables()
-        print("Tables created successfully")
-        self.migrate_payroll_table()
-        print("Payroll table migration completed")
-        self.migrate_expenses_table()
-        print("Expenses table migration completed")
-        self.migrate_forecast_table()
-        print("Forecast table migration completed")
-        self.migrate_payroll_config_table()
-        print("Payroll config migration completed")
-        self.migrate_financial_assumptions_table()
+        except sqlite3.Error:
+            pass  # Database might be corrupted or inaccessible
+        return False
+
+    def initialize(self):
+        """Startup: bring the schema up to date, then load seed CSVs into an empty database."""
+        print(f"Initializing database at: {self.database_path}")
+        print(f"Data directory: {self.data_dir}")
+
+        has_existing_data = self._has_seed_data()
+        self.initialize_schema()
+        print("Schema created / migrated")
 
         # Check for force reload environment variable
         force_reload = os.getenv('FORCE_DB_RELOAD', 'false').lower() == 'true'
-        
+
         if has_existing_data and not force_reload:
             print("Database already contains data - skipping CSV data loading")
             print("Database initialization complete (existing data preserved)")
-            print("Note: Set FORCE_DB_RELOAD=true environment variable to force reload CSV data")
+            return
+
+        if not self._seed_csv_files():
+            print(f"No seed CSV files in {self.data_dir} - starting with the database as it is")
+            return
+
+        if force_reload and has_existing_data:
+            print("!" * 72)
+            print("FORCE_DB_RELOAD=true: replacing tables from the CSVs in "
+                  f"{self.data_dir}. This runs on EVERY start (and every --reload restart); "
+                  "set FORCE_DB_RELOAD=false once the reload is done.")
+            try:
+                backup = os.path.join(self.snapshot_dir, f"force_reload_backup_{timestamp_slug()}.db")
+                self.backup_to(backup)
+                print(f"Snapshot of the database before the reload: {backup}")
+            except Exception as e:
+                print(f"Could not snapshot before the reload ({e}) - reload skipped, data unchanged")
+                print("!" * 72)
+                return
+            print("!" * 72)
         else:
-            if force_reload:
-                print("Force reload requested - loading CSV data over existing data")
-            else:
-                print("Loading fresh data from CSV files")
-            self.load_csv_data()
-            print("Database initialization complete")
+            print("Loading fresh data from CSV files")
+        self.load_csv_data()
+        print("Database initialization complete")
 
     def get_execution_logs(self, limit: int = None, user_id: str = None, 
                           session_id: str = None, status: str = None) -> Dict[str, Any]:
@@ -1460,40 +1590,193 @@ class DatabaseManager:
         
         return result
     
+    # ------------------------------------------------------------------
+    # Data lifecycle: snapshots, restore, clear, reset, switch
+    # ------------------------------------------------------------------
+
+    @property
+    def snapshot_dir(self) -> str:
+        """Folder of saved snapshots: ``saved_databases`` next to the live
+        database (kept fixed when /database/switch points at another file)."""
+        pinned = getattr(self, '_snapshot_dir', None)
+        return pinned or os.path.join(os.path.dirname(self.database_path), 'saved_databases')
+
+    def repoint(self, database_path: str, data_dir: Optional[str] = None) -> None:
+        """Point THIS instance at another database file, in place, so every
+        module holding a reference to it (``from db.database import
+        db_manager``) follows. The snapshot folder stays where it was."""
+        self._snapshot_dir = self.snapshot_dir
+        self.database_path = database_path
+        if data_dir:
+            self.data_dir = data_dir
+        os.makedirs(os.path.dirname(os.path.abspath(database_path)), exist_ok=True)
+
+    @staticmethod
+    def tables_children_first(conn) -> List[str]:
+        """Every user table, ordered so a table comes before the tables it references."""
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        known = set(names)
+        parents = {
+            name: {row[2] for row in conn.execute(f'PRAGMA foreign_key_list("{name}")')} & known - {name}
+            for name in names
+        }
+        ordered: List[str] = []           # parents first
+        remaining = list(names)
+        while remaining:
+            ready = [n for n in remaining if parents[n] <= set(ordered)]
+            if not ready:                 # reference cycle: keep the rest alphabetical
+                ready = remaining[:]
+            for n in ready:
+                ordered.append(n)
+                remaining.remove(n)
+        return list(reversed(ordered))
+
+    def table_counts(self) -> Dict[str, int]:
+        with self.connection() as conn:
+            return {name: conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                    for name in sorted(self.tables_children_first(conn))}
+
+    def clear_all_data(self, exclude: Tuple[str, ...] = ()) -> Dict[str, Any]:
+        """
+        Delete every row of every table (the schema stays), children first,
+        in one transaction. Foreign keys are suspended on a fresh connection
+        BEFORE the transaction starts (inside one SQLite ignores the pragma)
+        and checked before commit; any error rolls everything back.
+        Returns ``{tables: {name: rows_deleted}, rows_deleted, tables_cleared}``.
+        """
+        conn = sqlite3.connect(self.database_path, timeout=30.0)
+        conn.isolation_level = None
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                counts: Dict[str, int] = {}
+                for name in self.tables_children_first(conn):
+                    if name in exclude:
+                        continue
+                    counts[name] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                    conn.execute(f'DELETE FROM "{name}"')
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").fetchone():
+                    conn.execute("DELETE FROM sqlite_sequence")   # restart AUTOINCREMENT ids
+                left = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if left:
+                    raise RuntimeError(f"rows would be left referencing deleted rows: {left[:5]}")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+        return {
+            "tables": counts,
+            "rows_deleted": sum(counts.values()),
+            "tables_cleared": len(counts),
+        }
+
+    def backup_to(self, dest_path: str) -> Dict[str, Any]:
+        """
+        Consistent copy of the live database, WAL included, through SQLite's
+        online backup API (never a file copy). Written to a temp file and
+        renamed into place, in rollback-journal mode so the snapshot is a
+        single self-contained .db file.
+        """
+        if os.path.abspath(dest_path) == os.path.abspath(self.database_path):
+            raise ValueError("cannot write a snapshot over the live database file")
+        dest_dir = os.path.dirname(os.path.abspath(dest_path))
+        os.makedirs(dest_dir, exist_ok=True)
+        tmp_path = os.path.join(dest_dir, f".{os.path.basename(dest_path)}.{uuid.uuid4().hex}.tmp")
+        try:
+            src = self.get_connection()
+            try:
+                dst = sqlite3.connect(tmp_path)
+                try:
+                    src.backup(dst)
+                    dst.execute("PRAGMA journal_mode=DELETE")
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            _remove_sidecars(dest_path)
+            os.replace(tmp_path, dest_path)
+        except Exception:
+            _remove_db_file(tmp_path)
+            raise
+        return {"path": dest_path, "size": os.path.getsize(dest_path)}
+
+    def restore_from(self, source_path: str) -> Dict[str, Any]:
+        """
+        Replace the live database's contents with a snapshot, through SQLite's
+        backup API INTO the live database (never a file copy over an open WAL
+        database), so open connections and the WAL stay consistent. The
+        snapshot is staged first (integrity-checked, page size matched to the
+        live file) and the snapshot file itself is never modified. The schema
+        is then migrated, so a snapshot taken before an upgrade loads cleanly.
+        """
+        if not is_sqlite_file(source_path):
+            raise ValueError(f"{os.path.basename(source_path)} is not a SQLite database")
+        live_dir = os.path.dirname(os.path.abspath(self.database_path))
+        stage_path = os.path.join(live_dir, f".restore-{uuid.uuid4().hex}.tmp")
+        try:
+            src = sqlite3.connect(source_path, timeout=30.0)
+            try:
+                stage = sqlite3.connect(stage_path)
+                try:
+                    src.backup(stage)
+                finally:
+                    stage.close()
+            finally:
+                src.close()
+
+            stage = sqlite3.connect(stage_path)
+            live = self.get_connection()
+            try:
+                stage.execute("PRAGMA journal_mode=DELETE")
+                check = stage.execute("PRAGMA quick_check").fetchone()[0]
+                if check != 'ok':
+                    raise ValueError(f"snapshot failed its integrity check: {check}")
+                live_page = live.execute("PRAGMA page_size").fetchone()[0]
+                if stage.execute("PRAGMA page_size").fetchone()[0] != live_page:
+                    # A WAL database cannot change page size during a backup.
+                    stage.execute(f"PRAGMA page_size={int(live_page)}")
+                    stage.execute("VACUUM")
+                # Wait (up to the busy timeout) for any writer to finish, so the
+                # backup below does not spin on a locked database.
+                live.execute("BEGIN IMMEDIATE")
+                live.execute("ROLLBACK")
+                stage.backup(live)
+            finally:
+                stage.close()
+                live.close()
+        finally:
+            _remove_db_file(stage_path)
+
+        self.initialize_schema()
+        return {"restored_from": source_path, "database_path": self.database_path}
+
     def reset_to_initial_state(self) -> Dict[str, Any]:
         """
-        Reset database to initial state by reloading CSV data.
-
-        FK enforcement is suspended on the wipe connection so the bulk
-        DELETEs can run in any order. The reload that follows uses the
-        normal load_csv_data path (which is FK-aware via csv_mappings
-        ordering) and connections it opens have FK back on.
+        Empty every table (FK-safe, one transaction) and reload the seed CSVs
+        in data_dir, if any, then re-apply the schema. A snapshot of the
+        previous state is written to saved_databases first
+        (``reset_backup_<timestamp>.db``).
         """
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA foreign_keys=OFF")
-
-            tables_to_clear = [
-                'customers', 'units', 'sales', 'bom', 'routers', 'machines', 'labor_rates',
-                'payroll', 'forecast',
-                'router_definitions', 'router_operations',
-                'expense_categories', 'expenses', 'expense_allocations',
-                'loans', 'loan_payments',
-                'forecast_results',
-            ]
-
-            for table in tables_to_clear:
-                cursor.execute(f"DELETE FROM {table}")
-
-            conn.commit()
-            conn.close()
-
-            self.load_csv_data()
-
+            backup_name = f"reset_backup_{timestamp_slug()}.db"
+            self.backup_to(os.path.join(self.snapshot_dir, backup_name))
+            cleared = self.clear_all_data()
+            self.initialize_schema()
+            loaded = self.load_csv_data()
+            message = (f"Database reset: {cleared['rows_deleted']} rows deleted from "
+                       f"{cleared['tables_cleared']} tables")
+            if loaded["loaded"]:
+                message += f", {sum(loaded['loaded'].values())} rows reloaded from CSV"
             result = {
                 "status": "success",
-                "message": "Database reset to initial state with CSV data reloaded",
+                "message": message,
+                "backup_created": backup_name,
+                "cleared": cleared,
+                "csv_load": loaded,
             }
         except Exception as e:
             result = {
@@ -1510,33 +1793,17 @@ def initialize_database():
     """Initialize the database"""
     db_manager.initialize()
 
-def switch_database(new_database_path: str):
-    """Switch to a different database file"""
-    global db_manager
-    
-    # Close all existing connections
-    db_manager.close_all_connections()
-    
-    # Determine appropriate data directory
-    # For saved databases, we don't want to look for CSV files
-    # Use the original data directory (where CSV files are located)
-    if db_manager.data_dir and os.path.exists(db_manager.data_dir):
-        data_dir = db_manager.data_dir
-    else:
-        # Default to the directory containing the database file
-        data_dir = os.path.dirname(new_database_path)
-    
-    # Create new database manager with new path
-    db_manager = DatabaseManager(database_path=new_database_path, data_dir=data_dir)
-    
-    # Only create tables if the database doesn't exist
-    if not os.path.exists(new_database_path):
-        db_manager.create_tables()
-        print(f"Created new database: {new_database_path}")
-    else:
-        # Just ensure we can connect to the existing database
-        db_manager.create_tables()  # This will create tables if they don't exist
-        print(f"Switched to existing database: {new_database_path}")
+def switch_database(new_database_path: str, data_dir: Optional[str] = None) -> DatabaseManager:
+    """
+    Point the app at another database file. The EXISTING DatabaseManager is
+    repointed in place (never replaced), so every module that imported
+    ``db_manager`` follows; the schema of the target is then brought up to
+    date (tables + every migration).
+    """
+    db_manager.repoint(new_database_path, data_dir)
+    db_manager.initialize_schema()
+    print(f"Switched to database: {new_database_path}")
+    return db_manager
 
 def get_current_database_path() -> str:
     """Get the current database path"""

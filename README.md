@@ -19,7 +19,8 @@ docker-compose up --build
 - API: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
-To force-reload CSV seed data over the existing database, set `FORCE_DB_RELOAD=true` in `docker-compose.yml`.
+The database is `data/forecast.db` on the host (`./data` is mounted at `/data`), so it survives
+`docker-compose down`, `down -v` and rebuilds. See [Snapshots and starting clean](#snapshots-and-starting-clean).
 
 ### Run locally
 Backend:
@@ -28,8 +29,12 @@ python -m venv venv
 venv\Scripts\activate          # Windows
 # source venv/bin/activate     # macOS/Linux
 pip install -r app/requirements.txt
-python scripts/run_local.py
+python scripts/run_local.py        # http://localhost:8000, auto-reload (--port N, --no-reload)
 ```
+
+`python main.py` (no reload) and `uvicorn main:app --app-dir app --reload --reload-dir app` from the
+repository root start the same app. All of them use `data/forecast.db` in the repository (the same file
+Docker uses) unless `DATABASE_PATH` or `DATA_DIR` is set.
 
 Frontend:
 ```bash
@@ -51,12 +56,12 @@ forecast_v2/
 │   └── Dockerfile
 ├── frontend/             # React (CRA) frontend
 │   └── src/components/Modules/   # Feature modules (see below)
-├── data/                 # CSV seed data, SQLite database
+├── data/                 # SQLite database (forecast.db) and saved_databases/ snapshots
 ├── scripts/              # Dev and maintenance scripts
 ├── tests/                # pytest suite
 ├── documentation/        # Schema and design docs
 ├── docker-compose.yml
-└── main.py               # Re-exports app.main for `python main.py`
+└── main.py               # `python main.py` / `uvicorn main:app` from the repo root
 ```
 
 ## API Endpoints
@@ -130,7 +135,39 @@ The Reporting screen's Assumptions tab edits the assumptions and capex; the Budg
 
 ## Data
 
-Sample CSVs in `data/` are loaded into SQLite (`data/forecast.db`) on startup. The schema is preserved on subsequent boots; set `FORCE_DB_RELOAD=true` to overwrite from CSV.
+Everything lives in one SQLite file, `data/forecast.db` (`DATABASE_PATH` / `DATA_DIR` override it).
+It starts empty: the repository ships no sample data. Import BOMs, routings, products, customers and the
+sales forecast through the Data Import screen, the `/import/*` endpoints, the MCP import tools or
+`POST /database/load_table` (which never drops a table). The schema is created and migrated at every start.
+
+Seed CSVs: if CSV files named after the tables (`customers.csv`, `units.csv`, `sales.csv`, `bom.csv`, ...)
+are in the data folder when the database is empty, they are loaded at startup. `FORCE_DB_RELOAD=true`
+reloads them over existing data on every start: the database is snapshotted first, the reload is one
+transaction, and it is refused with nothing changed if it would orphan rows (for example assumptions of a
+scenario that `forecast.csv` drops). Set it back to `false` afterwards.
+
+## Snapshots and starting clean
+
+The database runs in WAL mode, so do not copy `forecast.db` by hand while the app is running; use these
+endpoints (all copies go through SQLite's backup API). Snapshots are kept in `data/saved_databases/`.
+
+| What | How |
+|------|-----|
+| Snapshot before a bulk change | `POST /database/save {"name": "before-june-cut"}` (409 if the name exists; add `"overwrite": true` to replace it), or `POST /database/save-current` for a timestamped `autosave_*.db`. Sidebar "Save Database" in the UI, `forecast_save_database` over MCP |
+| List snapshots | `GET /database/list` (newest first; `manual_save` / `autosave` / `system_backup`) |
+| Restore a snapshot | `POST /database/load {"filename": "before-june-cut.db"}`: restores into the live database, keeps the previous state as `current_backup_<time>.db`, and upgrades an older snapshot's schema |
+| Undo to the newest snapshot | `POST /database/revert-to-last-save` (any kind; the state it replaces is kept as `pre_revert_backup_<time>.db`) |
+| Download a `.db` file | `GET /database/snapshot` (live database) or `GET /database/snapshot?filename=before-june-cut.db` |
+| Start clean | `POST /database/start-clean {"confirm": true, "snapshot_first": true}`: snapshots (`start_clean_backup_<time>.db`), then empties every table and keeps the schema. Optional `"scenario_name": "2027 Budget"` creates an empty base scenario |
+| Check | `GET /database/info` (live file, row counts), `POST /database/verify-empty` |
+
+To start clean by hand instead: stop the app (`docker-compose down`), delete `data/forecast.db`,
+`data/forecast.db-wal` and `data/forecast.db-shm`, and start it again. `docker-compose down -v` alone does
+not reset anything, because `./data` is a bind mount, not a volume.
+
+Typical workflow: start clean, import BOMs / routings / products / customers and the forecast,
+`POST /database/save {"name": "after-import"}`, run the MCP bulk changes, and `POST /database/load
+{"filename": "after-import.db"}` if something goes wrong.
 
 ## Testing
 
@@ -152,6 +189,7 @@ Test config is in `pytest.ini`. Markers: `unit`, `integration`, `slow`.
 ## Troubleshooting
 
 - **Port conflicts**: ensure 3000 and 8000 are free.
-- **Stale data**: `docker-compose down -v && docker-compose up --build`.
-- **Schema out of sync after CSV change**: set `FORCE_DB_RELOAD=true` and restart.
+- **Stale or old sample data**: `POST /database/start-clean {"confirm": true}` (snapshots first), or stop the app and delete `data/forecast.db*`. `docker-compose down -v` does not touch the database.
+- **A restore looked like it did nothing**: use `POST /database/load` (or the UI's Load Database), never a file copy over `forecast.db`; check `GET /database/info` for the file the app is using.
+- **Schema out of date**: the schema is migrated at every start and after every load, so a restart is enough.
 - **Logs**: `docker-compose logs fastapi` or `docker-compose logs frontend`.

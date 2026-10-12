@@ -21,9 +21,12 @@ docker-compose up frontend
 docker-compose logs
 docker-compose logs fastapi
 
-# Reset everything
-docker-compose down -v
-docker-compose up --build
+# Start clean (empty database, schema kept; the old data is snapshotted first)
+curl -X POST http://localhost:8000/database/start-clean \
+     -H 'content-type: application/json' -d '{"confirm": true, "snapshot_first": true}'
+# or, with the stack stopped: delete data/forecast.db, data/forecast.db-wal and
+# data/forecast.db-shm (data/saved_databases/ keeps the snapshots). Note that
+# `docker-compose down -v` does NOT reset the database: ./data is a bind mount.
 ```
 
 ### Local Development
@@ -32,7 +35,10 @@ docker-compose up --build
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r app/requirements.txt
-python scripts/run_local.py        # or: uvicorn app.main:app --reload
+python scripts/run_local.py        # API on :8000 with auto-reload (--port N, --no-reload)
+python main.py                     # same app and database, no reload
+uvicorn main:app --app-dir app --reload --reload-dir app   # plain uvicorn, run from the repo root
+# All three use ./data/forecast.db (the file Docker mounts at /data) unless DATABASE_PATH / DATA_DIR is set.
 
 # Frontend setup
 cd frontend && npm install && npm start
@@ -41,6 +47,7 @@ cd frontend && npm install && npm start
 pytest tests/ -v
 pytest tests/test_financial_statements.py -v   # statements engine + reporting routes
 pytest tests/test_mcp_server.py -v             # MCP server over JSON-RPC + bulk adjusters
+pytest tests/test_data_lifecycle.py -v         # snapshots / restore / start clean / reset / start commands
 
 # Frontend tests and production build
 cd frontend && CI=true npx react-scripts test --watchAll=false
@@ -196,3 +203,8 @@ The application supports CSV data loading through the `/load_table` endpoint. Sa
 - Development uses the CRA proxy (`frontend/package.json` "proxy") so the UI calls `/api/*` and reaches the backend on port 8000
 - Production deployment uses Docker containers (nginx serves the built frontend and proxies `/api` to FastAPI)
 - There is no authentication; the app is intended to run on a trusted network or a single machine
+- One database file: `./data/forecast.db` locally and in Docker (`./data` is mounted at `/data`); `DATABASE_PATH` / `DATA_DIR` override it. It runs in WAL mode, so never copy or replace `forecast.db` by hand while the app runs.
+- Snapshots live in `saved_databases/` next to the database and are always made with the SQLite backup API: `POST /database/save {"name", "overwrite": false}` (409 if the name is taken), `POST /database/save-current` (`autosave_<ts>.db`), `GET /database/list`, `GET /database/snapshot[?filename=]` (download a `.db`). `POST /database/load {"filename"}` and `POST /database/revert-to-last-save` (newest snapshot of any kind) restore INTO the live database, save the previous state as a `current_backup_` / `pre_revert_backup_` snapshot, then run `DatabaseManager.initialize_schema()` so an older snapshot is migrated. `POST /database/switch` repoints the one shared `db_manager` in place (never rebind it).
+- Start clean: `POST /database/start-clean {"confirm": true, "snapshot_first": true, "scenario_name": null}` snapshots, then empties every table in one FK-safe transaction (schema kept). `/database/clear-data`, `/database/reset-clean` and `/database/rollback/reset` (also reloads seed CSVs) use the same routine; `/database/verify-empty` and `/database/info` report row counts of the live file.
+- Seed CSVs: `data/` ships none. At startup CSVs in `DATA_DIR` load only into an empty database; `FORCE_DB_RELOAD=true` reloads them on every start (snapshot first, one FK-safe transaction, refused with nothing changed if it would orphan rows), so set it back to false afterwards. Sales rows without `sale_id` get a generated one.
+- Schema changes: add the column to `create_tables` AND an idempotent `migrate_*` step called from `initialize_schema`, so databases and snapshots from older versions keep loading.
