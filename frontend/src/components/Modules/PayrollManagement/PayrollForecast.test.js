@@ -68,4 +68,37 @@ describe('PayrollForecast horizon and statement bridge', () => {
     fireEvent.change(screen.getByLabelText('Bridge from month'), { target: { value: '2027-03' } });
     expect(onBridgeWindowChange).toHaveBeenCalledWith({ start: '2027-03', end: '2027-12' });
   });
+
+  it('shows pay earned by day, so owed at month end reconciles, and names the pay calendar', () => {
+    const view = {
+      ...bridge, anchor: '2021-01-08', closing: 0,
+      rows: [{ period: '2027-01', accrued: 4506.67, earned: 4605.71, paid: 6240, payRuns: 3, difference: -1733.33, balance: 297.14 }],
+      totals: { accrued: 4506.67, earned: 4605.71, paid: 6240, payRuns: 3, difference: -1733.33 }
+    };
+    render(<PayrollForecast forecast={forecast} forecastHorizon={26} runsPerYear={26} payFrequency="biweekly" onHorizonChange={() => {}}
+      bridge={view} bridgeWindow={{ start: '2027-01', end: '2027-01' }} onBridgeWindowChange={() => {}} />);
+    const table = screen.getByTestId('payroll-bridge-table');
+    expect(within(table).getByRole('columnheader', { name: 'Earned' })).toBeInTheDocument();
+    const jan = within(table).getAllByRole('row')[2];
+    expect(jan.textContent).toContain('$4,606');
+    expect(jan.textContent).toContain('$297');
+    expect(screen.getByTestId('bridge-anchor')).toHaveTextContent('every other Friday from Jan 8, 2021');
+    expect(screen.queryByTestId('paid-ahead-note')).not.toBeInTheDocument();
+  });
+});
+
+describe('PayrollForecast while the first pay runs load (UI-7)', () => {
+  it('shows a placeholder, not $0.00 and 0 months', () => {
+    render(<PayrollForecast forecast={[]} loading forecastHorizon={26} runsPerYear={26} payFrequency="biweekly" onHorizonChange={() => {}} />);
+    expect(screen.getByTestId('payroll-forecast-loading')).toBeInTheDocument();
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Based on 0 months/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 pay periods/)).not.toBeInTheDocument();
+  });
+
+  it('shows the figures once the runs are there', () => {
+    render(<PayrollForecast forecast={forecast} forecastHorizon={26} runsPerYear={26} payFrequency="biweekly" onHorizonChange={() => {}} />);
+    expect(screen.queryByTestId('payroll-forecast-loading')).not.toBeInTheDocument();
+    expect(screen.getByText(/Based on 3 months/)).toBeInTheDocument();
+  });
 });

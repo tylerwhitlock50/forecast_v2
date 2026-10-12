@@ -37,10 +37,11 @@ import json
 
 from db.models import (
     Payroll, PayrollCreate, PayrollBase,
-    PayrollConfig, PayrollConfigCreate,
+    PayrollConfig, PayrollConfigUpdate,
     ForecastResponse
 )
 from db.database import db_manager
+from services.governance import is_lock_error, locked_message
 from services.financial_statements import (
     ANNUAL_SALARY_THRESHOLD,
     EMPLOYER_BURDEN_KEYS,
@@ -53,10 +54,12 @@ from services.financial_statements import (
     add_months,
     allocation_shares,
     annual_base_pay,
+    gross_for_days,
     load_employees,
     load_payroll_config,
     normalize_allocations,
     normalize_labor_class,
+    pay_anchor,
     payroll_by_period,
     period_bounds,
     period_range,
@@ -204,20 +207,20 @@ def employee_annual_cost(emp: Dict[str, Any], config: Dict[str, Any], rate: Opti
     return out
 
 
-def rate_on(emp: Dict[str, Any], period_start: date, include_raises: bool) -> float:
+def run_gross(emp: Dict[str, Any], window: Tuple[date, date], runs: int, include_raises: bool,
+              first: Optional[date] = None, last: Optional[date] = None) -> float:
     """
-    The rate for a pay period starting on `period_start`, with the engine's
-    raise rule: the raise applies once next_review_date is on or before the
-    period start (> 1 = flat amount, <= 1 = fraction).
+    Gross pay a run with pay period `window` pays for the employee's days on
+    payroll in first..last (default: the whole pay period). Each day of the
+    pay period earns annual gross / runs / its days, at the rate in force on
+    that day: the engine's rule (financial_statements.gross_for_days), so a
+    hire, a leaver and a raise start on the same day in the pay runs as on
+    the income statement. `emp` carries the parsed `_start` / `_end` dates.
     """
-    rate = float(emp.get("hourly_rate") or 0)
-    if not include_raises:
-        return rate
-    review = _parse_date(emp.get("next_review_date"))
-    raise_amt = float(emp.get("expected_raise") or 0)
-    if review and raise_amt and review <= period_start:
-        rate = rate + raise_amt if raise_amt > 1 else rate * (1 + raise_amt)
-    return rate
+    first = max(first or window[0], window[0])
+    last = min(last or window[1], window[1])
+    return gross_for_days(emp, first, last, runs, (window[1] - window[0]).days + 1, include_raises,
+                          emp.get("_start"), emp.get("_end"))
 
 
 def pay_run_window(frequency: str, pay_date: date) -> Tuple[date, date]:
@@ -330,6 +333,24 @@ def _check_employee_fields(rate_type: Optional[str], start_date: Optional[str], 
     for name, value in (("start_date", start_date), ("end_date", end_date), ("next_review_date", next_review_date)):
         if value and not _parse_date(value):
             raise HTTPException(status_code=422, detail=f"{name} '{value}' is not a date (use YYYY-MM-DD)")
+    start, end = _parse_date(start_date), _parse_date(end_date)
+    if start and end and end < start:
+        raise HTTPException(status_code=422, detail=f"end_date {end.isoformat()} is before start_date "
+                                                    f"{start.isoformat()}: the employee would never be paid")
+
+
+def _check_amounts(weekly_hours: Any = None, hourly_rate: Any = None) -> None:
+    """Weekly hours 0..168 (decimals allowed, e.g. 37.5) and a pay rate of 0 or more (bulk updates)."""
+    for name, value, top in (("weekly_hours", weekly_hours, 168.0), ("hourly_rate", hourly_rate, None)):
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{name} must be a number, got {value!r}")
+        if number != number or number < 0 or (top is not None and number > top):
+            limit = f"between 0 and {top:g}" if top is not None else "0 or more"
+            raise HTTPException(status_code=422, detail=f"{name} must be {limit}, got {value!r}")
 
 
 # ========================
@@ -625,37 +646,76 @@ async def get_payroll_config():
         raise HTTPException(status_code=500, detail=f"Error retrieving payroll config: {str(e)}")
 
 
+CONFIG_FIELDS = ("federal_tax_rate", "state_tax_rate", "social_security_rate", "medicare_rate",
+                 "unemployment_rate", "benefits_rate", "workers_comp_rate", "pay_frequency", "pay_anchor_date")
+
+
+def _pay_frequency(value: Any) -> str:
+    """weekly / biweekly / semimonthly / monthly ('Semi-monthly', 'bi_weekly' are read the same); else 422."""
+    text = "".join(str(value or "").lower().replace("-", " ").replace("_", " ").split())
+    if text not in PAY_PERIODS_PER_YEAR:
+        raise HTTPException(status_code=422, detail=f"pay_frequency must be weekly, biweekly, semimonthly or "
+                                                    f"monthly; got {value!r}")
+    return text
+
+
+def _pay_anchor_date(value: Any) -> str:
+    """A known biweekly payday: a Friday as YYYY-MM-DD; else 422."""
+    day = _parse_date(value)
+    if not day:
+        raise HTTPException(status_code=422, detail=f"pay_anchor_date {value!r} is not a date (use YYYY-MM-DD)")
+    if day.weekday() != 4:
+        friday = day + timedelta(days=(4 - day.weekday()) % 7)
+        raise HTTPException(status_code=422, detail=f"pay_anchor_date {day.isoformat()} is a {day.strftime('%A')}: "
+                                                    f"biweekly pay runs are on Fridays, so give a Friday payday "
+                                                    f"(e.g. {friday.isoformat()})")
+    return day.isoformat()
+
+
 @router.post("/config", response_model=ForecastResponse)
-async def update_payroll_config(config: PayrollConfigCreate):
+async def update_payroll_config(config: PayrollConfigUpdate):
     """
-    Update payroll tax and benefit configuration
+    Update payroll tax and benefit configuration. Only the fields given
+    change; the others keep their stored values (a new config row is saved,
+    so the history is kept). pay_frequency must be weekly, biweekly,
+    semimonthly or monthly (anything else is a 422, never stored as another
+    frequency). pay_anchor_date is a known biweekly payday (a Friday): every
+    biweekly payday is that date + 14 x k days, in every report. Rates are
+    fractions between 0 and 1 (benefits up to 5).
     """
     try:
+        changes = {k: v for k, v in config.model_dump(exclude_unset=True).items() if v is not None}
+        if not changes:
+            raise HTTPException(status_code=422, detail="Give at least one rate, pay_frequency or pay_anchor_date "
+                                                        "to change")
+        if "pay_frequency" in changes:
+            changes["pay_frequency"] = _pay_frequency(changes["pay_frequency"])
+        if "pay_anchor_date" in changes:
+            changes["pay_anchor_date"] = _pay_anchor_date(changes["pay_anchor_date"])
         conn = db_manager.get_connection()
         try:
             cursor = conn.cursor()
+            merged = {k: v for k, v in load_payroll_config(cursor).items() if k in CONFIG_FIELDS}
+            merged.update(changes)
             config_id = f"CONFIG-{int(datetime.now().timestamp())}-{uuid.uuid4().hex[:6]}"
             # Insert new config (keep history)
-            cursor.execute("""
-                INSERT INTO payroll_config (
-                    config_id, federal_tax_rate, state_tax_rate, social_security_rate,
-                    medicare_rate, unemployment_rate, benefits_rate, workers_comp_rate, pay_frequency
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                config_id, config.federal_tax_rate, config.state_tax_rate,
-                config.social_security_rate, config.medicare_rate, config.unemployment_rate,
-                config.benefits_rate, config.workers_comp_rate,
-                config.pay_frequency if config.pay_frequency in PAY_PERIODS_PER_YEAR else 'biweekly'
-            ))
+            cursor.execute(f"""
+                INSERT INTO payroll_config (config_id, {", ".join(CONFIG_FIELDS)})
+                VALUES (?, {", ".join("?" for _ in CONFIG_FIELDS)})
+            """, (config_id, *(merged[k] for k in CONFIG_FIELDS)))
             conn.commit()
+            stored = load_payroll_config(cursor)
         finally:
             db_manager.close_connection(conn)
 
         return ForecastResponse(
             status="success",
-            data={"config_id": config_id},
+            data={"config_id": config_id, "config": stored, "changed": sorted(changes),
+                  "burden": _burden_summary(stored)},
             message="Payroll configuration updated successfully"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating payroll config: {str(e)}")
 
@@ -728,9 +788,12 @@ _TOTAL_KEYS = ("gross_pay", "employer_taxes", "benefits", "total_cost", "withhol
 def _pay_run_forecast(cursor, scope_ids: Sequence[str], config: Dict[str, Any], periods: int,
                       start: date, include_raises: bool, include_employees: bool) -> List[Dict[str, Any]]:
     """
-    The next `periods` pay runs from `start` on real calendar pay dates.
-    Each run pays annual gross / runs_per_year, prorated by the days of the
-    pay period the employee is on payroll, burdened like the statements.
+    The next `periods` pay runs from `start` on the company's pay calendar
+    (pay_run_dates with the configured pay_anchor_date, so `start` picks the
+    first run but never moves the paydays). Each run pays annual gross /
+    runs_per_year, weighted by the days of the pay period the employee is on
+    payroll and the rate in force on each day (run_gross), burdened like
+    the statements.
     """
     frequency = config.get("pay_frequency", "biweekly")
     runs = runs_per_year(config)
@@ -741,7 +804,7 @@ def _pay_run_forecast(cursor, scope_ids: Sequence[str], config: Dict[str, Any], 
         emp["_eligible"] = benefits_eligible(emp)
 
     forecast = []
-    for number, pay_date in enumerate(pay_run_dates(frequency, start, periods), start=1):
+    for number, pay_date in enumerate(pay_run_dates(frequency, start, periods, pay_anchor(config)), start=1):
         window = pay_run_window(frequency, pay_date)
         totals = {k: 0.0 for k in _TOTAL_KEYS}
         details = []
@@ -749,8 +812,7 @@ def _pay_run_forecast(cursor, scope_ids: Sequence[str], config: Dict[str, Any], 
             share = _active_share(window, emp["_start"], emp["_end"])
             if share <= 0:
                 continue
-            rate = rate_on(emp, window[0], include_raises)
-            gross = annual_base_pay(emp.get("rate_type"), rate, emp.get("weekly_hours")) / runs * share
+            gross = run_gross(emp, window, runs, include_raises)
             breakdown = pay_breakdown(gross, config, emp["_eligible"])
             for key in _TOTAL_KEYS:
                 totals[key] += breakdown[key]
@@ -849,12 +911,17 @@ async def get_payroll_forecast(
     * Monthly mode (start_period + end_period): fully burdened cost per
       calendar month, prorated for hire/termination dates. This is what the
       financial statements use, so the two always agree.
-    * Pay-period mode (default): the next N pay runs on real pay dates for
-      the configured pay_frequency (N defaults to one year of runs: 12
-      monthly, 24 semimonthly, 26 biweekly, 52 weekly). Each run is annual
-      gross / runs per year, prorated for the days of the run's pay period
-      the employee works, so a year of runs equals the annual cost (and,
-      with monthly pay, each run equals that month's statement accrual).
+    * Pay-period mode (default): the next N pay runs on the company's pay
+      calendar for the configured pay_frequency (N defaults to one year of
+      runs: 12 monthly, 24 semimonthly, 26 biweekly, 52 weekly). Biweekly
+      paydays are pay_anchor_date + 14 x k days, so start_date (default
+      today) only picks the first run listed: the dates match
+      GET /payroll/statement-bridge for any window. Each run is annual gross
+      / runs per year, weighted by the days of the run's pay period the
+      employee works at the rate in force on each day (a raise applies from
+      next_review_date, as on the statements), so a year of runs at a
+      constant rate equals the annual cost (and, with monthly pay, each run
+      equals that month's statement accrual).
 
     total_cost is employer cost; withholding / net_pay are information only.
     """
@@ -889,6 +956,7 @@ async def get_payroll_forecast(
         return ForecastResponse(
             status="success",
             data={"mode": "pay_period", "pay_frequency": frequency, "runs_per_year": runs_per_year(config),
+                  "pay_anchor_date": config.get("pay_anchor_date"),
                   "periods": run_count, "horizon_default": horizon_default,
                   "forecast": forecast, "totals": totals, "config": config, "scope": scope},
             message=f"Generated payroll forecast for {run_count} {frequency} pay periods"
@@ -904,61 +972,88 @@ async def get_payroll_forecast(
 # Statement accrual vs pay dates
 # ========================
 
-def _active_days(window: Tuple[date, date], start: Optional[date], end: Optional[date],
-                 before: Optional[date] = None) -> int:
-    """Days of `window` the employee is on payroll (only days before `before`, when given)."""
-    first, last = window
-    active_start = max(first, start) if start else first
-    active_end = min(last, end) if end else last
-    if before is not None:
-        active_end = min(active_end, before - timedelta(days=1))
-    return max((active_end - active_start).days + 1, 0)
+def _month_of(day: date) -> str:
+    return day.strftime("%Y-%m")
 
 
 def statement_bridge(cursor, scope_ids: Sequence[str], config: Dict[str, Any], months: List[str],
                      include_raises: bool = True) -> Dict[str, Any]:
     """
-    Per month: payroll accrued by the statements (evenly by calendar month)
-    vs payroll paid on the pay dates of the configured frequency, the
-    difference and the accrued payroll it implies at month end.
+    Per month: payroll accrued by the statements (annual cost / 12 a month,
+    weighted by day for hires, leavers and raises) vs payroll paid on the
+    pay dates of the configured frequency, and the payroll owed at month end.
 
-    opening_accrued_payroll is the pay for days worked before the window
-    that falls on pay dates inside it (e.g. a 1 January biweekly run pays
-    19-31 December); accrued_payroll_balance = opening + cumulative difference.
+    Pay dates come from the company's one pay calendar (pay_run_dates with
+    the configured pay_anchor_date), so a month has the same pay dates,
+    paid amount and month-end balance whatever window is asked.
+
+    * paid: the pay runs dated in the month (each pays its whole pay period);
+    * difference = accrued - paid (timing between the statements and cash);
+    * earned: pay for the days worked in the month, at the daily rate of the
+      pay period each day belongs to (annual pay / 364 a day for weekly and
+      biweekly pay);
+    * accrued_payroll_balance: pay for days worked up to the month end that a
+      later pay date pays (accrued payroll / wages payable). It is a balance
+      of the month, not of the window, and moves by earned - paid;
+      opening_accrued_payroll is the balance at the end of the month before
+      the window.
     """
     accrual = payroll_by_period(cursor, scope_ids, months, include_raises=include_raises, config=config)
     frequency = config.get("pay_frequency", "biweekly")
     runs = runs_per_year(config)
+    anchor = pay_anchor(config)
     first_day = period_bounds(months[0])[0]
     last_day = period_bounds(months[-1])[1]
+    month_set = set(months)
     employees = [_prepare_employee(emp) for emp in load_employees(cursor, scope_ids)]
     for emp in employees:
         emp["_start"] = _parse_date(emp.get("start_date"))
         emp["_end"] = _parse_date(emp.get("end_date"))
         emp["_mult"] = _burden_multiplier(config, benefits_eligible(emp))
 
-    count = runs * (len(months) // 12 + 2) + 4
-    dates = [d for d in pay_run_dates(frequency, first_day, count) if d <= last_day]
+    # Every pay run whose pay period touches the window: from the first payday on or after its first day
+    # (that pay period reaches back before the window) to the first payday after its last day (that pay
+    # period holds the last days of the last month).
+    candidates = pay_run_dates(frequency, first_day, runs * (len(months) // 12 + 2) + 4, anchor)
+    dates = [d for d in candidates if d <= last_day]
+    later = [d for d in candidates if d > last_day]
+    in_window = len(dates)
+    if later:
+        dates.append(later[0])
+
     paid = {m: 0.0 for m in months}
     paid_by_class = {m: {c: 0.0 for c in LABOR_CLASS_KEYS} for m in months}
+    earned = {m: 0.0 for m in months}
+    owed = {m: 0.0 for m in months}
     pay_dates: Dict[str, List[str]] = {m: [] for m in months}
     opening = 0.0
+    before_window = first_day - timedelta(days=1)
     for pay_date in dates:
-        month = pay_date.strftime("%Y-%m")
-        window = pay_run_window(frequency, pay_date)
-        days = (window[1] - window[0]).days + 1
-        pay_dates[month].append(pay_date.isoformat())
+        window = pay_run_window(frequency, pay_date)   # always ends on the pay date
+        pay_month, start_month = _month_of(pay_date), _month_of(window[0])
+        if pay_date <= last_day:
+            pay_dates[pay_month].append(pay_date.isoformat())
         for emp in employees:
-            active = _active_days(window, emp["_start"], emp["_end"])
-            if active <= 0:
+            if _active_share(window, emp["_start"], emp["_end"]) <= 0:
                 continue
-            rate = rate_on(emp, window[0], include_raises)
-            cost = annual_base_pay(emp.get("rate_type"), rate, emp.get("weekly_hours")) / runs * active / days \
-                * emp["_mult"]
-            paid[month] += cost
-            paid_by_class[month][emp.get("labor_class") or "unclassified"] += cost
-            if window[0] < first_day:
-                opening += cost * _active_days(window, emp["_start"], emp["_end"], before=first_day) / active
+            mult = emp["_mult"]
+            if pay_date <= last_day:
+                cost = run_gross(emp, window, runs, include_raises) * mult
+                paid[pay_month] += cost
+                paid_by_class[pay_month][emp.get("labor_class") or "unclassified"] += cost
+            # A pay period spans at most two calendar months: the days before the month end are owed at
+            # that month end and paid by this later pay date.
+            for month in ((pay_month,) if start_month == pay_month else (start_month, pay_month)):
+                if month in month_set:
+                    m_first, m_last = period_bounds(month)
+                    earned[month] += run_gross(emp, window, runs, include_raises, m_first, m_last) * mult
+            if start_month != pay_month:
+                month_end = period_bounds(start_month)[1]
+                carried = run_gross(emp, window, runs, include_raises, window[0], month_end) * mult
+                if start_month in month_set:
+                    owed[start_month] += carried
+                elif month_end == before_window:
+                    opening += carried
 
     rows = []
     cumulative = 0.0
@@ -976,32 +1071,44 @@ def statement_bridge(cursor, scope_ids: Sequence[str], config: Dict[str, Any], m
             "pay_dates": pay_dates[month],
             "difference": _round(difference),
             "cumulative_difference": _round(cumulative),
-            "accrued_payroll_balance": _round(opening + cumulative),
+            "earned": _round(earned[month]),
+            "accrued_payroll_balance": _round(owed[month]),
         })
     total_accrued = sum(accrual["total"].values())
     total_paid = sum(paid.values())
     label = {"weekly": "weekly", "biweekly": "every-other-week", "semimonthly": "twice-monthly",
              "monthly": "monthly"}.get(frequency, frequency)
+    calendar = {"weekly": "every Friday",
+                "biweekly": f"every other Friday from {anchor.isoformat()} (pay_anchor_date)",
+                "semimonthly": "the 15th and the last day of each month",
+                "monthly": "the last day of each month"}.get(frequency, frequency)
     return {
         "start_period": months[0],
         "end_period": months[-1],
         "pay_frequency": frequency,
         "runs_per_year": runs,
+        "pay_anchor_date": anchor.isoformat(),
         "opening_accrued_payroll": _round(opening),
         "by_period": rows,
         "totals": {
             "accrued": _round(total_accrued),
             "paid": _round(total_paid),
             "difference": _round(total_accrued - total_paid),
-            "pay_runs": len(dates),
+            "earned": _round(sum(earned.values())),
+            "pay_runs": in_window,
         },
-        "closing_accrued_payroll": _round(opening + total_accrued - total_paid),
+        "closing_accrued_payroll": _round(owed[months[-1]]),
         "note": (
-            "The statements accrue payroll evenly by calendar month (annual cost / 12, prorated for start and end "
-            "dates) and treat it as paid in the same month. Cash goes out on the " + label + " pay dates. "
-            "Difference = accrued - paid. Accrued payroll at month end = pay for days worked before the first "
-            "month that is paid in it, plus the cumulative difference. It is timing only, except in a year with an "
-            "extra pay date (27 every-other-week or 53 weekly Fridays), which pays one run more than the accrual."
+            "The statements accrue payroll evenly by calendar month (annual cost / 12, weighted by day for start "
+            "and end dates and for a raise, which applies from its review date) and treat it as paid in the same "
+            "month. Cash goes out on the " + label + " pay dates: " + calendar + ", the same dates for any "
+            "window. Difference = accrued - paid. Owed at month end (accrued_payroll_balance) = pay for days "
+            "worked up to the month end that a later pay date pays; it moves by earned - paid, where earned is "
+            "the pay for the month's days at the pay period's daily rate. Over a year accrued and paid differ by "
+            "timing, and by a run in a year with an extra pay date (27 every-other-week or 53 weekly Fridays). "
+            "Pay is earned by the day (a year of weekly or every-other-week pay covers 364 days) while the "
+            "statements spread the year evenly, so a hire, leaver or raise inside a pay period that does not "
+            "line up with the calendar months leaves a small lasting difference too."
         ),
     }
 
@@ -1365,7 +1472,11 @@ async def update_employee_allocations(employee_id: str, allocations: Dict[str, f
 async def bulk_update_employees(updates: List[Dict[str, Any]]):
     """
     Bulk update multiple employees: each item is {employee_id, <field>: value, ...}
-    with fields from the payroll employee columns.
+    with fields from the payroll employee columns. A field that fails
+    validation is reported per item in `errors`. A batch that touches an
+    employee of an approved and locked scenario (or moves one into it) is
+    refused as a whole with 409 and nothing is written, like every other
+    write to a locked scenario.
     """
     try:
         conn = db_manager.get_connection()
@@ -1373,6 +1484,7 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
         errors = []
         try:
             cursor = conn.cursor()
+            _refuse_locked_employee_updates(cursor, updates)
             for update in updates:
                 employee_id = update.get("employee_id") if isinstance(update, dict) else None
                 try:
@@ -1387,6 +1499,12 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
                     if "rate_type" in fields and fields["rate_type"] not in RATE_TYPES:
                         errors.append(f"Error updating {employee_id}: rate_type must be 'hourly' or 'salary'")
                         continue
+                    _check_amounts(fields.get("weekly_hours"), fields.get("hourly_rate"))
+                    if {"start_date", "end_date", "next_review_date"} & set(fields):
+                        cursor.execute("SELECT start_date, end_date FROM payroll WHERE employee_id = ?", (employee_id,))
+                        stored = cursor.fetchone() or (None, None)
+                        _check_employee_fields(None, fields.get("start_date", stored[0]),
+                                               fields.get("end_date", stored[1]), fields.get("next_review_date"))
                     if "labor_class" in fields:
                         fields["labor_class"] = _labor_class(fields["labor_class"])
                     if "allocations" in fields:
@@ -1403,6 +1521,11 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
                 except HTTPException as e:
                     errors.append(f"Error updating {employee_id}: {e.detail}")
                 except Exception as e:
+                    if is_lock_error(e):
+                        # A lock the pre-check could not see: refuse the whole batch, write nothing.
+                        conn.rollback()
+                        raise HTTPException(status_code=409, detail=f"{locked_message(None)} (Updating employee "
+                                                                    f"{employee_id} refused; nothing was changed.)")
                     errors.append(f"Error updating {employee_id}: {str(e)}")
             conn.commit()
         finally:
@@ -1413,8 +1536,48 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
             data={"updated_count": updated_count, "errors": errors},
             message=f"Bulk updated {updated_count} employees"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error in bulk update: {str(e)}")
+
+
+def _refuse_locked_employee_updates(cursor, updates: List[Any]) -> None:
+    """
+    409 (nothing written) when a bulk update touches an employee of an
+    approved and locked scenario, or moves an employee into one, with the
+    same readable message as the other lock refusals.
+    """
+    ids = [u.get("employee_id") for u in updates if isinstance(u, dict) and u.get("employee_id")]
+    targets = [u.get("forecast_id") for u in updates if isinstance(u, dict) and u.get("forecast_id")]
+    locked: Dict[str, List[str]] = {}
+    names: Dict[str, str] = {}
+    if ids:
+        cursor.execute(f"""
+            SELECT p.employee_id, f.forecast_id, f.name FROM payroll p
+            JOIN forecast f ON f.forecast_id = p.forecast_id
+            WHERE f.locked = 1 AND p.employee_id IN ({",".join("?" for _ in ids)})
+        """, ids)
+        for employee_id, forecast_id, name in cursor.fetchall():
+            locked.setdefault(forecast_id, []).append(employee_id)
+            names[forecast_id] = name
+    if targets:
+        cursor.execute(f"SELECT forecast_id, name FROM forecast WHERE locked = 1 AND forecast_id IN "
+                       f"({','.join('?' for _ in targets)})", targets)
+        for forecast_id, name in cursor.fetchall():
+            names[forecast_id] = name
+            bucket = locked.setdefault(forecast_id, [])
+            for u in updates:
+                if isinstance(u, dict) and u.get("forecast_id") == forecast_id and u.get("employee_id") \
+                        and u["employee_id"] not in bucket:
+                    bucket.append(u["employee_id"])
+    if not locked:
+        return
+    forecast_id = sorted(locked)[0]
+    who = ", ".join(str(e) for e in locked[forecast_id])
+    raise HTTPException(status_code=409, detail=f"{locked_message(names.get(forecast_id))} (Updating employee"
+                                                f"{'s' if len(locked[forecast_id]) != 1 else ''} {who} refused; "
+                                                f"nothing was changed.)")
 
 
 # ========================

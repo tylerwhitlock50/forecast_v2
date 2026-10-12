@@ -117,13 +117,17 @@ async def get_employee(employee_id: str) -> Dict[str, Any]:
 async def create_employee(
     employee_name: str,
     department: str,
-    weekly_hours: Annotated[int, Field(description="Scheduled hours per week (used for hourly pay)", ge=0)],
+    weekly_hours: Annotated[float, Field(description="Scheduled hours per week (used for hourly pay); decimals "
+                                                     "are fine, e.g. 37.5", ge=0, le=168)],
     hourly_rate: Annotated[float, Field(description=RATE_HELP, ge=0)],
     labor_type: Annotated[str, Field(description="Labor type / role label")],
     start_date: Annotated[str, Field(description="YYYY-MM-DD; payroll is prorated from this date")],
     rate_type: Annotated[str, Field(description="hourly or salary (see hourly_rate)")] = "hourly",
-    end_date: Annotated[Optional[str], Field(description="YYYY-MM-DD; payroll stops after this date")] = None,
-    next_review_date: Annotated[Optional[str], Field(description="YYYY-MM-DD when expected_raise applies")] = None,
+    end_date: Annotated[Optional[str], Field(description="YYYY-MM-DD, on or after start_date; payroll stops after "
+                                                         "this date")] = None,
+    next_review_date: Annotated[Optional[str], Field(description="YYYY-MM-DD from which expected_raise applies (a "
+                                                                 "month or pay period containing it is weighted by "
+                                                                 "day)")] = None,
     expected_raise: Annotated[float, Field(description="Raise as a fraction (0.03 = 3%) applied from next_review_date")] = 0.0,
     benefits_eligible: bool = True,
     allocations: Annotated[Optional[Dict[str, float]], Field(description=ALLOCATION_HELP)] = None,
@@ -212,8 +216,10 @@ async def get_payroll_config() -> Dict[str, Any]:
     """Payroll configuration: employer burden rates (social_security_rate,
     medicare_rate, unemployment_rate, workers_comp_rate, benefits_rate for
     benefits-eligible staff) that load every employee's gross pay, the pay
-    frequency, and federal_tax_rate / state_tax_rate, which are income-tax
-    WITHHOLDING from the employee's pay and are not added to payroll cost."""
+    frequency, pay_anchor_date (a known biweekly payday: every biweekly
+    payday is that Friday + 14 x k days) and federal_tax_rate /
+    state_tax_rate, which are income-tax WITHHOLDING from the employee's pay
+    and are not added to payroll cost."""
     return await call("GET", "/payroll/config")
 
 
@@ -227,28 +233,28 @@ async def update_payroll_config(
     benefits_rate: Annotated[Optional[float], Field(description="Benefits load as a fraction of gross for benefits-eligible staff", ge=0, le=5)] = None,
     workers_comp_rate: Annotated[Optional[float], Field(description="Workers comp as a fraction of gross", ge=0, le=1)] = None,
     pay_frequency: Annotated[Optional[str], Field(description="weekly, biweekly, semimonthly or monthly")] = None,
+    pay_anchor_date: Annotated[Optional[str], Field(description="A known biweekly payday, a Friday as YYYY-MM-DD "
+                                                                "(e.g. 2027-01-08): biweekly paydays are this date + "
+                                                                "14 x k days in every report")] = None,
 ) -> Dict[str, Any]:
-    """Change payroll burden rates or pay frequency. Rates are fractions
-    (0.062 = 6.2%). Only the fields given change. Payroll cost = gross pay x
-    (1 + social security + medicare + unemployment + workers comp [+
-    benefits]); the federal / state rates are withholding and do not move
-    the statements."""
+    """Change payroll burden rates, pay frequency or the biweekly pay
+    calendar. Rates are fractions (0.062 = 6.2%). Only the fields given
+    change. Payroll cost = gross pay x (1 + social security + medicare +
+    unemployment + workers comp [+ benefits]); the federal / state rates
+    are withholding and do not move the statements."""
     updates = strip_none({
         "federal_tax_rate": federal_tax_rate, "state_tax_rate": state_tax_rate,
         "social_security_rate": social_security_rate, "medicare_rate": medicare_rate,
         "unemployment_rate": unemployment_rate, "benefits_rate": benefits_rate,
         "workers_comp_rate": workers_comp_rate, "pay_frequency": pay_frequency,
+        "pay_anchor_date": pay_anchor_date,
     })
     if not updates:
-        raise ToolError("Give at least one rate or pay_frequency to change")
+        raise ToolError("Give at least one rate, pay_frequency or pay_anchor_date to change")
     if pay_frequency and pay_frequency not in ("weekly", "biweekly", "semimonthly", "monthly"):
         raise ToolError("pay_frequency must be weekly, biweekly, semimonthly or monthly")
-    current = (await call("GET", "/payroll/config")).get("config") or {}
-    merged = {k: v for k, v in current.items() if k in (
-        "federal_tax_rate", "state_tax_rate", "social_security_rate", "medicare_rate",
-        "unemployment_rate", "benefits_rate", "workers_comp_rate", "pay_frequency")}
-    merged.update(updates)
-    return await call("POST", "/payroll/config", json=merged)
+    # The API keeps every field not given (and validates the frequency and the anchor).
+    return await call("POST", "/payroll/config", json=updates)
 
 
 @mcp.tool(name="forecast_payroll_forecast", annotations=READ)
@@ -258,7 +264,7 @@ async def payroll_forecast(
     end_period: Annotated[Optional[str], Field(description="YYYY-MM")] = None,
     include_raises: bool = True,
     periods: Annotated[Optional[int], Field(description="Pay-run mode only: number of pay runs to project when no month window is given; default one year of runs for the configured pay frequency (12 monthly, 24 semimonthly, 26 biweekly, 52 weekly)", ge=1, le=260)] = None,
-    start_date: Annotated[Optional[str], Field(description="Pay-run mode only: first pay date on/after this YYYY-MM-DD (default today)")] = None,
+    start_date: Annotated[Optional[str], Field(description="Pay-run mode only: list runs from the first payday on/after this YYYY-MM-DD (default today); the paydays themselves are the fixed pay calendar")] = None,
     include_employees: Annotated[bool, Field(description="Per-employee rows on every run / month (large); default totals only")] = False,
 ) -> Dict[str, Any]:
     """Payroll cost projection. With a start / end month it returns the
@@ -299,11 +305,15 @@ async def payroll_statement_bridge(
 ) -> Dict[str, Any]:
     """Statement payroll vs payroll cash, by month. The statements accrue
     payroll evenly by calendar month and treat it as paid in the month;
-    cash goes out on the configured pay dates (a month can have three
-    biweekly Fridays). Per month: accrued, paid, pay_runs, difference
-    (accrued - paid), cumulative_difference and accrued_payroll_balance
-    (opening_accrued_payroll + cumulative difference: the accrued payroll a
-    balance sheet would carry at month end), each split by labor class."""
+    cash goes out on the company's pay dates (biweekly: every other Friday
+    from pay_anchor_date, so a month has the same pay dates in any window;
+    a month can have three). Per month: accrued (split by labor class),
+    paid (split by labor class), pay_runs, difference (accrued - paid),
+    cumulative_difference, earned (pay for the month's days at the pay
+    period's daily rate) and accrued_payroll_balance: pay for days worked up
+    to the month end that a later pay date pays (the accrued payroll a
+    balance sheet carries; the same whatever window is asked; it moves by
+    earned - paid)."""
     body = await call("GET", "/payroll/statement-bridge", params={
         "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
         "include_raises": include_raises,

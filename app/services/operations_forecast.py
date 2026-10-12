@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from services.financial_statements import (
     describe_labor_policy,
+    labor_coverage,
     require_known_scenarios,
     expenses_by_period,
     labor_lines_by_period,
@@ -32,6 +33,7 @@ from services.financial_statements import (
     payroll_by_period,
     period_range,
     validate_period,
+    window_total,
 )
 
 DEFAULT_HOURS_PER_FTE = round(40 * 52 / 12, 2)  # 173.33 paid hours per month
@@ -254,8 +256,13 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
     labor: Dict[str, Dict[str, Any]] = {}
     machine: Dict[str, Dict[str, Any]] = {}
     products: Dict[str, Dict[str, Any]] = {}
+    # Standard direct labor cost per month, added line by line exactly as the statements engine adds
+    # line['labor'] (revenue_and_cogs_by_period), so it is the income statement's Direct labor (standard)
+    # to the cent; the per-labor-type costs below are a breakdown of it.
+    standard_cost = {p: 0.0 for p in periods}
     for line in lines:
         p = line["period"]
+        standard_cost[p] += line["labor"]
         for type_id, v in line["labor_by_type"].items():
             name, amount = rates.get(type_id, (None, None))
             entry = labor.setdefault(type_id, {
@@ -297,7 +304,6 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
             cost_total += bucket["cost"]
             ftes.append(bucket["fte"])
             totals_by_period[p]["hours"] += bucket["hours"]
-            totals_by_period[p]["cost"] += bucket["cost"]
         entry["totals"] = {
             "hours": hours_total, "cost": cost_total,
             "avg_fte": sum(ftes) / len(ftes) if ftes else 0.0,
@@ -305,8 +311,9 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
         }
         by_labor_type.append(_round(entry))
     by_labor_type.sort(key=lambda e: -(e["totals"]["hours"] or 0))
-    for bucket in totals_by_period.values():
+    for p, bucket in totals_by_period.items():
         bucket["fte"] = bucket["hours"] / hours_per_fte
+        bucket["cost"] = standard_cost[p]          # the statement's figure, not the sum of the per-type rows
     period_rows = [_round(totals_by_period[p]) for p in periods]
     all_ftes = [totals_by_period[p]["fte"] for p in periods]
 
@@ -363,10 +370,9 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
             "products": loaded["cost_warnings"],
         })
 
-    direct_labor_cost = sum(r["cost"] for r in totals_by_period.values())
     payroll = payroll_by_period(cursor, forecast_ids, periods)
-    payroll_cost = sum(payroll["total"].values())
-    labor_lines = labor_lines_by_period(payroll, {p: totals_by_period[p]["cost"] for p in periods}, periods)
+    payroll_cost = window_total(payroll["total"], periods)
+    labor_lines = labor_lines_by_period(payroll, standard_cost, periods)
 
     # Standard (routings) vs payroll (employees classed direct), month by month.
     comparison_rows = []
@@ -388,10 +394,16 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
             sums[key] += row[key]
         comparison_rows.append(_round(row))
     sums["utilization_pct"] = sums["standard_hours"] / sums["paid_hours"] * 100 if sums["paid_hours"] > 0 else None
-    admin_cost = sum(labor_lines["payroll"].values())
+    # Window totals are the month-by-month sums above (the statements' own arithmetic), never a second sum().
+    direct_labor_cost = sums["standard_cost"]
+    admin_cost = window_total(labor_lines["payroll"], periods)
     unclassified = payroll["unclassified_employees"]
+    coverage = labor_coverage(labor_lines["direct_payroll"], standard_cost, periods)
     policy_message = describe_labor_policy(direct_labor_cost, sums["direct_payroll_cost"], sums["labor_variance"],
-                                           sums["indirect_payroll_cost"], admin_cost, unclassified)
+                                           sums["indirect_payroll_cost"], admin_cost, unclassified,
+                                           standard_only=coverage["standard_only_labor"],
+                                           direct_months=coverage["months_with_direct_pay"],
+                                           standard_only_months=coverage["standard_only_months"])
     if sums["direct_payroll_cost"] > 0 and sums["paid_hours"] > 0:
         policy_message += (f" Employees classed Direct are paid for {sums['paid_hours']:,.0f} hours; the routings "
                            f"need {sums['standard_hours']:,.0f} ({sums['utilization_pct']:,.0f}% utilization).")
@@ -406,7 +418,7 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
         "by_labor_type": by_labor_type,
         "totals_by_period": period_rows,
         "totals": _round({
-            "hours": sum(r["hours"] for r in totals_by_period.values()),
+            "hours": sums["standard_hours"],
             "cost": direct_labor_cost,
             "avg_fte": sum(all_ftes) / len(all_ftes) if all_ftes else 0.0,
             "peak_fte": max(all_ftes) if all_ftes else 0.0,
@@ -435,6 +447,10 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
             "indirect_payroll_cost": sums["indirect_payroll_cost"],
             "admin_payroll_cost": admin_cost,
             "labor_variance": sums["labor_variance"],
+            "cogs_direct_labor": round(round(direct_labor_cost, 2) + round(sums["labor_variance"], 2), 2),
+            "months_with_direct_pay": coverage["months_with_direct_pay"],
+            "standard_only_months": coverage["standard_only_months"],
+            "standard_only_labor": coverage["standard_only_labor"],
             "unclassified_employees": unclassified,
             "message": policy_message,
         }),

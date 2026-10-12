@@ -702,8 +702,9 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
                           "adds direct payroll - standard, so total direct labor equals the pay of employees classed "
                           "Direct and nobody is counted twice. Indirect (factory support: supervisors, maintenance, "
                           "material handling): in COGS as Indirect labor (factory). Admin, or not classified: "
-                          "Payroll in operating expenses. When no employee is classed Direct, direct labor is the "
-                          "routing standard alone. Inventory is always valued at the standard product cost."),
+                          "Payroll in operating expenses. In a month with no direct payroll (nobody classed Direct, "
+                          "or before a direct hire starts) direct labor is the routing standard alone. Inventory is "
+                          "always valued at the standard product cost."),
         ("Labor hours and FTEs", f"Labor hours = routing labor minutes per unit x units sold / 60, by labor type. "
                                  f"FTEs = hours / {hpf:,.2f} paid hours per FTE per month (40 h x 52 weeks / 12 = "
                                  f"173.33 by default). Labor cost equals Direct labor (standard) on the Income "

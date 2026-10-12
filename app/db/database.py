@@ -459,7 +459,8 @@ class DatabaseManager:
                 benefits_rate REAL DEFAULT 0.25,
                 workers_comp_rate REAL DEFAULT 0.015,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                pay_frequency TEXT DEFAULT 'biweekly'
+                pay_frequency TEXT DEFAULT 'biweekly',
+                pay_anchor_date TEXT  -- a known biweekly payday (a Friday); NULL = the default calendar
             )
         ''')
         
@@ -927,15 +928,19 @@ class DatabaseManager:
             self.close_connection(conn)
 
     def migrate_payroll_config_table(self):
-        """Add pay_frequency to payroll_config if missing (idempotent)."""
+        """Add pay_frequency and pay_anchor_date to payroll_config if missing (idempotent)."""
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute("PRAGMA table_info(payroll_config)")
             columns = [col[1] for col in cursor.fetchall()]
-            if 'pay_frequency' not in columns:
+            # pay_anchor_date: a known biweekly payday. NULL reads as the fixed default calendar
+            # (financial_statements.DEFAULT_PAY_ANCHOR_DATE), so older databases keep stable paydays.
+            for column, ddl in (("pay_frequency", "TEXT DEFAULT 'biweekly'"), ("pay_anchor_date", "TEXT")):
+                if column in columns:
+                    continue
                 try:
-                    cursor.execute("ALTER TABLE payroll_config ADD COLUMN pay_frequency TEXT DEFAULT 'biweekly'")
+                    cursor.execute(f"ALTER TABLE payroll_config ADD COLUMN {column} {ddl}")
                 except sqlite3.OperationalError as alter_err:
                     if 'duplicate column name' not in str(alter_err).lower():
                         raise

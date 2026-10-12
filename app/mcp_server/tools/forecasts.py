@@ -35,11 +35,12 @@ End = Annotated[Optional[str], Field(description="Last month YYYY-MM, inclusive 
 DEFAULT_HOURS_PER_FTE = 173.33
 DOCKER_DATA_DIR = "/data"   # the API container's data volume (./data on the host, see docker-compose.yml)
 
+# Each month adds up: product_cogs + labor_variance + indirect_labor + factory_overhead + other_cogs = total_cogs.
 BRIDGE_COLUMNS = (
     "period", "units", "gross_sales", "terms_allowance", "chargebacks", "other_allowances", "excise_tax",
-    "total_sales_deductions", "net_sales", "materials", "labor", "machine", "product_cogs", "factory_overhead",
-    "other_cogs", "total_cogs", "gross_profit", "gross_margin_pct", "commissions", "contribution_margin",
-    "contribution_margin_pct",
+    "total_sales_deductions", "net_sales", "materials", "labor", "machine", "product_cogs", "labor_variance",
+    "indirect_labor", "factory_overhead", "other_cogs", "total_cogs", "gross_profit", "gross_margin_pct",
+    "commissions", "contribution_margin", "contribution_margin_pct",
 )
 GROUP_METRICS = (
     "units", "gross_sales", "terms_allowance", "chargebacks", "other_allowances", "excise_tax",
@@ -97,7 +98,9 @@ async def cogs_forecast(
     end_period: End = None,
     group_by: Annotated[Literal["summary", "product", "customer", "customer_type", "product_type", "unit_costs"], Field(
         description="summary: the monthly bridge gross sales -> each deduction -> net sales -> materials / labor / "
-                    "machine -> overhead -> total COGS -> gross profit (ties to the income statement). product / "
+                    "machine (product COGS) -> direct labor variance (pay of employees classed direct - routing "
+                    "standard) -> indirect labor (employees classed indirect) -> factory overhead -> other COGS -> "
+                    "total COGS -> gross profit; every month adds up and ties to the income statement. product / "
                     "customer / customer_type / product_type: contribution margin (before overhead) per group, "
                     "largest net sales first. unit_costs: per-unit material / labor / machine cost and minutes "
                     "per product sold, with cost-data warnings.")] = "summary",

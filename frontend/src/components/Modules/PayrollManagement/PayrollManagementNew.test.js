@@ -1,10 +1,20 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import { toast } from 'react-hot-toast';
 import PayrollManagement from './PayrollManagementNew';
 import api from '../../../lib/apiClient';
 
-jest.mock('../../../lib/apiClient', () => ({ __esModule: true, default: { get: jest.fn(), post: jest.fn() } }));
+// The real describeError (server reason first); the HTTP client itself is stubbed.
+jest.mock('axios', () => ({
+  create: () => ({
+    interceptors: { request: { use: () => {} }, response: { use: () => {} } },
+  }),
+}));
+jest.mock('../../../lib/apiClient', () => {
+  const actual = jest.requireActual('../../../lib/apiClient');
+  return { __esModule: true, describeError: actual.describeError, default: { get: jest.fn(), post: jest.fn() } };
+});
 jest.mock('react-hot-toast', () => {
   const toast = jest.fn();
   toast.error = jest.fn();
@@ -14,6 +24,10 @@ jest.mock('react-hot-toast', () => {
 jest.mock('../../Common/ConfirmDialog', () => ({ useConfirm: () => () => Promise.resolve(true) }));
 
 const mockUpdateEmployee = jest.fn(() => Promise.resolve({ employee_id: 'S1' }));
+const mockCreateEmployee = jest.fn(() => Promise.resolve({ employee_id: 'N1' }));
+const mockDeleteEmployee = jest.fn(() => Promise.resolve({ employee_id: 'S1' }));
+// Per-test overrides of the context (loading state, a locked scenario, an empty roster).
+let mockContextOverrides = {};
 // Rows as /data/payroll returns them: allocations are JSON TEXT.
 const mockPayroll = [
   { employee_id: 'S1', employee_name: 'Plant Manager', department: 'Admin', weekly_hours: 40, hourly_rate: 120000,
@@ -27,9 +41,10 @@ const mockPayroll = [
 jest.mock('../../../context/ForecastContext', () => ({
   useForecast: () => ({
     data: { payroll: mockPayroll },
-    actions: { updateEmployee: mockUpdateEmployee, createEmployee: jest.fn(), deleteEmployee: jest.fn() },
+    actions: { updateEmployee: mockUpdateEmployee, createEmployee: mockCreateEmployee, deleteEmployee: mockDeleteEmployee },
     activeScenario: 'F1',
-    scenarios: { F1: { name: 'Budget', start_period: '2027-01', end_period: '2027-12' } }
+    scenarios: { F1: { name: 'Budget', start_period: '2027-01', end_period: '2027-12' } },
+    ...mockContextOverrides
   })
 }));
 
@@ -69,6 +84,75 @@ beforeEach(() => {
     return Promise.resolve(responses[path] || { data: {} });
   });
   mockUpdateEmployee.mockClear();
+  mockCreateEmployee.mockClear();
+  mockDeleteEmployee.mockClear();
+  toast.error.mockClear();
+  toast.success.mockClear();
+  mockContextOverrides = {};
+});
+
+const LOCK_MESSAGE = "Scenario 'Budget' is approved and locked: branch it to make changes, or unlock it with a reason.";
+const lockRefusal = () => Object.assign(new Error('Request failed with status code 409'), {
+  response: { status: 409, data: { detail: LOCK_MESSAGE, code: 'SCENARIO_LOCKED' } },
+  userMessage: LOCK_MESSAGE
+});
+
+describe('PayrollManagement refusals and defaults (UI-2, UI-8)', () => {
+  it("shows the server's reason when an update or a delete is refused, never 'status code 409'", async () => {
+    mockUpdateEmployee.mockRejectedValueOnce(lockRefusal());
+    mockDeleteEmployee.mockRejectedValueOnce(lockRefusal());
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(await screen.findByText('Update Employee'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(toast.error.mock.calls[0][0]).toBe(`Could not update employee: ${LOCK_MESSAGE}`);
+    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2));
+    expect(toast.error.mock.calls[1][0]).toBe(`Could not delete employee: ${LOCK_MESSAGE}`);
+    expect(toast.error.mock.calls.flat().join(' ')).not.toMatch(/status code/);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('defaults a new hire to company-wide while the active scenario is locked', async () => {
+    mockContextOverrides = { scenarios: { F1: { name: 'Budget', start_period: '2027-01', end_period: '2027-12', locked: true } } };
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    fireEvent.click(screen.getByText('Add Employee'));
+    const option = await screen.findByRole('option', { name: /This scenario only \(Budget\) - approved and locked/ });
+    expect(option).toBeDisabled();
+    expect(option.closest('select')).toHaveValue('');
+  });
+
+  it('shows one success toast per save', async () => {
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(await screen.findByText('Update Employee'));
+    await waitFor(() => expect(mockUpdateEmployee).toHaveBeenCalled());
+    await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1));
+    expect(toast.success).toHaveBeenCalledWith('Employee updated successfully');
+  });
+});
+
+describe('PayrollManagement first load (UI-7)', () => {
+  it('shows a loading state, not an empty roster and zero costs, until the data arrives', async () => {
+    mockContextOverrides = { data: { payroll: [] }, loading: true, lastUpdated: null, error: null };
+    api.get.mockImplementation(() => new Promise(() => {}));   // nothing answers yet
+    render(<PayrollManagement />);
+    expect(screen.getByText('Loading employees…')).toBeInTheDocument();
+    expect(screen.queryByText(/No employees found/)).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.00')).not.toBeInTheDocument();
+    expect(screen.queryByText('All Employees (0)')).not.toBeInTheDocument();
+  });
+
+  it('says there are no employees once the load has finished with none', async () => {
+    mockContextOverrides = { data: { payroll: [] }, loading: false, lastUpdated: new Date(), error: null };
+    render(<PayrollManagement />);
+    expect(await screen.findByText(/No employees found/)).toBeInTheDocument();
+    expect(screen.getByText('All Employees (0)')).toBeInTheDocument();
+  });
 });
 
 describe('PayrollManagement screen', () => {
