@@ -217,23 +217,35 @@ async def update_payroll_config(
 
 @mcp.tool(name="forecast_payroll_forecast", annotations=READ)
 async def payroll_forecast(
-    forecast_id: Annotated[Optional[str], Field(description="Scenario; company-wide employees are always included")] = None,
+    forecast_id: Annotated[Optional[str], Field(description="Scenario (company-wide employees are always included); omit for the base scenario")] = None,
     start_period: Annotated[Optional[str], Field(description="YYYY-MM; with end_period gives the monthly view used by the statements")] = None,
     end_period: Annotated[Optional[str], Field(description="YYYY-MM")] = None,
     include_raises: bool = True,
     periods: Annotated[int, Field(description="Pay-run mode only: number of pay periods to project when no month window is given", ge=1, le=260)] = 26,
+    start_date: Annotated[Optional[str], Field(description="Pay-run mode only: first pay date on/after this YYYY-MM-DD (default today)")] = None,
+    include_employees: Annotated[bool, Field(description="Per-employee rows on every run / month (large); default totals only")] = False,
 ) -> Dict[str, Any]:
     """Payroll cost projection. With a start / end month it returns the
     monthly, prorated, employer-burdened payroll by department and business
     unit (the same numbers the statements use); without one it projects the
-    next N pay runs."""
+    next N pay runs. Defaults to the base scenario and totals only."""
     return await call("GET", "/payroll/forecast", params={
         "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
-        "include_raises": include_raises, "periods": periods,
+        "include_raises": include_raises, "periods": periods, "start_date": start_date,
+        "include_employees": include_employees,
     })
 
 
 @mcp.tool(name="forecast_payroll_summary", annotations=READ)
-async def payroll_summary() -> Dict[str, Any]:
-    """Headcount and annual payroll cost by department and business unit."""
-    return await call("GET", "/payroll/reports/summary")
+async def payroll_summary(
+    forecast_id: Annotated[Optional[str], Field(description="Scenario (company-wide employees are always included); omit for the base scenario")] = None,
+    start_period: Annotated[Optional[str], Field(description="YYYY-MM; with end_period adds the statements' payroll for that window")] = None,
+    end_period: Annotated[Optional[str], Field(description="YYYY-MM")] = None,
+    include_employees: Annotated[bool, Field(description="Per-employee rows (large); default totals only")] = False,
+) -> Dict[str, Any]:
+    """Headcount and annual employer payroll cost by department and business
+    unit (gross + employer taxes + benefits; withholding shown separately)."""
+    return await call("GET", "/payroll/reports/summary", params={
+        "forecast_id": forecast_id, "start_period": start_period, "end_period": end_period,
+        "include_employees": include_employees,
+    })

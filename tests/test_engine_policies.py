@@ -167,3 +167,30 @@ def test_generic_forecast_delete_cascades_and_keeps_a_base(db):
         assert conn.execute("SELECT forecast_id FROM forecast WHERE is_base = 1").fetchone()[0] == "F-2"
     finally:
         conn.close()
+
+
+def test_business_unit_split_accepts_fractions_and_reports_unallocated(db):
+    mgr, path = db
+    _exec(path, """INSERT INTO payroll (employee_id, employee_name, weekly_hours, hourly_rate, rate_type, start_date,
+                   benefits_eligible, allocations) VALUES ('E1', 'Pat', 40, 120000, 'salary', '2027-01-01', 0, ?)""",
+          ('{"OEM Work": 0.7, "Brands": 0.3}',))
+    _exec(path, """INSERT INTO payroll (employee_id, employee_name, weekly_hours, hourly_rate, rate_type, start_date,
+                   benefits_eligible, allocations) VALUES ('E2', 'Sam', 40, 60000, 'salary', '2027-01-01', 0, ?)""",
+          ('{"Brands": 50}',))
+    stmt = _build(mgr)
+    units = {u: sum(v.values()) for u, v in stmt["detail"]["payroll_by_business_unit"].items()}
+    total = stmt["income_statement"]["totals"]["payroll"]
+    assert sum(units.values()) == pytest.approx(total, abs=0.1)
+    assert units["Unallocated"] == pytest.approx(total * (30000 / 180000), abs=0.1)
+
+
+@pytest.mark.parametrize("builder", ["build_cogs_forecast", "build_labor_forecast"])
+def test_operations_reports_reject_unknown_scenarios(db, builder):
+    from services import operations_forecast as ops
+    mgr, _ = db
+    conn = mgr.get_connection()
+    try:
+        with pytest.raises(ValueError, match="Unknown scenario"):
+            getattr(ops, builder)(conn.cursor(), ["NOPE"], "2027-01", "2027-12")
+    finally:
+        conn.close()

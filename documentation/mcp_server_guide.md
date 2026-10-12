@@ -103,7 +103,28 @@ address, allow it explicitly when starting the API:
 MCP_ALLOWED_HOSTS="192.168.1.20:*" docker-compose up
 ```
 
+The Docker frontend (nginx) also proxies the endpoint, so `http://localhost:3000/mcp` works
+as well as `http://localhost:8000/mcp`. When Claude Code itself runs inside a container (for
+example a dev container) and reaches the host as `host.docker.internal`, allow that host:
+`MCP_ALLOWED_HOSTS="host.docker.internal:*"` (see `docker-compose.yml`).
+
 There is no authentication, same as the rest of the API: run it on a trusted network only.
+
+### Response size and argument checks
+
+* Every tool returns one compact JSON block. Tables (`forecast_list_sales`,
+  `forecast_query_table`, `forecast_sql_query`, statement months) come as
+  `{columns, rows}`; pass `layout="records"` for one object per row.
+* A result larger than `MCP_MAX_RESPONSE_CHARS` (default 60,000 characters) is returned as an
+  error that says how to narrow the request (a shorter window, `group_by`, `limit`, fewer
+  sections) instead of flooding the conversation.
+* Unknown or misspelled arguments are rejected with the list of valid ones, so a guessed
+  filter can never silently widen a change. `forecast_adjust_sales` refuses to run without a
+  filter unless `all_rows=true`.
+* `forecast_import_sales` takes rows or a `file_path` (one row per month, or one column per
+  month with `year=`), runs all-or-nothing, and does **not** create unknown customers or
+  products unless `auto_create=true` (so a typo cannot add junk master data). Missing prices
+  are filled from the price list, then the product's base price.
 
 ### Files: where the server reads imports and writes exports
 

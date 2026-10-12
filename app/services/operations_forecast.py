@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
 from services.financial_statements import (
+    require_known_scenarios,
     expenses_by_period,
     load_sales_lines,
     payroll_by_period,
@@ -117,6 +118,7 @@ def build_cogs_forecast(cursor, forecast_ids: Sequence[str], start_period: str, 
     if not forecast_ids:
         raise ValueError("At least one forecast_id is required")
     periods = period_range(start_period, end_period)
+    require_known_scenarios(cursor, forecast_ids)
     loaded = load_sales_lines(cursor, forecast_ids, periods)
     lines = loaded["lines"]
     expenses = expenses_by_period(cursor, forecast_ids, periods)
@@ -209,6 +211,7 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
     if hours_per_fte <= 0:
         raise ValueError("hours_per_fte must be positive")
     periods = period_range(start_period, end_period)
+    require_known_scenarios(cursor, forecast_ids)
     loaded = load_sales_lines(cursor, forecast_ids, periods)
     lines = loaded["lines"]
 
@@ -366,7 +369,9 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
 def sales_detail_rows(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str) -> List[Dict[str, Any]]:
     """Flat, export-ready sales lines (no nested dicts) for the window."""
     periods = period_range(start_period, end_period)
-    loaded = load_sales_lines(cursor, [f for f in forecast_ids if f], periods)
+    forecast_ids = [f for f in forecast_ids if f]
+    require_known_scenarios(cursor, forecast_ids)
+    loaded = load_sales_lines(cursor, forecast_ids, periods)
     out = []
     for line in loaded["lines"]:
         out.append(_round({

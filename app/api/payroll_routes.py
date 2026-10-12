@@ -40,9 +40,11 @@ from services.financial_statements import (
     _burden_multiplier,
     _parse_date,
     add_months,
+    allocation_shares,
     annual_base_pay,
     load_employees,
     load_payroll_config,
+    normalize_allocations,
     payroll_by_period,
     period_range,
     pay_run_dates,
@@ -207,34 +209,6 @@ def _active_share(window: Tuple[date, date], start: Optional[date], end: Optiona
     return ((active_end - active_start).days + 1) / ((last - first).days + 1)
 
 
-def normalize_allocations(value: Any) -> Dict[str, float]:
-    """
-    Business-unit allocations in PERCENT. Accepts a dict or its JSON text.
-    Fractions that sum to 1 ({"OEM Work": 0.7, ...}) are converted to
-    percent; non-numeric and negative entries are dropped.
-    """
-    if isinstance(value, str):
-        try:
-            value = json.loads(value) if value.strip() else {}
-        except (json.JSONDecodeError, TypeError):
-            return {}
-    if not isinstance(value, dict):
-        return {}
-    clean: Dict[str, float] = {}
-    for unit, pct in value.items():
-        try:
-            number = float(pct)
-        except (TypeError, ValueError):
-            continue
-        if number != number or number < 0:  # NaN or negative
-            continue
-        clean[str(unit)] = number
-    total = sum(clean.values())
-    if clean and all(v <= 1 for v in clean.values()) and 0.99 <= total <= 1.01:
-        clean = {k: round(v * 100, 6) for k, v in clean.items()}
-    return clean
-
-
 def _validated_allocations(value: Optional[Dict[str, Any]]) -> Dict[str, float]:
     """Allocations for a write: numbers >= 0, fractions converted to percent."""
     if not value:
@@ -247,21 +221,6 @@ def _validated_allocations(value: Optional[Dict[str, Any]]) -> Dict[str, float]:
         if number < 0:
             raise HTTPException(status_code=422, detail=f"allocations['{unit}'] cannot be negative")
     return normalize_allocations(value)
-
-
-def allocation_shares(allocations: Any) -> Tuple[Dict[str, float], float]:
-    """
-    (share per business unit, unallocated share), shares as fractions of the
-    employee's cost. Allocations within 0.01 of 100% count as exactly 100%;
-    over 100% they are scaled down so a unit view never exceeds the cost.
-    """
-    pct = normalize_allocations(allocations)
-    total = sum(pct.values())
-    if total <= 0:
-        return {}, 1.0
-    if total >= 100 - 0.01:
-        return {unit: v / total for unit, v in pct.items() if v > 0}, 0.0
-    return {unit: v / 100 for unit, v in pct.items() if v > 0}, 1 - total / 100
 
 
 def _employee_status(emp: Dict[str, Any], today: Optional[date] = None) -> str:

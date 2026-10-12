@@ -592,6 +592,49 @@ def _employee_rate_for_period(emp: Dict[str, Any], period: str, include_raises: 
     return rate
 
 
+def normalize_allocations(value: Any) -> Dict[str, float]:
+    """
+    Business-unit allocations in PERCENT. Accepts a dict or its JSON text.
+    Fractions that sum to 1 ({"OEM Work": 0.7, ...}) are converted to
+    percent; non-numeric and negative entries are dropped.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    clean: Dict[str, float] = {}
+    for unit, pct in value.items():
+        try:
+            number = float(pct)
+        except (TypeError, ValueError):
+            continue
+        if number != number or number < 0:  # NaN or negative
+            continue
+        clean[str(unit)] = number
+    total = sum(clean.values())
+    if clean and all(v <= 1 for v in clean.values()) and 0.99 <= total <= 1.01:
+        clean = {k: round(v * 100, 6) for k, v in clean.items()}
+    return clean
+
+
+def allocation_shares(allocations: Any) -> Tuple[Dict[str, float], float]:
+    """
+    (share per business unit, unallocated share), shares as fractions of the
+    employee's cost. Allocations within 0.01 of 100% count as exactly 100%;
+    over 100% they are scaled down so a unit view never exceeds the cost.
+    """
+    pct = normalize_allocations(allocations)
+    total = sum(pct.values())
+    if total <= 0:
+        return {}, 1.0
+    if total >= 100 - 0.01:
+        return {unit: v / total for unit, v in pct.items() if v > 0}, 0.0
+    return {unit: v / 100 for unit, v in pct.items() if v > 0}, 1 - total / 100
+
+
 def load_employees(cursor, forecast_ids: Sequence[str]) -> List[Dict[str, Any]]:
     scope, params = _scope_clause("forecast_id", forecast_ids, include_null=True)
     cursor.execute(
@@ -651,12 +694,11 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
             by_department.setdefault(dept, _zero_by_period(periods))[period] += cost
             allocations = emp.get("allocations") or {}
             if allocations:
-                for unit, pct in allocations.items():
-                    try:
-                        share = float(pct) / 100.0
-                    except (TypeError, ValueError):
-                        continue
+                shares, unallocated = allocation_shares(allocations)
+                for unit, share in shares.items():
                     by_business_unit.setdefault(unit, _zero_by_period(periods))[period] += cost * share
+                if unallocated > 1e-9:
+                    by_business_unit.setdefault("Unallocated", _zero_by_period(periods))[period] += cost * unallocated
         employee_rows.append({
             "employee_id": emp.get("employee_id"),
             "employee_name": emp.get("employee_name"),
@@ -958,6 +1000,18 @@ def resolve_carry_forward(assumptions: Dict[str, Any], start_period: str) -> Tup
     return [], None
 
 
+def require_known_scenarios(cursor, forecast_ids: Sequence[str]) -> None:
+    """Raise ValueError naming any scenario id that does not exist (reports never return silent zeros)."""
+    ids = [f for f in forecast_ids if f]
+    if not ids:
+        raise ValueError("At least one forecast_id is required")
+    cursor.execute(f"SELECT forecast_id FROM forecast WHERE forecast_id IN ({','.join('?' for _ in ids)})", ids)
+    known = {row[0] for row in cursor.fetchall()}
+    unknown = [f for f in ids if f not in known]
+    if unknown:
+        raise ValueError(f"Unknown scenario id(s): {', '.join(unknown)}")
+
+
 def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str,
                      include_raises: bool = True) -> Dict[str, Any]:
     """Build the full statement set for a reporting window."""
@@ -965,14 +1019,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     if not forecast_ids:
         raise ValueError("At least one forecast_id is required")
     periods = period_range(start_period, end_period)
-    cursor.execute(
-        f"SELECT forecast_id FROM forecast WHERE forecast_id IN ({','.join('?' for _ in forecast_ids)})",
-        forecast_ids,
-    )
-    known = {row[0] for row in cursor.fetchall()}
-    unknown = [f for f in forecast_ids if f not in known]
-    if unknown:
-        raise ValueError(f"Unknown scenario id(s): {', '.join(unknown)}")
+    require_known_scenarios(cursor, forecast_ids)
 
     # Assumptions come from the first selected scenario (they describe the
     # company, not the scenario), falling back to defaults.
