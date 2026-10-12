@@ -219,7 +219,8 @@ def no_sales_hint(sales_lines: Any, start: str, end: str, sales_window: Optional
 # ---------------------------------------------------------------------------
 
 ROUNDING_NOTE = ("totals add up the rows as shown (each line rounded to the cent, = SUM in Excel); report_totals "
-                 "add up the unrounded lines and match the income statement / COGS forecast exactly; rounding = "
+                 "add up the unrounded lines month by month, as the statements do, and match the income statement "
+                 "/ COGS forecast exactly; rounding = "
                  "report_totals - totals (per-line cent rounding, usually a few cents). Quote report_totals as "
                  "the scenario's figures.")
 

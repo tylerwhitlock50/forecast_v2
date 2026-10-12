@@ -250,7 +250,7 @@ const CostManagement = () => {
           title="Product COGS"
           value={formatCompactCurrency(productCogs)}
           subtitle="Materials + labor + machine, before factory overhead"
-          help="Product COGS (materials + labor + machine, before factory overhead)"
+          help="Product COGS (materials + labor + machine), before the direct labor variance, indirect labor, factory overhead and other COGS"
           variant="danger"
         />
         <StatsCard
@@ -275,22 +275,25 @@ const CostManagement = () => {
           title="Contribution margin"
           value={formatPercent(contributionPct)}
           subtitle={`${formatCompactCurrency(contribution)} = net sales − product COGS`}
-          help="Before factory overhead; the income statement's gross margin is after it"
+          help="Before the direct labor variance, indirect labor, factory overhead and other COGS; the income statement's gross margin is after them"
           variant="success"
         />
       </div>
 
-      {/* Reconcile to the income statement */}
+      {/* Reconcile to the income statement: total COGS = product COGS + every period cost in it. */}
       <p className="mb-8 text-sm text-gray-600" data-testid="cogs-reconciliation">
         {hasOverhead ? (
           <>
-            Product COGS {formatCurrency(productCogs)} + factory overhead {formatCurrency(t.factory_overhead)}
+            Product COGS {formatCurrency(productCogs)}
+            {t.labor_variance ? ` + direct labor variance ${formatCurrency(t.labor_variance)}` : ''}
+            {t.indirect_labor ? ` + indirect labor ${formatCurrency(t.indirect_labor)}` : ''}
+            {' '}+ factory overhead {formatCurrency(t.factory_overhead)}
             {t.other_cogs ? ` + other COGS ${formatCurrency(t.other_cogs)}` : ''} ={' '}
             <span className="font-medium text-gray-900">total COGS {formatCurrency(t.total_cogs)}</span> on the income statement
             {typeof t.gross_margin_pct === 'number' ? ` (gross margin ${formatPercent(t.gross_margin_pct)})` : ''}.{' '}
           </>
         ) : (
-          <>These totals are product COGS, before factory overhead; the income statement adds factory overhead.{' '}</>
+          <>These totals are product COGS; the income statement adds the direct labor variance, indirect labor, factory overhead and other COGS.{' '}</>
         )}
         <Link to="/reporting/cogs-labor" className="font-medium text-orange-700 hover:underline">See the full gross-margin bridge</Link>
       </p>

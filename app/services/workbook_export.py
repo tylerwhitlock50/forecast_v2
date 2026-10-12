@@ -83,8 +83,9 @@ SHEET_NAMES: List[str] = [
 ]
 
 SHEET_DESCRIPTIONS: Dict[str, str] = {
-    "Gross Margin": "Monthly bridge from gross sales through each deduction to net sales, product COGS, "
-                    "overhead and gross profit. Ties to the Income Statement.",
+    "Gross Margin": "Monthly bridge from gross sales through each deduction to net sales, product COGS, the "
+                    "period costs (labor variance, indirect labor, overhead, other COGS) and gross profit. Ties to "
+                    "the Income Statement.",
     "Income Statement": "Full monthly profit and loss, the same numbers as the Reporting screens.",
     "By Product": "Units, gross sales, deductions, net sales, product COGS and contribution margin per product, "
                   "with units and net sales by month.",
@@ -108,6 +109,12 @@ SHEET_DESCRIPTIONS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Statement line labels (shared with the CSV export in reporting_routes)
 # ---------------------------------------------------------------------------
+
+#: The COGS lines that are period costs: in Total COGS and gross profit, not in the per-product figures.
+PERIOD_COSTS = "the direct labor variance, indirect labor, factory overhead and other COGS"
+#: Gross profit as the income statement and the COGS forecast compute it.
+GROSS_PROFIT_FORMULA = ("Gross profit = net sales - total COGS, where total COGS = product COGS + direct labor "
+                        "variance (payroll vs standard) + indirect labor (factory) + factory overhead + other COGS.")
 
 INCOME_STATEMENT_LABELS: Dict[str, str] = {
     "gross_sales": "Gross sales",
@@ -689,13 +696,15 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Product COGS", "Per-unit cost from each product's BOM and routing, times units sold. Materials = sum of "
                          "BOM line quantity x unit price; direct labor (standard) = routing labor minutes / 60 x "
                          "labor rate; machine = routing machine minutes / 60 x machine rate."),
-        ("Factory overhead and other COGS", "Period costs from operating expense allocations (categories typed "
-                                            "factory overhead or COGS). They are in Total COGS and gross profit on "
-                                            "the Gross Margin and Income Statement sheets, but not in the "
-                                            "per-product, per-customer or per-customer-type figures."),
-        ("Contribution margin vs gross profit", "Contribution margin = net sales - product COGS (before overhead). "
-                                                "Gross profit = net sales - total COGS (product COGS + factory "
-                                                "overhead + other COGS). Margin percentages are on net sales."),
+        ("Period costs in COGS", "The direct labor variance (payroll of employees classed Direct - the routing "
+                                 "standard) and indirect labor (pay of employees classed Indirect) come from "
+                                 "Payroll; factory overhead and other COGS from operating expense allocations "
+                                 "(categories typed factory overhead or COGS). They are in Total COGS and gross "
+                                 "profit on the Gross Margin and Income Statement sheets, but not in the "
+                                 "per-product, per-customer or per-customer-type figures."),
+        ("Contribution margin vs gross profit", f"Contribution margin = net sales - product COGS (before "
+                                                f"{PERIOD_COSTS}). {GROSS_PROFIT_FORMULA} Margin percentages are "
+                                                f"on net sales."),
         ("Labor classes", "Each employee in Payroll has a labor class that decides where their pay goes. Direct "
                           "(builds product): in COGS. Direct labor (standard) stays routing labor minutes x labor "
                           "rates x units sold, and in every month with direct payroll a Direct labor variance line "
@@ -774,7 +783,7 @@ _GROSS_MARGIN_LINES: List[Tuple[str, str, str, bool, int]] = [
     ("labor", "Direct labor (standard)", "money0", False, 1),
     ("machine", "Machine", "money0", False, 1),
     ("product_cogs", "Product COGS (BOM + routing)", "money0", True, 0),
-    ("contribution_margin", "Contribution margin (before overhead)", "money0", True, 0),
+    ("contribution_margin", "Contribution margin (before period costs)", "money0", True, 0),
     ("contribution_margin_pct", "Contribution margin %", "pct", False, 1),
     ("labor_variance", "Direct labor variance (payroll vs standard)", "money0", False, 1),
     ("indirect_labor", "Indirect labor (factory)", "money0", False, 1),
@@ -804,9 +813,8 @@ def _sheet_gross_margin(ws, data: Dict[str, Any]) -> None:
             w.style_row(r, len(periods) + 2)
         w.row += 1
     w.blank()
-    w.note("Contribution margin = net sales - product COGS. Gross profit also deducts the direct labor variance, "
-           "indirect labor, factory overhead and other COGS (period costs). Commissions are an operating expense "
-           "below gross profit.")
+    w.note(f"Contribution margin = net sales - product COGS. {GROSS_PROFIT_FORMULA} Commissions are an operating "
+           f"expense below gross profit.")
     w.finish(freeze="B2")
 
 
@@ -918,8 +926,8 @@ def _sheet_dimension(ws, data: Dict[str, Any], groups: List[Dict[str, Any]],
         w.style_row(w.row, len(headers))
         w.row += 1
     w.blank()
-    w.note("Contribution margin = net sales - product COGS (materials + direct labor + machine), before factory "
-           "overhead and other COGS, which are period costs shown on the Gross Margin sheet.")
+    w.note(f"Contribution margin = net sales - product COGS (materials + direct labor + machine), before "
+           f"{PERIOD_COSTS}, which are period costs shown on the Gross Margin sheet.")
     w.finish(freeze=f"{get_column_letter(n_id + 1)}2")
 
 

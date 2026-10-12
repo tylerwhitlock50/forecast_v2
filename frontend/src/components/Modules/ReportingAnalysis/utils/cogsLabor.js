@@ -7,6 +7,12 @@ import { DEDUCTION_HELP, LABOR_HELP } from './lineHelp';
 // Gross margin bridge (GET /reporting/cogs-forecast -> summary)
 // ---------------------------------------------------------------------------
 
+// Gross profit as the income statement computes it; the per-group figures stop at contribution margin.
+export const GROSS_PROFIT_HELP = 'Net sales less total COGS: product COGS (materials, direct labor at standard, machine) '
+  + '+ direct labor variance + indirect labor + factory overhead + other COGS. Ties to the income statement.';
+export const PERIOD_COSTS_NOTE = 'The direct labor variance, indirect labor, factory overhead and other COGS are period '
+  + 'costs: they are in gross profit but appear only in the gross margin bridge, not per product or customer.';
+
 export const BRIDGE_ROWS = [
   { key: 'gross_sales', label: 'Gross sales', kind: 'subtotal', help: 'Invoice value of the sales forecast (quantity × price), including any excise tax embedded in the price.' },
   { key: 'terms_allowance', label: 'Terms allowance', kind: 'line', indent: 1, deduction: true, help: DEDUCTION_HELP.terms_allowance },
@@ -25,7 +31,7 @@ export const BRIDGE_ROWS = [
   { key: 'factory_overhead', label: 'Factory overhead', kind: 'line', indent: 1, help: 'Expenses categorised as factory overhead (a period cost, not per unit).' },
   { key: 'other_cogs', label: 'Other COGS', kind: 'line', indent: 1 },
   { key: 'total_cogs', label: 'Total COGS', kind: 'subtotal' },
-  { key: 'gross_profit', label: 'Gross profit', kind: 'total', help: 'Net sales less total COGS. Ties to the income statement.' },
+  { key: 'gross_profit', label: 'Gross profit', kind: 'total', help: GROSS_PROFIT_HELP },
   { key: 'gross_margin_pct', label: 'Gross margin %', kind: 'pct', indent: 1 }
 ];
 
@@ -101,7 +107,7 @@ export const GROUP_COLUMNS = [
   { key: 'avg_net_price', label: 'Avg net price', format: 'money2', help: 'Net sales ÷ units.', inline: true },
   { key: 'product_cogs', label: 'Product COGS', format: 'money', perUnit: 'cost_per_unit', help: 'Materials + direct labor + machine cost from the BOM and routing; the small figure is the cost per unit.' },
   { key: 'cost_per_unit', label: 'Cost / unit', format: 'money2', help: 'Product COGS ÷ units.', inline: true },
-  { key: 'contribution_margin', label: 'Contribution', format: 'money', help: 'Net sales − product COGS, before factory overhead and other COGS (those are period costs, shown only in the bridge).' },
+  { key: 'contribution_margin', label: 'Contribution', format: 'money', help: 'Net sales − product COGS, before the direct labor variance, indirect labor, factory overhead and other COGS (period costs, shown only in the bridge).' },
   { key: 'contribution_margin_pct', label: 'CM %', format: 'pct', nowrap: true, help: 'Contribution ÷ net sales.' },
   {
     key: 'commissions',

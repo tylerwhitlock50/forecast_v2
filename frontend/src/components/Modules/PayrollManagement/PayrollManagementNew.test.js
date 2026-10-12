@@ -86,6 +86,7 @@ beforeEach(() => {
   mockUpdateEmployee.mockClear();
   mockCreateEmployee.mockClear();
   mockDeleteEmployee.mockClear();
+  api.post.mockReset();
   toast.error.mockClear();
   toast.success.mockClear();
   mockContextOverrides = {};
@@ -133,6 +134,31 @@ describe('PayrollManagement refusals and defaults (UI-2, UI-8)', () => {
     await waitFor(() => expect(mockUpdateEmployee).toHaveBeenCalled());
     await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1));
     expect(toast.success).toHaveBeenCalledWith('Employee updated successfully');
+  });
+
+  it('shows one error toast when the server refuses a payroll configuration save (UI13-1)', async () => {
+    const reason = 'pay_anchor_date 2027-01-04 is a Monday: biweekly pay runs are on Fridays, so give a Friday '
+      + 'payday (e.g. 2027-01-08)';
+    // The real client toasts a refusal itself unless the caller passes suppressErrorToast.
+    api.post.mockImplementation((url, data, config = {}) => {
+      const error = Object.assign(new Error('Request failed with status code 422'), {
+        response: { status: 422, data: { detail: reason } }, userMessage: reason
+      });
+      if (!config.suppressErrorToast) toast.error(reason, { id: `err:${reason}` });
+      return Promise.reject(error);
+    });
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    fireEvent.click(screen.getByText('Configure Rates'));
+    fireEvent.change(await screen.findByLabelText('A known payday (a Friday)'), { target: { value: '2027-01-04' } });
+    fireEvent.click(screen.getByText('Save Configuration'));
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(api.post.mock.calls[0][0]).toBe('/payroll/config');
+    expect(api.post.mock.calls[0][1]).toMatchObject({ pay_anchor_date: '2027-01-04' });
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.error.mock.calls[0][0]).toBe(`Could not save the payroll configuration: ${reason}`);
+    expect(screen.getByText('Save Configuration')).toBeInTheDocument();   // the modal stays open
   });
 });
 
