@@ -1011,6 +1011,14 @@ async def import_records(payload: Dict[str, Any] = Body(...)):
         cursor = conn.cursor()
         cursor.execute(f"PRAGMA table_info({table})")
         columns = [r[1] for r in cursor.fetchall()]
+        # Customer / product types group the reports and select price and
+        # deduction rules: keep one spelling per type ('dealer' -> 'Dealer').
+        type_col = {"customers": "customer_type", "units": "unit_type"}.get(table)
+        type_spelling: Dict[str, str] = {}
+        if type_col and type_col in columns:
+            cursor.execute(f"SELECT DISTINCT {type_col} FROM {table} WHERE {type_col} IS NOT NULL")
+            for (existing_type,) in cursor.fetchall():
+                type_spelling.setdefault(str(existing_type).strip().lower(), str(existing_type).strip())
         seen: Dict[str, int] = {}
         for row_no, data in mapped:
             try:
@@ -1019,6 +1027,8 @@ async def import_records(payload: Dict[str, Any] = Body(...)):
                 errors.append({"row": row_no, "error": str(exc)})
                 continue
             values = {k: v for k, v in values.items() if k in columns}
+            if type_col and isinstance(values.get(type_col), str) and values[type_col].strip():
+                values[type_col] = type_spelling.setdefault(values[type_col].strip().lower(), values[type_col].strip())
             key = values.get(key_col)
             name = values.get(name_col)
             if not key and not name:

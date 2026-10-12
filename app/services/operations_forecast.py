@@ -112,6 +112,15 @@ def _group(lines: Sequence[Dict[str, Any]], periods: Sequence[str], key_fn, head
     return out
 
 
+def _type_label(value: Any) -> str:
+    return str(value).strip() if value is not None and str(value).strip() else "Unassigned"
+
+
+def _type_key(value: Any) -> str:
+    """Customer / product types group case-insensitively ('Dealer' == 'dealer ')."""
+    return _type_label(value).lower()
+
+
 def build_cogs_forecast(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str) -> Dict[str, Any]:
     """Gross sales -> deductions -> net sales -> COGS -> gross profit, by month and by dimension."""
     forecast_ids = [f for f in forecast_ids if f]
@@ -191,10 +200,10 @@ def build_cogs_forecast(cursor, forecast_ids: Sequence[str], start_period: str, 
         "by_customer": _group(lines, periods, lambda l: l["customer_id"],
                               lambda l: {"customer_id": l["customer_id"], "customer_name": l["customer_name"],
                                          "customer_type": l["customer_type"]}),
-        "by_customer_type": _group(lines, periods, lambda l: l["customer_type"] or "Unassigned",
-                                   lambda l: {"customer_type": l["customer_type"] or "Unassigned"}),
-        "by_product_type": _group(lines, periods, lambda l: l["unit_type"] or "Unassigned",
-                                  lambda l: {"unit_type": l["unit_type"] or "Unassigned"}),
+        "by_customer_type": _group(lines, periods, lambda l: _type_key(l["customer_type"]),
+                                   lambda l: {"customer_type": _type_label(l["customer_type"])}),
+        "by_product_type": _group(lines, periods, lambda l: _type_key(l["unit_type"]),
+                                  lambda l: {"unit_type": _type_label(l["unit_type"])}),
         "unit_costs": unit_costs,
         "deduction_rule_count": loaded["deduction_rule_count"],
         "warnings": warnings,

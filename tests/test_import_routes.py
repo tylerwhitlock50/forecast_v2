@@ -726,3 +726,45 @@ def test_templates_round_trip_into_a_costed_forecast(env):
     assert income["cogs_materials"] == pytest.approx((185 + 140 + 95) * 52)
     assert income["excise_tax"] > 0 and income["terms_allowance"] > 0
     assert income["revenue"] == pytest.approx(income["gross_sales"] - income["total_sales_deductions"])
+
+
+def test_sales_import_replace_modes(env):
+    client, mgr = env
+    base = [
+        {"customer_id": "CUST-001", "unit_id": "RFL-308", "period": "2027-01", "quantity": 5, "price": 1000},
+        {"customer_id": "CUST-002", "unit_id": "RFL-308", "period": "2027-01", "quantity": 7, "price": 1000},
+        {"customer_id": "CUST-001", "unit_id": "RFL-308", "period": "2028-01", "quantity": 9, "price": 1000},
+    ]
+    post(client, "/forecast/smart_import_sales", {"forecast_id": F, "sales": base})
+    revised = [{"customer_id": "CUST-001", "unit_id": "RFL-308", "period": "2027-01", "quantity": 6, "price": 1000}]
+
+    # A replace with an invalid row changes nothing.
+    blocked = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "mode": "replace", "sales": revised + [
+        {"customer_id": "CUST-001", "unit_id": "RFL-308", "period": "2027-Q1", "quantity": 1, "price": 1}]})
+    assert blocked["replace_blocked"] and blocked["deleted"] == 0
+    assert _sales(mgr)[("CUST-001", "RFL-308", "2027-01")][0] == 5
+
+    dry = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "mode": "replace", "dry_run": True, "sales": revised})
+    assert dry["deleted"] == 1 and len(_sales(mgr)) == 3
+
+    done = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "mode": "replace", "sales": revised})
+    assert done["deleted"] == 1
+    sales = _sales(mgr)
+    assert ("CUST-002", "RFL-308", "2027-01") not in sales            # stale 2027 line removed
+    assert sales[("CUST-001", "RFL-308", "2027-01")][0] == 6
+    assert ("CUST-001", "RFL-308", "2028-01") in sales                # other months untouched
+
+    all_rows = post(client, "/forecast/smart_import_sales", {"forecast_id": F, "mode": "replace_all", "sales": revised})
+    assert all_rows["deleted"] == 1 and list(_sales(mgr)) == [("CUST-001", "RFL-308", "2027-01")]
+
+
+def test_record_import_keeps_one_spelling_per_customer_type(env):
+    client, mgr = env
+    post(client, "/import/records", {"table": "customers", "rows": [
+        {"customer_id": "CUST-T1", "customer_name": "Type One", "customer_type": "Distributor"}]})
+    post(client, "/import/records", {"table": "customers", "rows": [
+        {"customer_id": "CUST-T2", "customer_name": "Type Two", "customer_type": "distributor "},
+        {"customer_id": "CUST-T3", "customer_name": "Type Three", "customer_type": "Export"},
+        {"customer_id": "CUST-T4", "customer_name": "Type Four", "customer_type": "EXPORT"}]})
+    types = dict(q(mgr, "SELECT customer_id, customer_type FROM customers WHERE customer_id LIKE 'CUST-T%'"))
+    assert types == {"CUST-T1": "Distributor", "CUST-T2": "Distributor", "CUST-T3": "Export", "CUST-T4": "Export"}

@@ -516,9 +516,11 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
             "customer_type": line["customer_type"],
             "gross_sales": 0.0, "total_sales_deductions": 0.0, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
         })
-        ctype = line["customer_type"] or "Unassigned"
-        ctype_entry = out["by_customer_type"].setdefault(ctype, {
-            "customer_type": ctype,
+        ctype = str(line["customer_type"]).strip() if line["customer_type"] and str(line["customer_type"]).strip() else "Unassigned"
+        # Group case-insensitively; the first spelling seen is the label.
+        ctype_key = next((k for k in out["by_customer_type"] if k.lower() == ctype.lower()), ctype)
+        ctype_entry = out["by_customer_type"].setdefault(ctype_key, {
+            "customer_type": ctype_key,
             "gross_sales": 0.0, "total_sales_deductions": 0.0, "revenue": 0.0, "cogs": 0.0, "quantity": 0.0,
         })
         for entry in (prod, cust, ctype_entry):

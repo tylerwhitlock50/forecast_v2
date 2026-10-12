@@ -872,6 +872,12 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
       the rows.
     * Existing rows for the same customer + product + month are updated.
       Quantity decimals are kept. ``dry_run`` reports without writing.
+    * ``mode``: ``upsert`` (default) keeps the scenario's other rows;
+      ``replace`` also deletes the scenario's rows in the months the file
+      covers that the file does not contain (re-importing a revised 2027
+      forecast leaves no stale lines, other years are untouched);
+      ``replace_all`` deletes every other row of the scenario. Replacing is
+      all-or-nothing: if any row has an error nothing is written.
     """
     from db.database import db_manager
     from api.import_routes import SALES_FIELDS, next_sequential_id
@@ -886,6 +892,9 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
     dry_run = bool(sales_data.get('dry_run', options.get('dryRun', options.get('dry_run', False))))
     forecast_id = sales_data.get('forecast_id')
     default_year = sales_data.get('year', options.get('year'))
+    mode = str(sales_data.get('mode') or options.get('mode') or 'upsert').strip().lower()
+    if mode not in ('upsert', 'replace', 'replace_all'):
+        raise HTTPException(status_code=422, detail="mode must be upsert, replace or replace_all")
 
     if not sales:
         raise HTTPException(status_code=400, detail="No sales data provided")
@@ -1127,6 +1136,27 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             total_quantity += quantity
             total_revenue += total
 
+        deleted = 0
+        replace_blocked = False
+        if mode != 'upsert':
+            if errors:
+                # Never delete a scenario's rows on the strength of a file that did not fully import.
+                replace_blocked = True
+            else:
+                cursor.execute(
+                    "SELECT sale_id, customer_id, unit_id, substr(period, 1, 7) FROM sales WHERE forecast_id = ?",
+                    (forecast_id,),
+                )
+                covered = set(months)
+                stale = [
+                    sale_id for sale_id, c, u, p in cursor.fetchall()
+                    if (c, u, p) not in seen and (mode == 'replace_all' or p in covered)
+                ]
+                for i in range(0, len(stale), 500):
+                    chunk = stale[i:i + 500]
+                    cursor.execute(f"DELETE FROM sales WHERE sale_id IN ({','.join('?' for _ in chunk)})", chunk)
+                deleted = len(stale)
+
         if no_quantity:
             warnings.append(f"{len(no_quantity)} rows had no quantity and were imported as 0")
         if ignored_columns:
@@ -1135,7 +1165,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             warnings.append(f"Created {len(created_customers)} customers; check their customer_type (it drives "
                             f"customer-type prices and deductions)")
 
-        if dry_run:
+        if dry_run or replace_blocked:
             conn.rollback()
         else:
             conn.commit()
@@ -1152,8 +1182,14 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                f"{len(created_products)} products.")
     if errors:
         message += f" {len(errors)} rows had errors."
+    if deleted:
+        message += f" Removed {deleted} rows of the scenario that the file no longer contains."
+    if replace_blocked:
+        message = (f"Nothing was changed: {len(errors)} rows had errors, and a replace import only runs when every "
+                   f"row is valid. Fix the rows (or import with mode=upsert) and try again.")
     if dry_run:
-        message = "Dry run, nothing written: " + message.replace("Imported", "would import", 1)
+        message = "Dry run, nothing written: " + message.replace("Imported", "would import", 1).replace(
+            "Removed", "would remove", 1)
     return ForecastResponse(
         status="success",
         data={
@@ -1166,6 +1202,9 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             'warnings': warnings,
             'price_sources': price_sources,
             'dry_run': dry_run,
+            'mode': mode,
+            'deleted': deleted,
+            'replace_blocked': replace_blocked,
             'rows': len(sales),
             'records': len(entries),
             'blank_rows': blank_rows,
