@@ -557,7 +557,8 @@ def rule_price(rule: Dict[str, Any], base_price: Optional[float]) -> Optional[fl
         base = float(base_price or 0)
         if base <= 0 or rule.get("discount_pct") is None:
             return None
-        return base * (1 - float(rule.get("discount_pct") or 0))
+        # Price lists are quoted in cents: 40% off $1,399.99 is $839.99, not $839.994.
+        return round(base * (1 - float(rule.get("discount_pct") or 0)) + 1e-9, 2)
     if rule.get("unit_price") is None:
         return None
     return float(rule["unit_price"])

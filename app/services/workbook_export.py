@@ -1155,9 +1155,9 @@ def _sheet_deduction_rules(ws, data: Dict[str, Any]) -> None:
 
 def _sheet_price_list(ws, data: Dict[str, Any]) -> None:
     w = _Writer(ws)
-    w.header(["Price ID", "Applies to", "Product ID", "Product", "Customer ID", "Customer", "Customer type",
+    w.header(["Price ID", "Applies to", "Product ID", "Product", "Product type", "Customer ID", "Customer", "Customer type",
               "Method", "Unit price", "Discount off base", "Product base price", "Resulting price", "Scenario",
-              "Start period", "End period", "Active", "Notes"], label_cols=17)
+              "Start period", "End period", "Active", "Notes"], label_cols=18)
     rules = sorted(data["price_rules"], key=lambda r: (
         str(r.get("unit_id") or "~"), -price_specificity(r), str(r.get("price_id") or "")))
     for rule in rules:
@@ -1169,7 +1169,9 @@ def _sheet_price_list(ws, data: Dict[str, Any]) -> None:
             (rule.get("price_id"), None),
             (PRICE_SOURCE_LABELS.get(price_source(rule), price_source(rule)), None),
             (rule.get("unit_id"), None),
-            (unit[0] if rule.get("unit_id") else "All products", None),
+            (unit[0] if rule.get("unit_id") else (
+                f"All {rule.get('unit_type')} products" if rule.get("unit_type") else "All products"), None),
+            (rule.get("unit_type"), None),
             (rule.get("customer_id"), None),
             (data["customers"].get(rule.get("customer_id")), None),
             (rule.get("customer_type"), None),

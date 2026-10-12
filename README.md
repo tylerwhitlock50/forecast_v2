@@ -156,7 +156,7 @@ endpoints (all copies go through SQLite's backup API). Snapshots are kept in `da
 | Snapshot before a bulk change | `POST /database/save {"name": "before-june-cut"}` (409 if the name exists; add `"overwrite": true` to replace it), or `POST /database/save-current` for a timestamped `autosave_*.db`. Sidebar "Save Database" in the UI, `forecast_save_database` over MCP |
 | List snapshots | `GET /database/list` (newest first; `manual_save` / `autosave` / `system_backup`) |
 | Restore a snapshot | `POST /database/load {"filename": "before-june-cut.db"}`: restores into the live database, keeps the previous state as `current_backup_<time>.db`, and upgrades an older snapshot's schema |
-| Undo to the newest snapshot | `POST /database/revert-to-last-save` (any kind; the state it replaces is kept as `pre_revert_backup_<time>.db`) |
+| Undo to the newest save | `POST /database/revert-to-last-save` (newest named save or autosave; system backups are skipped; the state it replaces is kept as `pre_revert_backup_<time>.db`) |
 | Download a `.db` file | `GET /database/snapshot` (live database) or `GET /database/snapshot?filename=before-june-cut.db` |
 | Start clean | `POST /database/start-clean {"confirm": true, "snapshot_first": true}`: snapshots (`start_clean_backup_<time>.db`), then empties every table and keeps the schema. Optional `"scenario_name": "2027 Budget"` creates an empty base scenario |
 | Check | `GET /database/info` (live file, row counts), `POST /database/verify-empty` |

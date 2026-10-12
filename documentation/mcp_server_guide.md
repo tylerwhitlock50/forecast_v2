@@ -182,8 +182,9 @@ The server's instructions (sent on connect, under 4,000 characters) tell the ass
    `forecast_financial_statements` (use `sections`) or `forecast_compare_scenarios`.
 6. Take a `forecast_save_database` snapshot before sweeping changes (a `replace` import
    deletes the BOM lines, routing operations or rules it replaces). Snapshots appear on the
-   Database screen, where you can restore them, and `forecast_revert_to_last_save` undoes to
-   the latest autosave.
+   Load Database dialog, where you can restore them, and `forecast_revert_to_last_save`
+   restores the newest named save or autosave (system backups are skipped; the state it
+   replaces is kept as `pre_revert_backup_<time>.db`).
 
 Every tool carries MCP annotations. `readOnlyHint` marks the reads. `destructiveHint` is true
 for every tool that overwrites or deletes stored data (per the MCP spec, false means "only

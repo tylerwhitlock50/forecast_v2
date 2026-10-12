@@ -189,6 +189,14 @@ def build_cogs_forecast(cursor, forecast_ids: Sequence[str], start_period: str, 
             "level": "info",
             "message": "No discount, allowance, excise or commission rules are set up, so net sales equal gross sales.",
         })
+    elif lines and not loaded["rows_with_deductions"]:
+        warnings.append({
+            "code": "no_deduction_rules",
+            "level": "info",
+            "rule_count": loaded["deduction_rule_count"],
+            "message": f"{loaded['deduction_rule_count']} deduction rule(s) exist but none applies to the sales in "
+                       f"this window (check their customer / product scope and months), so net sales equal gross sales.",
+        })
 
     return {
         "forecast_ids": forecast_ids,

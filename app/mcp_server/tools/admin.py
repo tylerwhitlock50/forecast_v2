@@ -40,7 +40,9 @@ async def load_database(
 
 @mcp.tool(name="forecast_revert_to_last_save", annotations=DESTRUCTIVE)
 async def revert_to_last_save() -> Dict[str, Any]:
-    """Undo back to the most recent autosave."""
+    """Restore the newest named save or autosave (system backups such as
+    pre-load / pre-revert copies are skipped). The state it replaces is kept
+    as a pre_revert_backup_ snapshot, which forecast_load_database can restore."""
     return await call("POST", "/database/revert-to-last-save")
 
 
