@@ -59,6 +59,20 @@ async def data_health_check():
             conn.close()
 
 
+def _require_table(table_name: str) -> None:
+    """404 unless ``table_name`` is an existing table of the live database."""
+    from db.database import db_manager
+    from utils.data_loader import table_exists
+
+    conn = db_manager.get_connection()
+    try:
+        exists = table_exists(conn.cursor(), table_name)
+    finally:
+        db_manager.close_connection(conn)
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Unknown table '{table_name}'")
+
+
 @router.get("/{table_name}")
 async def get_table_data_endpoint(
     request: Request,
@@ -67,8 +81,13 @@ async def get_table_data_endpoint(
     limit: Optional[int] = Query(None, ge=0),
     offset: Optional[int] = Query(None, ge=0),
 ):
-    """Get data from a specific table with optional filtering"""
+    """
+    Get data from a specific table with optional filtering. An unknown
+    table is a 404 (the name is checked against sqlite_master before it is
+    used in any SQL).
+    """
     try:
+        _require_table(table_name)
         filters = dict(request.query_params)
         filters.pop("forecast_id", None)
         filters.pop("limit", None)

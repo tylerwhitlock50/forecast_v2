@@ -258,12 +258,16 @@ def test_bom_errors_skip_the_whole_bom(env):
         {"bom_id": "MIS", "material_description": "m", "qty": 2, "unit_price": 5, "material_cost": 20},
     ]})
     errors = {e["row"]: e["error"] for e in data["errors"]}
-    assert set(errors) == {2, 3, 5, 7, 8}
-    assert "negative" in errors[2] and "number" in errors[3] and "bom_id is required" in errors[5]
+    assert set(errors) == {2, 3, 7, 8}
+    assert "negative" in errors[2] and "number" in errors[3]
     assert "repeats row 6" in errors[7] and "qty is 0" in errors[8]
     assert data["skipped"] == 2                                     # row 1 (BAD) and row 6 (DUP)
-    assert data["created"] == 2                                     # GOOD2 and MIS
+    assert data["created"] == 3                                     # GOOD2 (2 lines: row 5 continues it) and MIS
     assert q(mgr, "SELECT DISTINCT bom_id FROM bom ORDER BY bom_id") == [("GOOD2",), ("MIS",)]
+    assert q(mgr, "SELECT material_description FROM bom WHERE bom_id = 'GOOD2' ORDER BY bom_line") == \
+        [("fine",), ("orphan",)]
+    orphan = post(client, "/import/boms", {"rows": [{"material_description": "first row, no BOM", "qty": 1}]})
+    assert "bom_id is required" in orphan["errors"][0]["error"]   # nothing above to continue
     text = " | ".join(data["warnings"])
     assert "BOM BAD v1.0 was not imported" in text and "differs from qty x unit_price" in text
     qty_default = post(client, "/import/boms", {"rows": [{"bom_id": "Q", "material_description": "label"}]})
@@ -495,8 +499,12 @@ def test_price_import_aliases_percent_and_upsert(env):
     again = post(client, "/import/prices", {"rows": rows[:4]})
     assert (again["created"], again["updated"]) == (0, 4)                                 # same scope -> update
     assert q(mgr, "SELECT COUNT(*) FROM price_list") == [(4,)]
-    appended = post(client, "/import/prices", {"rows": rows[:1], "mode": "append"})
-    assert appended["created"] == 1 and q(mgr, "SELECT COUNT(*) FROM price_list") == [(5,)]
+    # append never stacks a second active rule on a stored rule's scope (it could never apply)
+    appended = post(client, "/import/prices", {"rows": rows[:1] + [
+        {"Product": "RFL-308", "Customer Type": "Dealer", "Price": 1249, "Start": "2028-01"}], "mode": "append"})
+    assert appended["created"] == 1 and [e["row"] for e in appended["errors"]] == [1]
+    assert "already exists" in appended["errors"][0]["error"]
+    assert q(mgr, "SELECT COUNT(*) FROM price_list") == [(5,)]
 
     scenario = post(client, "/import/prices", {"rows": [{"Product": "RFL-308", "Price": 1300}], "forecast_id": F})
     assert scenario["created"] == 1
@@ -523,7 +531,7 @@ def test_deduction_import_friendly_values(env):
         {"Type": "Terms", "Rate": "2%", "Channel": "Dealer", "Description": "2% 10 net 30"},
         {"Type": "chargebacks", "Percent": 1},
         {"Type": "FET", "Rate": "11%"},
-        {"Type": "Excise Tax", "Rate": 0.10, "Product Type": "Pistol"},
+        {"Type": "Excise Tax", "Rate": 10, "Product Type": "Pistol"},           # the column is percents (3, 150)
         {"Type": "excise", "Rate": 0, "Channel": "Government"},
         {"Type": "Commission", "Method": "net", "Rate": 3, "Channel": "Distributor"},
         {"Type": "Co-op", "Method": "per unit", "Amount": "$5.00", "Product": "RFL-308"},
@@ -630,8 +638,9 @@ def test_sales_import_wide_format_dry_run_and_validation(env):
     assert res.json()["message"].startswith("Dry run")
     data = res.json()["data"]
     assert data["dry_run"] is True and data["wide_format"] is True
-    assert data["records"] == 5 and data["imported"] == 5 and data["inserted"] == 4 and data["updated"] == 1
-    assert any("repeats CUST-001 / RFL-308 / 2027-01 from row 1" in w for w in data["warnings"])
+    assert data["records"] == 5 and data["imported"] == 4 and data["inserted"] == 4 and data["updated"] == 0
+    assert any("Rows 1 and 3 (CUST-001 / RFL-308 / 2027-01) combined" in w for w in data["warnings"])
+    assert data["total_quantity"] == 10 + 12 + 5 + 6 + 3
     assert any("Notes" in w for w in data["warnings"])
     assert snapshot(mgr) == before
 

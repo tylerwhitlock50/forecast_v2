@@ -556,6 +556,8 @@ async def compare_forecast_scenarios(
     Every scenario is totalled over the SAME window. When no window is given
     it is the union of the selected scenarios' sales months, so a branch
     that was extended by N periods is still comparable to its source.
+
+    Unknown scenario ids are a 404 naming them (never a row of zeros).
     """
     try:
         from db.database import db_manager
@@ -578,6 +580,12 @@ async def compare_forecast_scenarios(
         cursor = conn.cursor()
         comparison = []
         try:
+            cursor.execute(
+                f"SELECT forecast_id FROM forecast WHERE forecast_id IN ({','.join('?' for _ in ids)})", ids)
+            known = {row[0] for row in cursor.fetchall()}
+            unknown = list(dict.fromkeys(fid for fid in ids if fid not in known))
+            if unknown:
+                raise HTTPException(status_code=404, detail=f"Unknown scenario id(s): {', '.join(unknown)}")
             if start_period and end_period:
                 window = (start_period, end_period)
             else:
@@ -634,6 +642,8 @@ async def compare_forecast_scenarios(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error comparing forecast scenarios: {str(e)}"
@@ -843,6 +853,14 @@ async def bulk_create_products(products_data: Dict[str, Any]):
     message = result.pop("message")
     return ForecastResponse(status="success", data=result, message=message)
 
+class _HeaderProblem(Exception):
+    """No column of a sales file was recognised (smart_import_sales answers with one file-level error)."""
+
+    def __init__(self, error: Dict[str, Any]):
+        super().__init__(error["error"])
+        self.error = error
+
+
 @router.post("/smart_import_sales", response_model=ForecastResponse)
 async def smart_import_sales(sales_data: Dict[str, Any]):
     """
@@ -866,11 +884,18 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
       from the price list, then the product's base_price; still unpriced rows
       are errors unless options.allowZeroPrice (then imported at 0).
       ``price_sources`` counts where each row's price came from.
-    * Customers / products given by name, or by an id that is really a name,
-      resolve to the existing record. Auto-created records take
-      customer_name / customer_type / unit_name / unit_type / base_price from
-      the rows.
-    * Existing rows for the same customer + product + month are updated.
+    * Customers / products given by id (case and surrounding spaces
+      ignored), by name, or by an id that is really a name, resolve to the
+      existing record. Auto-created records take customer_name /
+      customer_type / unit_name / unit_type / base_price from the rows.
+    * A Month column of numbers (1 .. 12) takes the row's Year column (or
+      ``year``). An accounting zero ('-') is a quantity of 0.
+    * Rows of the file for the same customer + product + month (split
+      ship-tos, mixed month spellings) are combined: quantities and revenue
+      add up, price = revenue / quantity, with a warning naming the rows.
+      Existing rows for the same customer + product + month are updated.
+      ``imported`` / ``inserted`` / ``updated`` count the lines written and
+      ``total_quantity`` / ``total_revenue`` equal what was written.
       Quantity decimals are kept. ``dry_run`` reports without writing.
     * ``mode``: ``upsert`` (default) keeps the scenario's other rows;
       ``replace`` also deletes the scenario's rows in the months the file
@@ -880,10 +905,11 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
       all-or-nothing: if any row has an error nothing is written.
     """
     from db.database import db_manager
-    from api.import_routes import SALES_FIELDS, next_sequential_id
+    from api.import_routes import SALES_FIELDS, next_sequential_id, note_or_total_row
+    from api.import_routes import _header_problem, _skipped_rows_warning  # file-level checks shared with /import
     from api.import_routes import _blank, _number, _text  # shared cell parsing ('$1,234.50', NaN, blanks)
     from services.pricing import load_price_rules, resolve_price
-    from utils.period_normalizer import month_from_name, month_in_year, normalize_month, period_kind
+    from utils.period_normalizer import month_from_name, month_in_year, month_number, normalize_month, period_kind
 
     sales = sales_data.get('sales') or sales_data.get('rows') or []
     options = sales_data.get('options') or {}
@@ -914,10 +940,17 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         entries: List[Tuple[int, Dict[str, Any]]] = []
         ignored_columns: List[str] = []
         wide_format = False
+        any_column = False
         blank_rows = 0
         missing_year_rows: List[int] = []
+        note_rows: List[Tuple[int, str]] = []
         for row_no, raw in enumerate(sales, start=1):
+            note = note_or_total_row(raw)
+            if note is not None:                 # a 'Total' line or a footnote, not a customer
+                note_rows.append((row_no, note))
+                continue
             data, extra = SALES_FIELDS.map_row(raw)
+            any_column = any_column or bool(data)
             year = data.get('year', default_year)
             month_columns = []
             for k in extra:
@@ -931,6 +964,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                         continue
                 if month:
                     month_columns.append((k, month))
+                    any_column = True
                 elif k not in ignored_columns:
                     ignored_columns.append(k)
             if row_no in missing_year_rows and _blank(data.get('period')):
@@ -949,6 +983,12 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 continue
             entries.append((row_no, data))
 
+        # A title row read as the header: nothing maps, so say which row looks like the header.
+        if not any_column and not missing_year_rows and any(not _blank(v) for r in sales for v in r.values()):
+            problem = _header_problem(sales, SALES_FIELDS, [], ("customer_id", "unit_id", "period", "quantity"))
+            if problem:
+                raise _HeaderProblem(problem)
+
         # --- 2. Customers and products (match by id, then by name) -----------------
         cursor.execute("SELECT customer_id, customer_name, customer_type FROM customers")
         customers = {r[0]: {"name": r[1], "type": r[2]} for r in cursor.fetchall()}
@@ -962,9 +1002,17 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                     out.setdefault(str(rec["name"]).strip().lower(), []).append(rid)
             return out
 
-        def _resolve(ref_id: Optional[str], ref_name: Optional[str], records, names) -> Optional[str]:
+        def _by_id(records: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
+            out: Dict[str, List[str]] = {}
+            for rid in records:
+                out.setdefault(str(rid).strip().lower(), []).append(rid)
+            return out
+
+        def _resolve(ref_id: Optional[str], ref_name: Optional[str], records, names, ids) -> Optional[str]:
             if ref_id and ref_id in records:
                 return ref_id
+            if ref_id and len(ids.get(ref_id.lower(), [])) == 1:      # 'cust-001' -> CUST-001
+                return ids[ref_id.lower()][0]
             for candidate in (ref_id, ref_name):
                 if candidate and len(names.get(candidate.lower(), [])) == 1:
                     return names[candidate.lower()][0]
@@ -972,18 +1020,20 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
 
         customer_names = _by_name(customers)
         product_names = _by_name(products)
+        customer_ids = _by_id(customers)
+        product_ids = _by_id(products)
         missing_customers: Dict[str, Dict[str, Any]] = {}
         missing_products: Dict[str, Dict[str, Any]] = {}
         for _row_no, data in entries:
             cid, cname = _text(data.get('customer_id')), _text(data.get('customer_name'))
-            if (cid or cname) and not _resolve(cid, cname, customers, customer_names):
-                key = cid or f"~{cname.lower()}"
+            if (cid or cname) and not _resolve(cid, cname, customers, customer_names, customer_ids):
+                key = cid.lower() if cid else f"~{cname.lower()}"
                 entry = missing_customers.setdefault(key, {"id": cid, "name": None, "type": None})
                 entry["name"] = entry["name"] or cname
                 entry["type"] = entry["type"] or _text(data.get('customer_type'))
             uid, uname = _text(data.get('unit_id')), _text(data.get('unit_name'))
-            if (uid or uname) and not _resolve(uid, uname, products, product_names):
-                key = uid or f"~{uname.lower()}"
+            if (uid or uname) and not _resolve(uid, uname, products, product_names, product_ids):
+                key = uid.lower() if uid else f"~{uname.lower()}"
                 entry = missing_products.setdefault(key, {"id": uid, "name": None, "type": None, "base_price": None})
                 entry["name"] = entry["name"] or uname
                 entry["type"] = entry["type"] or _text(data.get('unit_type'))
@@ -1004,6 +1054,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 )
                 customers[new_id] = {"name": info["name"] or new_id, "type": info["type"] or 'Unknown'}
                 customer_names.setdefault((info["name"] or new_id).lower(), []).append(new_id)
+                customer_ids.setdefault(new_id.lower(), []).append(new_id)
                 created_customers.append(new_id)
             for key, info in missing_products.items():
                 new_id = info["id"] or next_sequential_id(cursor, "units", "unit_id", "PROD-", 3)
@@ -1014,9 +1065,10 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 )
                 products[new_id] = {"name": info["name"] or new_id, "base_price": base_price, "type": info["type"]}
                 product_names.setdefault((info["name"] or new_id).lower(), []).append(new_id)
+                product_ids.setdefault(new_id.lower(), []).append(new_id)
                 created_products.append(new_id)
 
-        # --- 3. Import rows -----------------------------------------------------------
+        # --- 3. Validate and price every row; combine repeats of one customer / product / month --------
         price_rules = load_price_rules(cursor, [forecast_id])
         imported_count = inserted = updated = 0
         errors: List[Dict[str, Any]] = [
@@ -1025,7 +1077,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         ]
         warnings: List[str] = []
         price_sources: Dict[str, int] = {}
-        seen: Dict[Tuple[str, str, str], int] = {}
+        planned: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         no_quantity: List[int] = []
         months: List[str] = []
         total_quantity = total_revenue = 0.0
@@ -1046,18 +1098,20 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
             if _blank(raw_period):
                 _fail('Missing period (a month such as 2027-01)')
                 continue
-            customer_id = _resolve(cid, cname, customers, customer_names)
+            customer_id = _resolve(cid, cname, customers, customer_names, customer_ids)
             if not customer_id:
                 _fail(f'Customer {cid or cname} does not exist')
                 continue
-            product_id = _resolve(uid, uname, products, product_names)
+            product_id = _resolve(uid, uname, products, product_names, product_ids)
             if not product_id:
                 _fail(f'Product {uid or uname} does not exist')
                 continue
 
             period = normalize_month(raw_period)
-            if not period and month_from_name(raw_period):
-                period = month_in_year(month_from_name(raw_period), data.get('year', default_year))
+            month = None if period else (month_from_name(raw_period) or month_number(raw_period))
+            if month:
+                # 'Jan' or a Month column of numbers (1 .. 12) with the row's Year column / the request's year.
+                period = month_in_year(month, data.get('year', default_year))
                 if not period:
                     _fail(f"Period '{raw_period}' has no year: add a Year column or send year with the request")
                     continue
@@ -1091,26 +1145,45 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 product = products.get(product_id, {})
                 resolved = resolve_price(
                     price_rules,
-                    {"forecast_id": forecast_id, "unit_id": product_id, "customer_id": customer_id,
-                     "customer_type": customers.get(customer_id, {}).get("type"), "period": period},
+                    {"forecast_id": forecast_id, "unit_id": product_id, "unit_type": product.get("type"),
+                     "customer_id": customer_id, "customer_type": customers.get(customer_id, {}).get("type"),
+                     "period": period},
                     base_price=product.get("base_price"),
                 )
                 if resolved["price"] is not None:
                     price, source = round(float(resolved["price"]), 4), resolved["source"]
                 elif allow_zero:
                     price, source = 0.0, 'zero_price'
+                elif quantity == 0:
+                    price, source = 0.0, None          # a zero (or '-') month needs no price
                 else:
                     _fail(f'No price for {product_id} / {customer_id} in {period}: give unit_price, add a price-list '
                           f'entry or a base price for the product, or import with allowZeroPrice')
                     continue
 
-            total = quantity * price
+            if source:
+                price_sources[source] = price_sources.get(source, 0) + 1
             key = (customer_id, product_id, period)
-            if key in seen:
-                warnings.append(f"Row {row_no} repeats {customer_id} / {product_id} / {period} from row {seen[key]}; "
-                                f"the later row wins")
-            seen[key] = row_no
+            plan = planned.get(key)
+            if plan is None:
+                planned[key] = {"quantity": quantity, "revenue": quantity * price, "price": price, "rows": [row_no]}
+            else:
+                plan["quantity"] += quantity
+                plan["revenue"] += quantity * price
+                plan["price"] = price
+                plan["rows"].append(row_no)
 
+        # --- 4. Write one line per customer / product / month --------------------------------------
+        combined: List[str] = []
+        for (customer_id, product_id, period), plan in planned.items():
+            quantity, total = plan["quantity"], plan["revenue"]
+            price = plan["price"]
+            if len(plan["rows"]) > 1:
+                if quantity:
+                    price = total / quantity          # revenue-weighted, so quantity x price = revenue
+                rows_text = ", ".join(str(r) for r in plan["rows"][:-1]) + f" and {plan['rows'][-1]}"
+                combined.append(f"Rows {rows_text} ({customer_id} / {product_id} / {period}) combined: "
+                                f"{quantity:,.4g} units, {total:,.2f}")
             cursor.execute(
                 "SELECT sale_id FROM sales WHERE customer_id = ? AND unit_id = ? AND period = ? AND forecast_id = ?",
                 (customer_id, product_id, period, forecast_id),
@@ -1131,10 +1204,15 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                 )
                 inserted += 1
             imported_count += 1
-            price_sources[source] = price_sources.get(source, 0) + 1
             months.append(period)
             total_quantity += quantity
             total_revenue += total
+        if combined:
+            shown = "; ".join(combined[:10]) + (f"; and {len(combined) - 10} more" if len(combined) > 10 else "")
+            warnings.append(f"{len(combined)} customer / product / month lines appear on more than one row; their "
+                            f"quantities and revenue were added up into one line each (price = revenue / quantity): "
+                            f"{shown}")
+        seen = set(planned)
 
         deleted = 0
         replace_blocked = False
@@ -1157,6 +1235,7 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
                     cursor.execute(f"DELETE FROM sales WHERE sale_id IN ({','.join('?' for _ in chunk)})", chunk)
                 deleted = len(stale)
 
+        warnings.extend(_skipped_rows_warning(note_rows))
         if no_quantity:
             warnings.append(f"{len(no_quantity)} rows had no quantity and were imported as 0")
         if ignored_columns:
@@ -1164,11 +1243,26 @@ async def smart_import_sales(sales_data: Dict[str, Any]):
         if created_customers:
             warnings.append(f"Created {len(created_customers)} customers; check their customer_type (it drives "
                             f"customer-type prices and deductions)")
+        if created_products:
+            listed = ", ".join(created_products[:10]) + (" ..." if len(created_products) > 10 else "")
+            warnings.append(f"Created {len(created_products)} products ({listed}); they have no BOM or routing yet, "
+                            f"so their COGS is $0 until you import or link them")
 
         if dry_run or replace_blocked:
             conn.rollback()
         else:
             conn.commit()
+    except _HeaderProblem as problem:
+        conn.rollback()
+        return ForecastResponse(
+            status="success",
+            data={'imported': 0, 'inserted': 0, 'updated': 0, 'created_customers': [], 'created_products': [],
+                  'errors': [problem.error], 'warnings': [], 'price_sources': {}, 'dry_run': dry_run, 'mode': mode,
+                  'deleted': 0, 'replace_blocked': mode != 'upsert', 'rows': len(sales), 'records': 0,
+                  'blank_rows': 0, 'wide_format': False, 'start_period': None, 'end_period': None,
+                  'total_quantity': 0, 'total_revenue': 0},
+            message=f"Nothing imported: {problem.error['error']}",
+        )
     except HTTPException:
         conn.rollback()
         raise

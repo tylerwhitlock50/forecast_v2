@@ -204,35 +204,47 @@ def get_data_quality_issues() -> Dict[str, Any]:
     return result
 
 
+def _blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
 def get_incomplete_items() -> Dict[str, Any]:
-    """Get customers and products with missing required fields."""
+    """
+    Customers and products missing a field that changes the numbers, sales
+    rows pointing at missing records, and sales periods that cannot be read.
+
+    Only fields the model uses count as missing (each row lists them in
+    ``missing``):
+
+    * customers: ``customer_type`` (customer-type prices and deduction rules
+      cannot apply without it). The region is optional and not checked.
+    * products: ``unit_name`` and a ``base_price`` above zero (the fallback
+      price when no price-list entry matches). The description is optional
+      and not checked.
+    """
     conn = dbmod.db_manager.get_connection()
     cursor = conn.cursor()
 
     try:
-        # Incomplete customers (missing type or region)
-        cursor.execute("""
-            SELECT customer_id, customer_name, customer_type, region
-            FROM customers
-            WHERE customer_type IS NULL OR customer_type = '' 
-               OR region IS NULL OR region = ''
-        """)
-        incomplete_customers = [
-            dict(zip(["customer_id", "customer_name", "customer_type", "region"], row))
-            for row in cursor.fetchall()
-        ]
+        incomplete_customers = []
+        for row in _rows(cursor, "SELECT customer_id, customer_name, customer_type, region FROM customers "
+                                 "ORDER BY customer_id",
+                         ["customer_id", "customer_name", "customer_type", "region"]):
+            missing = ["customer_type"] if _blank(row["customer_type"]) else []
+            if missing:
+                incomplete_customers.append({**row, "missing": missing})
 
-        # Incomplete products (missing price or description)
-        cursor.execute("""
-            SELECT unit_id, unit_name, base_price, unit_description
-            FROM units
-            WHERE base_price IS NULL OR base_price = 0
-               OR unit_description IS NULL OR unit_description = ''
-        """)
-        incomplete_products = [
-            dict(zip(["unit_id", "unit_name", "base_price", "unit_description"], row))
-            for row in cursor.fetchall()
-        ]
+        incomplete_products = []
+        for row in _rows(cursor, "SELECT unit_id, unit_name, base_price, unit_description FROM units ORDER BY unit_id",
+                         ["unit_id", "unit_name", "base_price", "unit_description"]):
+            missing = []
+            if _blank(row["unit_name"]):
+                missing.append("unit_name")
+            price = row["base_price"]
+            if not isinstance(price, (int, float)) or isinstance(price, bool) or price <= 0:
+                missing.append("base_price")
+            if missing:
+                incomplete_products.append({**row, "missing": missing})
 
         # Orphaned sales (customer or product deleted)
         cursor.execute("""

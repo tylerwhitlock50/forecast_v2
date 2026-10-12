@@ -382,7 +382,7 @@ def test_deduction_maths_precedence_and_pricing(env):
     assert ok(client, "forecast_resolve_price", {"unit_id": "RFL-308", "customer_id": "C-DLR"})["source"] == "base_price"
 
 
-def test_import_guards_templates_and_dry_runs(env):
+def test_import_guards_templates_and_dry_runs(env, monkeypatch):
     client, mgr, data_dir, tmp = env
     templates = ok(client, "forecast_list_import_templates")["templates"]
     assert [t["kind"] for t in templates][:2] == ["customers", "products"]
@@ -401,9 +401,21 @@ def test_import_guards_templates_and_dry_runs(env):
                                             {"table": "customers", "file_path": "../outside.csv"})
     assert "or file_path" in err(client, "forecast_import_records", {"table": "customers"})
     assert "not found" in err(client, "forecast_import_boms", {"file_path": "imports/missing.xlsx"})
-    abs_ok = ok(client, "forecast_import_records", {"table": "customers", "file_path": os.path.join(tmp, "outside.csv"),
-                                                    "dry_run": True})
+    # Absolute / '~' paths outside the data folder only with FORECAST_ALLOW_ABSOLUTE_PATHS=1 (review MCP-6).
+    monkeypatch.delenv("FORECAST_ALLOW_ABSOLUTE_PATHS", raising=False)
+    outside = os.path.join(tmp, "outside.csv")
+    assert "FORECAST_ALLOW_ABSOLUTE_PATHS=1" in err(client, "forecast_import_records",
+                                                    {"table": "customers", "file_path": outside, "dry_run": True})
+    assert "outside the data folder" in err(client, "forecast_preview_file", {"file_path": "/"})
+    assert "home-folder" in err(client, "forecast_preview_file", {"file_path": "~"})
+    inside = os.path.join(data_dir, "inside.csv")
+    with open(inside, "w") as fh:
+        fh.write("customer_name,customer_type\nY,Dealer\n")
+    assert ok(client, "forecast_preview_file", {"file_path": inside})["row_count"] == 1   # absolute, but inside
+    monkeypatch.setenv("FORECAST_ALLOW_ABSOLUTE_PATHS", "1")
+    abs_ok = ok(client, "forecast_import_records", {"table": "customers", "file_path": outside, "dry_run": True})
     assert abs_ok["created"] == 1 and abs_ok["source"]["row_count"] == 1
+    monkeypatch.delenv("FORECAST_ALLOW_ABSOLUTE_PATHS")
     listing = ok(client, "forecast_preview_file", {})
     assert listing["folder"] == os.path.realpath(data_dir)
 
@@ -460,6 +472,8 @@ def test_new_tools_are_registered_with_annotations_and_strict_schemas(env):
     client, _mgr, _data_dir, _tmp = env
     res = client.post("/mcp", headers=HEADERS, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     tools = {t["name"]: t for t in res.json()["result"]["tools"]}
+    # destructiveHint: anything that overwrites or deletes stored data (review MCP-10); idempotentHint: the
+    # same call twice leaves the same state (the upserts match existing rules by scope, review MCP-1).
     expected = {
         "forecast_import_boms": "destructive", "forecast_import_routings": "destructive",
         "forecast_import_records": "upsert", "forecast_import_prices": "destructive",
@@ -468,8 +482,11 @@ def test_new_tools_are_registered_with_annotations_and_strict_schemas(env):
         "forecast_upsert_deduction_rules": "upsert", "forecast_delete_deduction_rule": "destructive",
         "forecast_simulate_deductions": "read", "forecast_deduction_preview": "read", "forecast_list_prices": "read",
         "forecast_upsert_prices": "upsert", "forecast_delete_price": "destructive", "forecast_resolve_price": "read",
-        "forecast_apply_price_list": "write", "forecast_cogs_forecast": "read", "forecast_labor_forecast": "read",
+        "forecast_apply_price_list": "upsert", "forecast_cogs_forecast": "read", "forecast_labor_forecast": "read",
         "forecast_sales_detail": "read", "forecast_export_workbook": "upsert",
+        "forecast_import_sales": "upsert", "forecast_adjust_sales": "destructive",
+        "forecast_adjust_material_costs": "destructive", "forecast_upsert_sales": "destructive",
+        "forecast_create_scenario": "write", "forecast_save_database": "write",
     }
     for name, kind in expected.items():
         tool = tools[name]
@@ -477,7 +494,8 @@ def test_new_tools_are_registered_with_annotations_and_strict_schemas(env):
         assert tool["inputSchema"].get("additionalProperties") is False, name
         assert "outputSchema" not in tool, name
         assert ann["readOnlyHint"] is (kind == "read"), name
-        assert ann["destructiveHint"] is (kind == "destructive"), name
+        assert ann["destructiveHint"] is (kind in ("destructive", "upsert")), name
+        assert ann["idempotentHint"] is (kind in ("read", "upsert")), name
     assert tools["forecast_cogs_forecast"]["inputSchema"]["properties"]["group_by"]["enum"] == [
         "summary", "product", "customer", "customer_type", "product_type", "unit_costs"]
 

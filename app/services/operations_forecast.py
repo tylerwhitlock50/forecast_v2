@@ -16,8 +16,10 @@ overhead, so it ties to the income statement.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from services.financial_statements import (
     require_known_scenarios,
@@ -25,6 +27,7 @@ from services.financial_statements import (
     load_sales_lines,
     payroll_by_period,
     period_range,
+    validate_period,
 )
 
 DEFAULT_HOURS_PER_FTE = round(40 * 52 / 12, 2)  # 173.33 paid hours per month
@@ -375,41 +378,193 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
     }
 
 
-def sales_detail_rows(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str) -> List[Dict[str, Any]]:
-    """Flat, export-ready sales lines (no nested dicts) for the window."""
+# ---------------------------------------------------------------------------
+# Sales detail (one flat row per sales line, for the table and the export)
+# ---------------------------------------------------------------------------
+
+#: Money columns of a sales detail row. Each is a cent amount on every row.
+DETAIL_MONEY_COLUMNS = (
+    "gross_sales", "terms_allowance", "chargebacks", "other_allowances", "excise_tax", "total_sales_deductions",
+    "net_sales", "commissions", "materials", "labor", "machine", "product_cogs", "contribution_margin",
+)
+#: Columns that are not meaningful to add up across rows.
+DETAIL_NOT_SUMMED = frozenset({"unit_price"})
+#: Filters sales_detail_report accepts.
+DETAIL_FILTERS = ("period", "customer_id", "customer_type", "unit_id", "unit_type")
+#: Decimals kept on a row's unit price (a 40%-off-list price of 23.994 stays 23.994).
+PRICE_DECIMALS = 4
+
+_CENT = Decimal("0.01")
+
+
+def _cents(value: Any) -> float:
+    """Round a money amount to the cent (decimal half-even, so exact half cents do not drift the totals up)."""
+    number = float(value or 0)
+    if not math.isfinite(number):
+        return 0.0
+    return float(Decimal(repr(number)).quantize(_CENT, rounding=ROUND_HALF_EVEN)) + 0.0
+
+
+def _detail_row(line: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    One flat sales detail row whose money columns are cent amounts that
+    cross-foot: quantity x unit price = gross sales (unit price kept to 4
+    decimals), the deduction columns add up to total sales deductions,
+    gross - deductions = net sales, materials + labor + machine = product
+    COGS and net sales - product COGS = contribution margin.
+    """
+    gross = _cents(line["gross_sales"])
+    terms = _cents(line["terms_allowance"])
+    chargebacks = _cents(line["chargebacks"])
+    other = _cents(line["other_allowance"])
+    excise = _cents(line["excise_tax"])
+    deductions = round(terms + chargebacks + other + excise, 2)
+    net = round(gross - deductions, 2)
+    materials = _cents(line["materials"])
+    labor = _cents(line["labor"])
+    machine = _cents(line["machine"])
+    cogs = round(materials + labor + machine, 2)
+    return {
+        "period": line["period"],
+        "forecast_id": line["forecast_id"],
+        "sale_id": line["sale_id"],
+        "customer_id": line["customer_id"],
+        "customer_name": line["customer_name"],
+        "customer_type": line["customer_type"],
+        "unit_id": line["unit_id"],
+        "unit_name": line["unit_name"],
+        "unit_type": line["unit_type"],
+        "quantity": round(float(line["quantity"] or 0), 4),
+        "unit_price": round(float(line["unit_price"] or 0), PRICE_DECIMALS),
+        "gross_sales": gross,
+        "terms_allowance": terms,
+        "chargebacks": chargebacks,
+        "other_allowances": other,
+        "excise_tax": excise,
+        "total_sales_deductions": deductions,
+        "net_sales": net,
+        "commissions": _cents(line["commission"]),
+        "materials": materials,
+        "labor": labor,
+        "machine": machine,
+        "product_cogs": cogs,
+        "contribution_margin": round(net - cogs, 2),
+        "labor_hours": round(line["labor_minutes"] / 60.0, 4),
+        "machine_hours": round(line["machine_minutes"] / 60.0, 4),
+        "rules_applied": ", ".join(f"{k}={v}" for k, v in sorted(line["applied_rules"].items())),
+    }
+
+
+def _unrounded_values(line: Dict[str, Any]) -> Dict[str, float]:
+    """The engine's unrounded amounts of a line, under the sales detail keys."""
+    return {
+        "quantity": float(line["quantity"] or 0),
+        "gross_sales": line["gross_sales"],
+        "terms_allowance": line["terms_allowance"],
+        "chargebacks": line["chargebacks"],
+        "other_allowances": line["other_allowance"],
+        "excise_tax": line["excise_tax"],
+        "total_sales_deductions": line["total_sales_deductions"],
+        "net_sales": line["net_sales"],
+        "commissions": line["commission"],
+        "materials": line["materials"],
+        "labor": line["labor"],
+        "machine": line["machine"],
+        "product_cogs": line["product_cogs"],
+        "contribution_margin": line["contribution_margin"],
+        "labor_hours": line["labor_minutes"] / 60.0,
+        "machine_hours": line["machine_minutes"] / 60.0,
+    }
+
+
+def _finish_sums(sums: Dict[str, float]) -> Dict[str, float]:
+    """Money to the cent; quantities and hours to 4 decimals."""
+    return {k: (round(v, 2) if k in DETAIL_MONEY_COLUMNS else round(v, 4)) + 0.0 for k, v in sums.items()}
+
+
+def detail_totals(rows: Iterable[Dict[str, Any]]) -> Dict[str, float]:
+    """
+    Column totals of sales detail rows as they are shown (every numeric
+    column except the unit price): money to the cent, quantities and hours
+    to 4 decimals. They equal a SUM of the column in Excel.
+    """
+    sums: Dict[str, float] = {}
+    for row in rows:
+        for key, value in row.items():
+            if key in DETAIL_NOT_SUMMED or isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            sums[key] = sums.get(key, 0.0) + float(value)
+    return _finish_sums(sums)
+
+
+def _matches(line: Dict[str, Any], filters: Dict[str, str]) -> bool:
+    for key, wanted in filters.items():
+        value = line.get(key)
+        if key in ("customer_type", "unit_type"):
+            if str(value or "").strip().lower() != wanted.strip().lower():
+                return False
+        elif str(value or "").strip() != wanted.strip():
+            return False
+    return True
+
+
+def sales_detail_report(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str,
+                        filters: Optional[Dict[str, Optional[str]]] = None) -> Dict[str, Any]:
+    """
+    The window's sales lines as flat, export-ready rows plus three sets of
+    totals:
+
+    * ``rows``: one row per sales line (see ``_detail_row``); money columns
+      are cent amounts that cross-foot on the row, the unit price keeps 4
+      decimals.
+    * ``totals``: the sums of the rows as shown, so they equal a SUM of the
+      column in Excel.
+    * ``report_totals``: the sums of the engine's unrounded lines, rounded
+      once. Without filters they equal the income statement and the COGS
+      forecast for the window to the cent.
+    * ``rounding``: ``report_totals - totals`` per column: what rounding
+      every line to the cent moved the column total (usually a few cents).
+
+    ``filters`` (optional, all must match): ``period`` (a YYYY-MM month in
+    the window), ``customer_id``, ``unit_id`` (exact), ``customer_type``,
+    ``unit_type`` (case-insensitive). Raises ValueError for a bad window or
+    period, an unknown scenario or an unknown filter.
+    """
     periods = period_range(start_period, end_period)
     forecast_ids = [f for f in forecast_ids if f]
     require_known_scenarios(cursor, forecast_ids)
+    active = {k: str(v) for k, v in (filters or {}).items() if v is not None and str(v).strip()}
+    unknown = sorted(set(active) - set(DETAIL_FILTERS))
+    if unknown:
+        raise ValueError(f"Unknown sales detail filter(s): {', '.join(unknown)}")
+    if "period" in active:
+        active["period"] = validate_period(active["period"].strip())
+        if active["period"] not in periods:
+            raise ValueError(f"period {active['period']} is outside the window {periods[0]} to {periods[-1]}")
     loaded = load_sales_lines(cursor, forecast_ids, periods)
-    out = []
+
+    rows: List[Dict[str, Any]] = []
+    unrounded: Dict[str, float] = {}
     for line in loaded["lines"]:
-        out.append(_round({
-            "period": line["period"],
-            "forecast_id": line["forecast_id"],
-            "sale_id": line["sale_id"],
-            "customer_id": line["customer_id"],
-            "customer_name": line["customer_name"],
-            "customer_type": line["customer_type"],
-            "unit_id": line["unit_id"],
-            "unit_name": line["unit_name"],
-            "unit_type": line["unit_type"],
-            "quantity": line["quantity"],
-            "unit_price": line["unit_price"],
-            "gross_sales": line["gross_sales"],
-            "terms_allowance": line["terms_allowance"],
-            "chargebacks": line["chargebacks"],
-            "other_allowances": line["other_allowance"],
-            "excise_tax": line["excise_tax"],
-            "total_sales_deductions": line["total_sales_deductions"],
-            "net_sales": line["net_sales"],
-            "commissions": line["commission"],
-            "materials": line["materials"],
-            "labor": line["labor"],
-            "machine": line["machine"],
-            "product_cogs": line["product_cogs"],
-            "contribution_margin": line["contribution_margin"],
-            "labor_hours": line["labor_minutes"] / 60.0,
-            "machine_hours": line["machine_minutes"] / 60.0,
-            "rules_applied": ", ".join(f"{k}={v}" for k, v in sorted(line["applied_rules"].items())),
-        }))
-    return out
+        if active and not _matches(line, active):
+            continue
+        rows.append(_detail_row(line))
+        for key, value in _unrounded_values(line).items():
+            unrounded[key] = unrounded.get(key, 0.0) + float(value or 0)
+
+    totals = detail_totals(rows)
+    report_totals = _finish_sums(unrounded) if rows else {}
+    rounding = {k: round(report_totals[k] - totals.get(k, 0.0), 2) + 0.0
+                for k in DETAIL_MONEY_COLUMNS if k in report_totals}
+    return {
+        "rows": rows,
+        "filters": active,
+        "totals": totals,
+        "report_totals": report_totals,
+        "rounding": rounding,
+    }
+
+
+def sales_detail_rows(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str) -> List[Dict[str, Any]]:
+    """Flat, export-ready sales lines (no nested dicts) for the window; see sales_detail_report."""
+    return sales_detail_report(cursor, forecast_ids, start_period, end_period)["rows"]

@@ -611,7 +611,8 @@ class DatabaseManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_deduction_rules_forecast ON sales_deduction_rules (forecast_id)')
 
         # Customer / customer-type price list: a fixed price or a discount off
-        # the product's base_price. unit_id NULL = every product.
+        # the product's base_price. unit_id NULL = every product; unit_type
+        # (product type) narrows it, e.g. Distributor 40% off Accessory.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS price_list (
                 price_id TEXT PRIMARY KEY,
@@ -619,6 +620,7 @@ class DatabaseManager:
                 unit_id TEXT,
                 customer_id TEXT,
                 customer_type TEXT,
+                unit_type TEXT,
                 method TEXT NOT NULL DEFAULT 'fixed' CHECK (method IN ('fixed', 'discount_from_base')),
                 unit_price REAL,
                 discount_pct REAL,
@@ -653,6 +655,26 @@ class DatabaseManager:
             conn.commit()
         except Exception as e:
             print(f"Error migrating financial_assumptions table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
+    def migrate_price_list_table(self):
+        """Add the unit_type (product type) scope to price_list if missing (idempotent)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(price_list)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if columns and 'unit_type' not in columns:
+                try:
+                    cursor.execute("ALTER TABLE price_list ADD COLUMN unit_type TEXT")
+                except sqlite3.OperationalError as alter_err:
+                    if 'duplicate column name' not in str(alter_err).lower():
+                        raise
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating price_list table: {e}")
             conn.rollback()
         finally:
             self.close_connection(conn)
@@ -1375,6 +1397,7 @@ class DatabaseManager:
         self.migrate_forecast_table()          # also ensures a base scenario
         self.migrate_payroll_config_table()
         self.migrate_financial_assumptions_table()
+        self.migrate_price_list_table()
         self.ensure_base_scenario()
 
     def _has_seed_data(self) -> bool:

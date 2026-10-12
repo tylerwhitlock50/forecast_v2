@@ -40,12 +40,11 @@ from services.operations_forecast import (
     DEFAULT_HOURS_PER_FTE,
     build_cogs_forecast,
     build_labor_forecast,
-    sales_detail_rows,
+    sales_detail_report,
 )
 from services.workbook_export import (
     XLSX_MEDIA_TYPE,
     sales_detail_columns,
-    sales_detail_totals,
     statement_lines,
     workbook_bytes,
     workbook_filename,
@@ -68,6 +67,14 @@ def _parse_forecast_ids(forecast_ids: List[str]) -> List[str]:
 def _check_window(start_period: str, end_period: str) -> None:
     try:
         period_range(start_period, end_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _check_period(period: str) -> str:
+    """A YYYY-MM period filter, or 422 ('Jan 2027', '2027-1' and '2027-Q1' are not months)."""
+    try:
+        return validate_period(str(period).strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -244,15 +251,35 @@ async def get_sales_detail(
     end_period: str = Query(..., description="End period (YYYY-MM)"),
     limit: int = Query(1000, ge=1, le=20000, description="Rows to return (max 20000)"),
     offset: int = Query(0, ge=0, description="Rows to skip"),
+    period: Optional[str] = Query(None, description="Only this month (YYYY-MM, inside the window)"),
+    customer_id: Optional[str] = Query(None, description="Only this customer"),
+    customer_type: Optional[str] = Query(None, description="Only this customer type (case-insensitive)"),
+    unit_id: Optional[str] = Query(None, description="Only this product"),
+    unit_type: Optional[str] = Query(None, description="Only this product type (case-insensitive)"),
 ):
     """
     Every sales line in the window with its deductions, net sales, product
     COGS, contribution margin, labor / machine hours and the deduction rules
-    applied. `totals` cover all rows in the window, not just the page.
+    applied, optionally filtered (``period`` must be a YYYY-MM month inside
+    the window, else 422).
+
+    Every money amount of a row is rounded to the cent and the row
+    cross-foots (unit_price keeps 4 decimals, so quantity x unit_price =
+    gross_sales). Totals cover every matching row, not just the page:
+
+    * ``totals``: sums of the rows as shown (= SUM of the column in Excel);
+    * ``report_totals``: sums of the unrounded lines; without filters they
+      equal the income statement and the COGS forecast for the window;
+    * ``rounding``: ``report_totals - totals`` (per-line cent rounding).
     """
     ids = _parse_forecast_ids(forecast_ids)
     _check_window(start_period, end_period)
-    rows = await _build_report("sales detail", sales_detail_rows, ids, start_period, end_period)
+    filters = {"period": period, "customer_id": customer_id, "customer_type": customer_type,
+               "unit_id": unit_id, "unit_type": unit_type}
+    if period is not None and period.strip():
+        filters["period"] = _check_period(period)
+    report = await _build_report("sales detail", sales_detail_report, ids, start_period, end_period, filters=filters)
+    rows = report["rows"]
     page = rows[offset:offset + limit]
     data = {
         "forecast_ids": ids,
@@ -263,10 +290,14 @@ async def get_sales_detail(
         "limit": limit,
         "returned": len(page),
         "has_more": offset + len(page) < len(rows),
-        "totals": sales_detail_totals(rows),
+        "totals": report["totals"],
+        "report_totals": report["report_totals"],
+        "rounding": report["rounding"],
         "columns": [{"key": k, "label": label} for k, label, _kind in sales_detail_columns(rows)],
         "rows": page,
     }
+    if report["filters"]:
+        data["filters"] = report["filters"]
     return ForecastResponse(
         status="success",
         data=data,
@@ -453,7 +484,7 @@ async def delete_actuals(
     if actual_id:
         clauses.append("actual_id = ?"); params.append(actual_id)
     if period:
-        clauses.append("period = ?"); params.append(validate_period(period))
+        clauses.append("period = ?"); params.append(_check_period(period))
     if line_item:
         clauses.append("line_item = ?"); params.append(line_item)
     conn = db_manager.get_connection()

@@ -187,7 +187,7 @@ def test_autosaves_and_backups_get_unique_names(env):
     assert listing["latest"]["filename"] in names
 
 
-def test_revert_to_last_save_uses_the_newest_snapshot_of_any_kind(env):
+def test_revert_to_last_save_uses_the_newest_named_save_or_autosave(env):
     client, mgr, _ = env
     assert client.post("/database/revert-to-last-save").status_code == 404   # nothing saved yet
 
@@ -212,9 +212,17 @@ def test_revert_to_last_save_uses_the_newest_snapshot_of_any_kind(env):
     res = client.post("/database/revert-to-last-save")
     assert res.json()["data"]["reverted_from"] == "named-later.db"
     assert api_price(client) == 90
-    # The revert itself saved a pre_revert backup (newest), so it can be undone.
+    # The revert saved the replaced state as a pre_revert backup (newest), but
+    # a second revert skips system backups and restores the same save again.
+    backup = res.json()["data"]["backup_created"]
+    assert backup.startswith("pre_revert_backup_")
+    set_price(mgr.database_path, 20)
     res = client.post("/database/revert-to-last-save")
-    assert res.json()["data"]["reverted_from"].startswith("pre_revert_backup_")
+    assert res.json()["data"]["reverted_from"] == "named-later.db"
+    assert api_price(client) == 90
+    # Undoing a revert is an explicit load of its backup.
+    res = client.post("/database/load", json={"filename": backup})
+    assert res.status_code == 200, res.text
     assert api_price(client) == 10
 
 

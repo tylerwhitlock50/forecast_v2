@@ -22,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 import db.database as dbmod
+from utils.period_normalizer import normalize_month
 from mcp_server.core import READ, UPSERT, call
 from mcp_server.tools._common import (
     cap, clean_ids, compact_warnings, drop_empty, no_sales_hint, out, register, scenario_window, table,
@@ -227,7 +228,7 @@ async def sales_detail(
     customer_id: Annotated[Optional[str], Field(description="Only this customer")] = None,
     customer_type: Annotated[Optional[str], Field(description="Only this customer type")] = None,
     unit_id: Annotated[Optional[str], Field(description="Only this product")] = None,
-    period: Annotated[Optional[str], Field(description="Only this month (YYYY-MM)")] = None,
+    period: Annotated[Optional[str], Field(description="Only this month (YYYY-MM; Jan-27 / 1/2027 also accepted)")] = None,
     limit: Annotated[int, Field(description="Rows per page", ge=1, le=2000)] = 50,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> str:
@@ -237,6 +238,11 @@ async def sales_detail(
     hours. Paged table; totals cover all matching rows. For totals by
     month / product / customer use forecast_cogs_forecast instead."""
     ids = clean_ids(forecast_ids, "forecast_ids")
+    if period is not None and str(period).strip():
+        month = normalize_month(period)
+        if not month:
+            raise ToolError(f"period '{period}' is not a month; use YYYY-MM, e.g. 2027-01")
+        period = month
     start, end, sales_window = await scenario_window(ids, start_period, end_period)
     filters = {"customer_id": customer_id, "customer_type": customer_type, "unit_id": unit_id, "period": period}
     active = {k: v for k, v in filters.items() if v}

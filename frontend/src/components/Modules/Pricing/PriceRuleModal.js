@@ -13,15 +13,17 @@ import {
 import { errorMessage } from '../DataImport/importSteps';
 
 const whoFor = (form) => (form.customer_id ? 'customer' : form.customer_type ? 'type' : 'all');
+const whatFor = (form) => (form.unit_id ? 'product' : form.unit_type ? 'type' : form.method === 'fixed' ? 'product' : 'all');
 
 /**
- * Add or edit one price-list entry: a fixed price for a product, or a
- * discount off list price for one product or all products, for everyone, a
- * customer type or one customer.
+ * Add or edit one price-list entry: a fixed price for a product or a product
+ * type, or a discount off list price for one product, a product type or all
+ * products, for everyone, a customer type or one customer.
  */
-const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, products, customerTypes, scenario }) => {
+const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, products, customerTypes, productTypes = [], scenario }) => {
   const [form, setForm] = useState(emptyPriceForm());
   const [who, setWho] = useState('all');
+  const [what, setWhat] = useState('product');
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState(null);
@@ -31,6 +33,7 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
     const next = rule ? priceToForm(rule) : emptyPriceForm(defaults || {});
     setForm(next);
     setWho(whoFor(next));
+    setWhat(whatFor(next));
     setErrors({});
     setServerError(null);
     setSaving(false);
@@ -39,9 +42,27 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
   if (!open) return null;
 
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
-  const product = products.find((p) => p.unit_id === form.unit_id);
+  const product = what === 'product' ? products.find((p) => p.unit_id === form.unit_id) : null;
+  const typeProducts = what === 'type' && form.unit_type
+    ? products.filter((p) => String(p.unit_type || '').trim().toLowerCase() === form.unit_type.trim().toLowerCase())
+    : [];
   const base = Number(product?.base_price) || 0;
   const discount = percentToFraction(form.discountPct);
+
+  const chooseMethod = (value) => {
+    set('method', value);
+    // a fixed price needs a product or a product type
+    if (value === 'fixed' && what === 'all') setWhat('product');
+  };
+
+  const chooseWhat = (value) => {
+    setWhat(value);
+    setForm((prev) => ({
+      ...prev,
+      unit_id: value === 'product' ? prev.unit_id : '',
+      unit_type: value === 'type' ? (prev.unit_type || productTypes[0] || '') : '',
+    }));
+  };
 
   const chooseWho = (value) => {
     setWho(value);
@@ -55,6 +76,8 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
   const submit = async (event) => {
     event.preventDefault();
     const found = validatePriceForm(form);
+    if (what === 'product' && !form.unit_id) found.unit_id = form.method === 'fixed' ? 'Choose a product.' : 'Choose a product, or pick “All products”.';
+    if (what === 'type' && !form.unit_type) found.unit_type = 'Choose a product type.';
     if (who === 'type' && !form.customer_type) found.customer_type = 'Choose a customer type.';
     if (who === 'customer' && !form.customer_id) found.customer_id = 'Choose a customer.';
     setErrors(found);
@@ -82,23 +105,51 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
         <ModalContent className="space-y-5">
           <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Price type">
             {[
-              { value: 'fixed', label: 'Fixed price', help: 'A set price per unit for one product.' },
-              { value: 'discount_from_base', label: 'Discount off list price', help: 'A % off the product list price; can cover all products.' },
+              { value: 'fixed', label: 'Fixed price', help: 'A set price per unit for one product or every product of a type.' },
+              { value: 'discount_from_base', label: 'Discount off list price', help: 'A % off each product’s list price; can cover a product type or all products.' },
             ].map((m) => (
               <label key={m.value} className={`cursor-pointer rounded-md border p-3 text-sm ${form.method === m.value ? 'border-orange-500 bg-orange-50 ring-1 ring-orange-500' : 'border-gray-200 hover:border-gray-300'}`}>
-                <input type="radio" name="price-method" value={m.value} checked={form.method === m.value} onChange={() => set('method', m.value)} className="sr-only" />
+                <input type="radio" name="price-method" value={m.value} checked={form.method === m.value} onChange={() => chooseMethod(m.value)} className="sr-only" />
                 <div className="font-medium text-gray-900">{m.label}</div>
                 <div className="mt-0.5 text-xs text-gray-600">{m.help}</div>
               </label>
             ))}
           </div>
 
-          <Field label="Product" htmlFor="price-product" error={errors.unit_id} help={product ? `List price ${base ? formatMoney(base) : 'not set'}` : null}>
-            <select id="price-product" className={selectClass} value={form.unit_id} onChange={(e) => set('unit_id', e.target.value)}>
-              {form.method === 'fixed' ? <option value="">Choose a product…</option> : <option value="">All products</option>}
-              {products.map((p) => <option key={p.unit_id} value={p.unit_id}>{p.unit_name || p.unit_id} ({p.unit_id})</option>)}
-            </select>
-          </Field>
+          <div>
+            <div className="mb-1.5 text-sm font-medium text-gray-800">Which products</div>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Which products">
+              {[
+                { value: 'product', label: 'One product' },
+                { value: 'type', label: 'A product type' },
+                { value: 'all', label: 'All products', disabled: form.method === 'fixed' },
+              ].map((o) => (
+                <label key={o.value} title={o.disabled ? 'A fixed price is for one product or a product type' : ''} className={`rounded-md border px-3 py-1.5 text-sm ${o.disabled ? 'cursor-not-allowed border-gray-100 text-gray-300' : 'cursor-pointer'} ${what === o.value ? 'border-orange-500 bg-orange-50 text-orange-900' : o.disabled ? '' : 'border-gray-200 text-gray-700 hover:border-gray-300'}`}>
+                  <input type="radio" name="price-what" value={o.value} checked={what === o.value} disabled={o.disabled} onChange={() => chooseWhat(o.value)} className="sr-only" />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            {what === 'product' && (
+              <Field className="mt-2" htmlFor="price-product" error={errors.unit_id} help={product ? `List price ${base ? formatMoney(base) : 'not set'}` : null}>
+                <select id="price-product" aria-label="Product" className={selectClass} value={form.unit_id} onChange={(e) => set('unit_id', e.target.value)}>
+                  <option value="">Choose a product…</option>
+                  {products.map((p) => <option key={p.unit_id} value={p.unit_id}>{p.unit_name || p.unit_id} ({p.unit_id})</option>)}
+                </select>
+              </Field>
+            )}
+            {what === 'type' && (
+              <Field className="mt-2" htmlFor="price-ptype" error={errors.unit_type}
+                help={form.unit_type ? `${typeProducts.length} product${typeProducts.length === 1 ? '' : 's'} of this type. A price set for one product beats this.` : null}>
+                <select id="price-ptype" aria-label="Product type" className={selectClass} value={form.unit_type} onChange={(e) => set('unit_type', e.target.value)}>
+                  <option value="">Choose a product type…</option>
+                  {productTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                  {form.unit_type && !productTypes.includes(form.unit_type) && <option value={form.unit_type}>{form.unit_type}</option>}
+                </select>
+              </Field>
+            )}
+            {what === 'all' && <p className="mt-2 text-xs text-gray-500">Every product. A price for a product type or one product beats this.</p>}
+          </div>
 
           <div>
             <div className="mb-1.5 text-sm font-medium text-gray-800">Who pays this price</div>
@@ -143,7 +194,10 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
             </Field>
           ) : (
             <Field label="Discount off list price" htmlFor="price-discount" error={errors.discountPct}
-              help={discount !== null && base ? `${product?.unit_name || 'This product'}: ${formatMoney(base)} → ${formatMoney(base * (1 - discount))}` : 'Products without a list price are skipped by this rule.'}>
+              help={discount !== null && base ? `${product?.unit_name || 'This product'}: ${formatMoney(base)} → ${formatMoney(base * (1 - discount))}`
+                : discount !== null && typeProducts.length && Number(typeProducts[0].base_price) > 0
+                  ? `For example ${typeProducts[0].unit_name || typeProducts[0].unit_id}: ${formatMoney(typeProducts[0].base_price)} → ${formatMoney(Number(typeProducts[0].base_price) * (1 - discount))}`
+                  : 'Products without a list price are skipped by this rule.'}>
               <div className="relative">
                 <input id="price-discount" type="number" step="0.01" min="0" max="99.99" className={`${inputClass} pr-7 text-right tabular-nums`} value={form.discountPct} onChange={(e) => set('discountPct', e.target.value)} placeholder="40" />
                 <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-sm text-gray-400">%</span>

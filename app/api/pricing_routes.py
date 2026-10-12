@@ -34,11 +34,17 @@ from services.pricing import (
     DEDUCTION_METHODS,
     DEDUCTION_TYPES,
     PRICE_METHODS,
+    STACKING_TYPES,
     DeductionResolver,
     compute_row_deductions,
+    deduction_rule_key,
+    default_rule_name,
     deduction_specificity,
     load_deduction_rules,
     load_price_rules,
+    precedence_key,
+    program_name,
+    price_rule_key,
     price_source,
     price_specificity,
     resolve_price,
@@ -59,7 +65,7 @@ DEDUCTION_FIELDS: Tuple[str, ...] = (
     "is_active", "notes",
 )
 PRICE_FIELDS: Tuple[str, ...] = (
-    "forecast_id", "unit_id", "customer_id", "customer_type", "method", "unit_price", "discount_pct",
+    "forecast_id", "unit_id", "customer_id", "customer_type", "unit_type", "method", "unit_price", "discount_pct",
     "start_period", "end_period", "is_active", "notes",
 )
 #: Keys a client may round-trip from a listing; ignored on write without a warning.
@@ -71,21 +77,41 @@ _READ_ONLY_KEYS = {
 
 PRICE_SOURCE_LABELS: Dict[str, str] = {
     "customer_product": "Customer price for this product",
+    "customer_product_type": "Customer price for this product type",
     "customer_all": "Customer discount on every product",
     "type_product": "Customer-type price for this product",
+    "type_product_type": "Customer-type price for this product type",
     "type_all": "Customer-type discount on every product",
     "product": "Price for every customer",
+    "product_type": "Price for this product type, every customer",
     "all": "Discount for every customer and product",
     "base_price": "Product base (list) price",
     "none": "No price found",
 }
 
+TIE_BREAK_TEXT = (
+    "Ties go to the scenario-specific rule, then the later start_period, then the earlier end_period "
+    "(a bounded window beats an open-ended one), then the newer rule, then the higher id."
+)
+
 PRECEDENCE_TEXT = (
-    "Exactly one rule per deduction type applies to a sales row: the most specific matching rule "
-    "(customer > customer type > product > product type; score 8/4/2/1). Ties go to the scenario-specific "
-    "rule, then the later start_period. A rule with rate 0 is an exemption. Different deduction types stack. "
-    "Contra-revenue deductions are taken off gross sales to give net sales; commissions are a selling "
-    "expense below gross profit."
+    "Terms allowance, chargebacks, excise tax and commission: exactly one rule per type applies to a sales "
+    "row, the most specific matching rule (customer > customer type > product > product type; score 8/4/2/1). "
+    "Other allowances are separate programs named by the rule name (e.g. 'Co-op advertising', 'Freight "
+    "allowance'): every matching program applies and they add up; within one program name the most specific "
+    "rule wins, so a customer's 'Co-op advertising' rule replaces the customer-type 'Co-op advertising' rule. "
+    "A rule with no name is a program of its own. " + TIE_BREAK_TEXT + " A rule with rate 0 is an exemption. "
+    "Different deduction types stack. Contra-revenue deductions are taken off gross sales to give net sales; "
+    "commissions are a selling expense below gross profit. A second active rule with the same type, scope, "
+    "months (and, for other allowances, program name) is refused with HTTP 409: update the existing rule."
+)
+
+PRICE_PRECEDENCE_TEXT = (
+    "The most specific matching price wins: customer > customer type > product > product type (score "
+    "8/4/2/1), so customer+product > customer+product type > customer > customer type+product > customer "
+    "type+product type > customer type > product > product type > every product, then the product's base "
+    "(list) price. A discount_from_base rule cannot price a product without a base price and falls through. "
+    + TIE_BREAK_TEXT
 )
 
 
@@ -309,17 +335,7 @@ def _deduction_method(value: Any, dtype: str, friendly: bool) -> str:
 
 
 def _default_rule_name(clean: Dict[str, Any]) -> str:
-    label = DEDUCTION_TYPES[clean["deduction_type"]]["label"]
-    if clean["method"] == "per_unit":
-        amount = f"${clean['amount_per_unit']:,.2f}/unit"
-    else:
-        amount = f"{clean['rate'] * 100:g}%"
-        if clean["method"] == "embedded_tax":
-            amount += " embedded"
-        elif clean["method"] == "percent_of_net":
-            amount += " of net"
-    scope = [clean.get(k) for k in ("customer_id", "customer_type", "unit_id", "unit_type") if clean.get(k)]
-    return f"{label} {amount}" + (f" ({', '.join(scope)})" if scope else "")
+    return default_rule_name(clean) or DEDUCTION_TYPES[clean["deduction_type"]]["label"]
 
 
 def clean_deduction_rule(cursor, data: Dict[str, Any], *, percent_input: bool = False,
@@ -393,12 +409,13 @@ def clean_price_rule(cursor, data: Dict[str, Any], *, percent_input: bool = Fals
     """
     Validate and normalise one price-list rule.
 
-    ``fixed`` needs unit_id and unit_price >= 0; ``discount_from_base`` needs
-    0 <= discount_pct < 1 and may leave unit_id empty (every product). When
-    method is omitted it is inferred: a discount without a price means
-    discount_from_base. Returns ``(values, warnings)``; raises
-    RuleValidationError when invalid. ``percent_input`` (imports only)
-    accepts '40%' / 40 for discount_pct.
+    ``fixed`` needs unit_price >= 0 and a product (unit_id) or a product
+    type (unit_type: one price for every product of that type);
+    ``discount_from_base`` needs 0 <= discount_pct < 1 and may leave both
+    empty (every product). When method is omitted it is inferred: a
+    discount without a price means discount_from_base. Returns
+    ``(values, warnings)``; raises RuleValidationError when invalid.
+    ``percent_input`` (imports only) accepts '40%' / 40 for discount_pct.
     """
     warnings: List[str] = []
     clean: Dict[str, Any] = {}
@@ -417,15 +434,16 @@ def clean_price_rule(cursor, data: Dict[str, Any], *, percent_input: bool = Fals
     clean["method"] = method
 
     clean["unit_id"] = _text(data.get("unit_id"))
+    clean["unit_type"] = _text(data.get("unit_type"))
     if method == "fixed":
         if unit_price is None:
             raise RuleValidationError("a fixed price needs unit_price (>= 0)")
         if unit_price < 0:
             raise RuleValidationError("unit_price cannot be negative")
-        if not clean["unit_id"]:
+        if not clean["unit_id"] and not clean["unit_type"]:
             raise RuleValidationError(
-                "unit_id is required for a fixed price; to price every product use method "
-                "discount_from_base with discount_pct"
+                "unit_id is required for a fixed price (or unit_type for one price on every product of a "
+                "type); to price every product use method discount_from_base with discount_pct"
             )
         clean["unit_price"] = unit_price
         clean["discount_pct"] = None
@@ -458,6 +476,14 @@ def clean_price_rule(cursor, data: Dict[str, Any], *, percent_input: bool = Fals
     clean["notes"] = _text(data.get("notes"))
 
     warnings.extend(_scope_warnings(cursor, clean, label))
+    if clean["unit_id"] and clean["unit_type"]:
+        cursor.execute("SELECT unit_type FROM units WHERE unit_id = ?", (clean["unit_id"],))
+        row = cursor.fetchone()
+        if row is not None and (_text(row[0]) or "").lower() != clean["unit_type"].lower():
+            warnings.append(
+                f"{label}: product '{clean['unit_id']}' has product type '{_text(row[0]) or 'none'}', not "
+                f"'{clean['unit_type']}', so this rule matches no sales; leave unit_type empty for a product price"
+            )
     if method == "discount_from_base" and clean["unit_id"]:
         cursor.execute("SELECT base_price FROM units WHERE unit_id = ?", (clean["unit_id"],))
         row = cursor.fetchone()
@@ -525,6 +551,94 @@ def get_price_rule(cursor, price_id: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Duplicate scopes (shared with api.import_routes)
+# ---------------------------------------------------------------------------
+
+class DuplicateRuleError(ValueError):
+    """A rule would duplicate an active rule's scope; ``existing_id`` names that rule."""
+
+    def __init__(self, message: str, existing_id: str):
+        super().__init__(message)
+        self.existing_id = existing_id
+
+
+def _article(word: str) -> str:
+    return "An" if word[:1].lower() in "aeiou" else "A"
+
+
+def duplicate_rule_message(kind: str, clean: Dict[str, Any], existing_id: str) -> str:
+    """'A terms_allowance rule with this scope already exists (DED-1A2B3C4D); update it instead'."""
+    if kind == "price":
+        return f"A price rule with this scope already exists ({existing_id}); update it instead"
+    dtype = clean.get("deduction_type") or "deduction"
+    if dtype in STACKING_TYPES:
+        if program_name(clean) is None:
+            return (f"{_article(dtype)} {dtype} rule with this scope and no program name already exists "
+                    f"({existing_id}); update it instead, or name the new program (e.g. 'Freight allowance') so "
+                    f"both apply")
+        return (f"{_article(dtype)} {dtype} rule with this scope and program name '{clean.get('name')}' already "
+                f"exists ({existing_id}); update it instead, or give the new program a different name")
+    return f"{_article(dtype)} {dtype} rule with this scope already exists ({existing_id}); update it instead"
+
+
+def _active_rules(cursor, kind: str) -> List[Dict[str, Any]]:
+    if kind == "price":
+        cursor.execute("SELECT * FROM price_list WHERE is_active IS NULL OR is_active = 1")
+    else:
+        cursor.execute("SELECT * FROM sales_deduction_rules WHERE is_active IS NULL OR is_active = 1")
+    return _rows(cursor)
+
+
+def find_duplicate_rule(cursor, kind: str, clean: Dict[str, Any], exclude_id: Optional[str] = None,
+                        active_rules: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    """
+    The ACTIVE rule whose slot equals ``clean``'s, or None. ``kind`` is
+    'deduction' or 'price'. A deduction slot is (deduction_type, forecast_id,
+    every scope field, start_period, end_period, and for other_allowance the
+    normalised program name); a price slot is (forecast_id, every scope
+    field, start_period, end_period). Of several matches (rules created
+    before this check existed) the one that currently wins is returned.
+    """
+    key_fn = price_rule_key if kind == "price" else deduction_rule_key
+    id_col = "price_id" if kind == "price" else "rule_id"
+    target = key_fn(clean)
+    rules = active_rules if active_rules is not None else _active_rules(cursor, kind)
+    matches = [r for r in rules if r.get(id_col) != exclude_id and key_fn(r) == target]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: precedence_key(r, kind))
+
+
+def check_duplicate_rule(cursor, kind: str, clean: Dict[str, Any], exclude_id: Optional[str] = None,
+                         active_rules: Optional[List[Dict[str, Any]]] = None) -> None:
+    """Raise DuplicateRuleError when ``clean`` would duplicate an active rule's slot."""
+    existing = find_duplicate_rule(cursor, kind, clean, exclude_id=exclude_id, active_rules=active_rules)
+    if existing:
+        existing_id = existing["price_id" if kind == "price" else "rule_id"]
+        raise DuplicateRuleError(duplicate_rule_message(kind, clean, existing_id), existing_id)
+
+
+def _request_duplicates(kind: str, cleaned: Sequence[Tuple[int, Dict[str, Any]]], label: str) -> List[str]:
+    """Pairs of items in one request that define the same slot (both would tie)."""
+    key_fn = price_rule_key if kind == "price" else deduction_rule_key
+    first_by_key: Dict[Tuple, int] = {}
+    problems: List[str] = []
+    for index, clean in cleaned:
+        key = key_fn(clean)
+        if key in first_by_key:
+            what = "price" if kind == "price" else (
+                f"{clean['deduction_type']} rule" + (" with the same program name" if clean["deduction_type"]
+                                                     in STACKING_TYPES else ""))
+            problems.append(
+                f"{label}s {first_by_key[key]} and {index} define the same {what} for the same scope and months; "
+                f"combine them into one {'price' if kind == 'price' else 'rule'} or scope them differently"
+            )
+        else:
+            first_by_key[key] = index
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # Presentation
 # ---------------------------------------------------------------------------
 
@@ -567,8 +681,9 @@ def _describe_price_rule(rule: Dict[str, Any], units: Dict[str, Dict[str, Any]],
         "is_company_wide": not rule.get("forecast_id"),
         "specificity": price_specificity(rule),
         "scope": _scope_text(rule, (("customer_id", "customer"), ("customer_type", "customer type"),
-                                    ("unit_id", "product"))) if (rule.get("customer_id") or rule.get("customer_type")
-                                                                or rule.get("unit_id")) else "All customers, all products",
+                                    ("unit_id", "product"), ("unit_type", "product type")))
+        if (rule.get("customer_id") or rule.get("customer_type") or rule.get("unit_id") or rule.get("unit_type"))
+        else "All customers, all products",
     }
 
 
@@ -610,15 +725,18 @@ async def get_deduction_types():
     """Deduction types, calculation methods, price methods and a worked example."""
     data = {
         "deduction_types": [
-            {"deduction_type": key, **info, "contra_revenue": info["treatment"] == "contra_revenue"}
+            {"deduction_type": key, **info, "contra_revenue": info["treatment"] == "contra_revenue",
+             "stacks": key in STACKING_TYPES}
             for key, info in DEDUCTION_TYPES.items()
         ],
+        "stacking_types": list(STACKING_TYPES),
         "methods": [{"method": key, "description": text} for key, text in DEDUCTION_METHODS.items()],
         "price_methods": [{"method": key, "description": text} for key, text in PRICE_METHODS.items()],
         "price_sources": [{"source": key, "label": text} for key, text in PRICE_SOURCE_LABELS.items()],
         "contra_revenue_types": list(CONTRA_REVENUE_TYPES),
         "example": DEDUCTION_EXAMPLE,
         "precedence": PRECEDENCE_TEXT,
+        "price_precedence": PRICE_PRECEDENCE_TEXT,
         "rate_format": "Rates are fractions: 0.02 = 2%, 0.11 = 11%. CSV imports also accept '2%' or 2.",
     }
     return ForecastResponse(status="success", data=data, message=f"{len(DEDUCTION_TYPES)} deduction types")
@@ -659,13 +777,16 @@ async def create_deduction_rules(payload: Any = Body(...)):
     Create one rule (body = the rule) or several (``{"rules": [...]}``).
 
     All-or-nothing: if any rule is invalid nothing is written and the 422
-    lists every problem. Rates are fractions (0.02 = 2%).
+    lists every problem. Rates are fractions (0.02 = 2%). A rule whose
+    deduction_type, scenario, scope fields, start/end months (and, for
+    other_allowance, program name) equal an existing ACTIVE rule's is
+    refused with 409 and a detail naming that rule: update it instead.
     """
     items, bulk = _body_items(payload, "rules")
     conn = db_manager.get_connection()
     try:
         cursor = conn.cursor()
-        cleaned: List[Dict[str, Any]] = []
+        cleaned: List[Tuple[int, Dict[str, Any]]] = []
         errors: List[str] = []
         warnings: List[str] = []
         for index, item in enumerate(items, start=1):
@@ -678,11 +799,12 @@ async def create_deduction_rules(payload: Any = Body(...)):
             unknown = _unknown_keys(item, DEDUCTION_FIELDS)
             if unknown:
                 rule_warnings.append(f"{label}: ignored unknown fields {', '.join(unknown)}")
-            cleaned.append(clean)
+            cleaned.append((index, clean))
             warnings.extend(rule_warnings)
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
-        ids = [insert_deduction_rule(cursor, clean) for clean in cleaned]
+        _refuse_duplicates(cursor, "deduction", cleaned, bulk)
+        ids = [insert_deduction_rule(cursor, clean) for _index, clean in cleaned]
         conn.commit()
         created = [describe_deduction_rule(get_deduction_rule(cursor, rid)) for rid in ids]
     except HTTPException:
@@ -699,6 +821,23 @@ async def create_deduction_rules(payload: Any = Body(...)):
         data={"rules": created, "created": len(created), "warnings": warnings},
         message=f"Created {len(created)} deduction rule{'s' if len(created) != 1 else ''}",
     )
+
+
+def _refuse_duplicates(cursor, kind: str, cleaned: Sequence[Tuple[int, Dict[str, Any]]], bulk: bool) -> None:
+    """422 when two items of one request share a slot; 409 when an item duplicates an active stored rule."""
+    label = "price" if kind == "price" else "rule"
+    problems = _request_duplicates(kind, cleaned, label)
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
+    active = _active_rules(cursor, kind)
+    conflicts: List[str] = []
+    for index, clean in cleaned:
+        try:
+            check_duplicate_rule(cursor, kind, clean, active_rules=active)
+        except DuplicateRuleError as exc:
+            conflicts.append(f"{label} {index}: {exc}" if bulk else str(exc))
+    if conflicts:
+        raise HTTPException(status_code=409, detail="; ".join(conflicts))
 
 
 @router.get("/deductions/preview", response_model=ForecastResponse)
@@ -738,6 +877,7 @@ async def preview_deductions(
     by_ctype: Dict[str, Dict[str, float]] = {}
     by_period: Dict[str, Dict[str, float]] = {p: _empty_totals() for p in periods}
     rule_usage: Dict[str, Dict[str, float]] = {}
+    resolver = DeductionResolver(rules)   # per-rule amounts (other_allowance programs share one line amount)
     for line in lines:
         ctype = line.get("customer_type") or "Unassigned"
         bucket = by_ctype.setdefault(ctype, _empty_totals())
@@ -749,10 +889,11 @@ async def preview_deductions(
                 target[dtype] += line[dtype]
             target["total_sales_deductions"] += line["total_sales_deductions"]
             target["net_sales"] += line["net_sales"]
-        for dtype, rule_id in (line.get("applied_rules") or {}).items():
-            usage = rule_usage.setdefault(rule_id, {"rows": 0, "amount": 0.0})
-            usage["rows"] += 1
-            usage["amount"] += line.get(dtype, 0.0)
+        if line.get("applied_rules"):
+            for rule_id, amount in resolver.compute(line)["rule_amounts"].items():
+                usage = rule_usage.setdefault(rule_id, {"rows": 0, "amount": 0.0})
+                usage["rows"] += 1
+                usage["amount"] += amount
 
     def _finish(t: Dict[str, float]) -> Dict[str, Any]:
         out = {k: (int(v) if k == "rows" else _r2(v)) for k, v in t.items()}
@@ -787,6 +928,12 @@ async def preview_deductions(
     if lines and not rules:
         warnings.append({"code": "no_deduction_rules", "level": "info",
                          "message": "No discounts/allowances/excise rules apply; net sales = gross sales"})
+    elif lines and not loaded.get("rows_with_deductions"):
+        warnings.append({"code": "no_deduction_rules", "level": "info", "rule_count": len(rules),
+                         "message": f"{len(rules)} deduction rule{'s are' if len(rules) != 1 else ' is'} set up but "
+                                    f"none applies to any sales row in {window[0]}..{window[1]}, so net sales = gross "
+                                    f"sales. Check the customers, customer types, products, product types and "
+                                    f"months the rules are scoped to."})
     if loaded.get("non_monthly_rows"):
         warnings.append({"code": "non_monthly_sales_periods", "level": "warning",
                          "message": f"{loaded['non_monthly_rows']} sales rows have a period that is not a YYYY-MM "
@@ -857,8 +1004,9 @@ def _resolve_window(cursor, forecast_id: str, start_period: Optional[str],
 @router.post("/deductions/simulate", response_model=ForecastResponse)
 async def simulate_deductions(payload: Dict[str, Any] = Body(...)):
     """
-    Which rule wins per deduction type for one hypothetical invoice line and
-    the amounts. Body: ``{gross | unit_price + quantity, quantity?,
+    Which rule applies per deduction type (one per program for other
+    allowances, each listed in the line's ``rules``) for one hypothetical
+    invoice line and the amounts. Body: ``{gross | unit_price + quantity, quantity?,
     customer_id?, customer_type?, unit_id?, unit_type?, period?,
     forecast_id?}``. customer_type / unit_type are looked up from the
     customer / product when not given.
@@ -907,27 +1055,34 @@ async def simulate_deductions(payload: Dict[str, Any] = Body(...)):
         db_manager.close_connection(conn)
 
     resolver = DeductionResolver(rules)
-    winners = resolver.winners(row)
-    result = compute_row_deductions(winners, row)
+    applicable = resolver.applicable(row)
+    result = compute_row_deductions(applicable, row)
     lines = []
     explanation = []
     for dtype, info in DEDUCTION_TYPES.items():
-        rule = winners.get(dtype)
+        applied = applicable.get(dtype, [])
+        applied_ids = {r["rule_id"] for r in applied}
         matching = [r["rule_id"] for r in rules
-                    if r.get("deduction_type") == dtype and DeductionResolver([r]).winners(row)]
+                    if r.get("deduction_type") == dtype and DeductionResolver([r]).applicable(row)]
         entry = {
             "deduction_type": dtype, "label": info["label"], "treatment": info["treatment"],
             "amount": round(result[dtype], 2),
-            "rule": describe_deduction_rule(rule) if rule else None,
-            "overridden_rules": [rid for rid in matching if not rule or rid != rule["rule_id"]],
+            # the most specific rule applied (other_allowance: of the programs, see "rules")
+            "rule": describe_deduction_rule(applied[0]) if applied else None,
+            # every rule applied, with its amount: one per program for other_allowance
+            "rules": [{**describe_deduction_rule(r), "amount": round(result["rule_amounts"].get(r["rule_id"], 0.0), 2)}
+                      for r in applied],
+            "overridden_rules": [rid for rid in matching if rid not in applied_ids],
         }
         lines.append(entry)
-        if rule:
-            explanation.append(_explain(rule, info["label"], gross, quantity, result))
+        for rule in applied:
+            explanation.append(_explain(rule, info["label"], gross, quantity,
+                                        result["rule_amounts"].get(rule["rule_id"], 0.0), result["net_base"]))
     data = {
         "input": row,
         "gross_sales": round(gross, 2),
         "lines": lines,
+        "net_base": round(result["net_base"], 2),
         "total_sales_deductions": round(result["total_sales_deductions"], 2),
         "net_sales": round(result["net_sales"], 2),
         "commission": round(result["commission"], 2),
@@ -941,18 +1096,18 @@ async def simulate_deductions(payload: Dict[str, Any] = Body(...)):
     )
 
 
-def _explain(rule: Dict[str, Any], label: str, gross: float, quantity: float, result: Dict[str, Any]) -> str:
+def _explain(rule: Dict[str, Any], label: str, gross: float, quantity: float, amount: float,
+             net_base: float) -> str:
+    """One line of the worked example; ``net_base`` is the engine's percent_of_net base."""
     method = rule.get("method") or "percent_of_gross"
     rate = float(rule.get("rate") or 0)
-    amount = result.get(rule.get("deduction_type"), 0.0)
     name = rule.get("name") or rule.get("rule_id")
     if method == "embedded_tax":
         maths = f"{gross:,.2f} x {rate:g} / {1 + rate:g}"
     elif method == "per_unit":
         maths = f"{quantity:g} units x {float(rule.get('amount_per_unit') or 0):,.2f}"
     elif method == "percent_of_net":
-        base = gross - sum(result[t] for t in CONTRA_REVENUE_TYPES)
-        maths = f"{base:,.2f} net x {rate:g}"
+        maths = f"{net_base:,.2f} net x {rate:g}"
     else:
         maths = f"{gross:,.2f} x {rate:g}"
     return f"{label}: {name} [{rule.get('rule_id')}] {method}: {maths} = {amount:,.2f}"
@@ -973,7 +1128,11 @@ async def get_deduction(rule_id: str):
 
 @router.put("/deductions/{rule_id}", response_model=ForecastResponse)
 async def update_deduction(rule_id: str, payload: Dict[str, Any] = Body(...)):
-    """Partial update: only the fields sent change (send null / '' to clear a scope field)."""
+    """
+    Partial update: only the fields sent change (send null / '' to clear a
+    scope field). 409 when the updated rule would be active with the same
+    slot as another active rule (see POST).
+    """
     conn = db_manager.get_connection()
     try:
         cursor = conn.cursor()
@@ -988,6 +1147,11 @@ async def update_deduction(rule_id: str, payload: Dict[str, Any] = Body(...)):
             clean, warnings = clean_deduction_rule(cursor, merged)
         except RuleValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        if clean["is_active"]:
+            try:
+                check_duplicate_rule(cursor, "deduction", clean, exclude_id=rule_id)
+            except DuplicateRuleError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
         unknown = _unknown_keys(payload, DEDUCTION_FIELDS)
         if unknown:
             warnings.append(f"ignored unknown fields {', '.join(unknown)}")
@@ -1044,7 +1208,7 @@ async def delete_deduction(rule_id: str):
 @router.get("/prices", response_model=ForecastResponse)
 async def list_prices(
     forecast_id: Optional[str] = Query(None, description="Scenario: its prices plus company-wide ones. Omit for every price."),
-    unit_id: Optional[str] = Query(None, description="Prices that apply to this product (its own and all-product discounts)"),
+    unit_id: Optional[str] = Query(None, description="Prices that apply to this product (its own, its product type's and all-product rules)"),
     customer_id: Optional[str] = Query(None, description="Only rules for this customer"),
     customer_type: Optional[str] = Query(None, description="Only rules for this customer type"),
     include_inactive: bool = Query(True, description="Include rules switched off with is_active = 0"),
@@ -1058,7 +1222,9 @@ async def list_prices(
     finally:
         db_manager.close_connection(conn)
     if unit_id:
-        rules = [r for r in rules if not r.get("unit_id") or r.get("unit_id") == unit_id]
+        unit_type = ((units.get(unit_id) or {}).get("unit_type") or "").strip().lower()
+        rules = [r for r in rules if (not r.get("unit_id") or r.get("unit_id") == unit_id)
+                 and (not (r.get("unit_type") or "").strip() or r["unit_type"].strip().lower() == unit_type)]
     if customer_id:
         rules = [r for r in rules if r.get("customer_id") == customer_id]
     if customer_type:
@@ -1074,13 +1240,16 @@ async def list_prices(
 async def create_prices(payload: Any = Body(...)):
     """
     Create one price rule (body = the rule) or several (``{"prices": [...]}``).
-    All-or-nothing; the 422 lists every invalid rule.
+    All-or-nothing; the 422 lists every invalid rule. A rule whose scenario,
+    scope fields (unit_id, customer_id, customer_type, unit_type) and
+    start/end months equal an existing ACTIVE rule's is refused with 409 and
+    a detail naming that rule: update it instead.
     """
     items, bulk = _body_items(payload, "prices")
     conn = db_manager.get_connection()
     try:
         cursor = conn.cursor()
-        cleaned: List[Dict[str, Any]] = []
+        cleaned: List[Tuple[int, Dict[str, Any]]] = []
         errors: List[str] = []
         warnings: List[str] = []
         for index, item in enumerate(items, start=1):
@@ -1093,11 +1262,12 @@ async def create_prices(payload: Any = Body(...)):
             unknown = _unknown_keys(item, PRICE_FIELDS)
             if unknown:
                 price_warnings.append(f"{label}: ignored unknown fields {', '.join(unknown)}")
-            cleaned.append(clean)
+            cleaned.append((index, clean))
             warnings.extend(price_warnings)
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
-        ids = [insert_price_rule(cursor, clean) for clean in cleaned]
+        _refuse_duplicates(cursor, "price", cleaned, bulk)
+        ids = [insert_price_rule(cursor, clean) for _index, clean in cleaned]
         conn.commit()
         units, customers = _master_maps(cursor)
         created = [_describe_price_rule(get_price_rule(cursor, pid), units, customers) for pid in ids]
@@ -1131,7 +1301,7 @@ async def resolve_price_endpoint(
     try:
         cursor = conn.cursor()
         _require_forecast(cursor, forecast_id)
-        cursor.execute("SELECT unit_name, base_price FROM units WHERE unit_id = ?", (unit_id,))
+        cursor.execute("SELECT unit_name, base_price, unit_type FROM units WHERE unit_id = ?", (unit_id,))
         unit = cursor.fetchone()
         if not unit:
             raise HTTPException(status_code=404, detail=f"Product '{unit_id}' not found")
@@ -1147,7 +1317,7 @@ async def resolve_price_endpoint(
         rules = load_price_rules(cursor, [forecast_id] if forecast_id else [])
     finally:
         db_manager.close_connection(conn)
-    row = {"forecast_id": forecast_id, "unit_id": unit_id, "customer_id": customer_id,
+    row = {"forecast_id": forecast_id, "unit_id": unit_id, "unit_type": unit[2], "customer_id": customer_id,
            "customer_type": ctype, "period": month}
     resolved = resolve_price(rules, row, base_price=unit[1])
     rule = next((r for r in rules if r.get("price_id") and r.get("price_id") == resolved.get("price_id")), None)
@@ -1156,7 +1326,7 @@ async def resolve_price_endpoint(
         "price": round(resolved["price"], 4) if resolved["price"] is not None else None,
         "source_label": PRICE_SOURCE_LABELS.get(resolved["source"], resolved["source"]),
         "rule": rule,
-        "unit_id": unit_id, "unit_name": unit[0], "base_price": unit[1],
+        "unit_id": unit_id, "unit_name": unit[0], "base_price": unit[1], "unit_type": unit[2],
         "customer_id": customer_id, "customer_name": customer_name, "customer_type": ctype,
         "period": month, "forecast_id": forecast_id,
     }
@@ -1176,6 +1346,9 @@ async def apply_price_list(payload: Dict[str, Any] = Body(...)):
     the resolved price and total_revenue = quantity x unit_price. Rows the
     price list cannot price (source 'none') are left alone and reported.
     ``only_missing`` touches only rows whose price is empty or 0.
+    ``fallback_to_base_price: false`` only skips the last step (the
+    product's base price when no rule matches); discount-off-list rules
+    still price from the base price.
     """
     forecast_id = _text(payload.get("forecast_id"))
     if not forecast_id:
@@ -1237,7 +1410,7 @@ async def apply_price_list(payload: Dict[str, Any] = Body(...)):
             where.append("(s.unit_price IS NULL OR s.unit_price = 0)")
         cursor.execute(
             f"""SELECT s.sale_id, s.customer_id, s.unit_id, s.period, s.quantity, s.unit_price, s.total_revenue,
-                       c.customer_type, u.base_price
+                       c.customer_type, u.base_price, u.unit_type
                 FROM sales s
                 LEFT JOIN customers c ON s.customer_id = c.customer_id
                 LEFT JOIN units u ON s.unit_id = u.unit_id
@@ -1253,7 +1426,7 @@ async def apply_price_list(payload: Dict[str, Any] = Body(...)):
         unpriced: List[Dict[str, Any]] = []
         revenue_before = revenue_after = 0.0
         changed = unchanged = 0
-        for sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, ctype, base_price in rows:
+        for sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, ctype, base_price, utype in rows:
             qty = float(quantity or 0)
             old_price = float(unit_price) if unit_price is not None else None
             old_revenue = float(total_revenue) if total_revenue is not None else qty * float(unit_price or 0)
@@ -1261,9 +1434,10 @@ async def apply_price_list(payload: Dict[str, Any] = Body(...)):
             month = normalize_month(period)
             resolved = resolve_price(
                 rules,
-                {"forecast_id": forecast_id, "unit_id": unit_id, "customer_id": customer_id,
+                {"forecast_id": forecast_id, "unit_id": unit_id, "unit_type": utype, "customer_id": customer_id,
                  "customer_type": ctype, "period": month},
-                base_price=base_price if fallback else None,
+                base_price=base_price,
+                fallback_to_base=fallback,
             )
             source = resolved["source"]
             by_source[source] = by_source.get(source, 0) + 1
@@ -1303,7 +1477,11 @@ async def apply_price_list(payload: Dict[str, Any] = Body(...)):
 
     warnings = []
     if unpriced:
-        warnings.append(f"{len(unpriced)} rows have no price-list entry or base price and were left unchanged")
+        if fallback:
+            warnings.append(f"{len(unpriced)} rows have no price-list entry or base price and were left unchanged")
+        else:
+            warnings.append(f"{len(unpriced)} rows have no price-list entry that can price them (the base-price "
+                            f"fallback is off) and were left unchanged")
     data = {
         "forecast_id": forecast_id,
         "dry_run": dry_run,
@@ -1345,7 +1523,11 @@ async def get_price(price_id: str):
 
 @router.put("/prices/{price_id}", response_model=ForecastResponse)
 async def update_price(price_id: str, payload: Dict[str, Any] = Body(...)):
-    """Partial update of a price rule (send null / '' to clear a scope field)."""
+    """
+    Partial update of a price rule (send null / '' to clear a scope field).
+    409 when the updated rule would be active with the same scope and months
+    as another active rule (see POST).
+    """
     conn = db_manager.get_connection()
     try:
         cursor = conn.cursor()
@@ -1364,6 +1546,11 @@ async def update_price(price_id: str, payload: Dict[str, Any] = Body(...)):
             clean, warnings = clean_price_rule(cursor, merged)
         except RuleValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        if clean["is_active"]:
+            try:
+                check_duplicate_rule(cursor, "price", clean, exclude_id=price_id)
+            except DuplicateRuleError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
         unknown = _unknown_keys(payload, PRICE_FIELDS)
         if unknown:
             warnings.append(f"ignored unknown fields {', '.join(unknown)}")

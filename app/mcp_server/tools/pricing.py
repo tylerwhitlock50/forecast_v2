@@ -8,20 +8,23 @@ Rates are fractions: 0.02 = 2%. Federal excise tax included in the price at
 11% is deduction_type excise_tax, method embedded_tax, rate 0.11: tax =
 price x 0.11 / 1.11 (a $1,110 invoice carries $110 of FET).
 """
-from typing import Annotated, Any, Dict, List, Literal, Optional
+import re
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Tuple
 from urllib.parse import quote
 
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
-from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, require
+from services.pricing import deduction_rule_key, precedence_key, price_rule_key
+from utils.period_normalizer import normalize_month
+from mcp_server.core import DESTRUCTIVE, READ, UPSERT, call, require
 from mcp_server.tools._common import cap, compact_warnings, drop_empty, out, put_capped, register
 
 DEDUCTION_TYPES = ("terms_allowance", "chargebacks", "other_allowance", "excise_tax", "commission")
 RULE_FIELDS = ("forecast_id", "deduction_type", "name", "method", "rate", "amount_per_unit", "customer_id",
                "customer_type", "unit_id", "unit_type", "start_period", "end_period", "is_active", "notes")
-PRICE_FIELDS = ("forecast_id", "unit_id", "customer_id", "customer_type", "method", "unit_price", "discount_pct",
-                "start_period", "end_period", "is_active", "notes")
+PRICE_FIELDS = ("forecast_id", "unit_id", "customer_id", "customer_type", "unit_type", "method", "unit_price",
+                "discount_pct", "start_period", "end_period", "is_active", "notes")
 #: Keys a listing returns that are not editable; dropped when a listed rule is sent back.
 READ_ONLY_KEYS = {"scope", "specificity", "company_wide", "is_company_wide", "deduction_label", "treatment",
                   "statement_line", "method_description", "created_at", "updated_at", "unit_name", "customer_name",
@@ -58,7 +61,7 @@ def compact_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
 
 def compact_price(price: Dict[str, Any]) -> Dict[str, Any]:
     item = {"price_id": price.get("price_id"), "unit_id": price.get("unit_id"), "unit_name": price.get("unit_name")}
-    for key in ("customer_id", "customer_name", "customer_type"):
+    for key in ("unit_type", "customer_id", "customer_name", "customer_type"):
         if price.get(key):
             item[key] = price[key]
     item["method"] = price.get("method")
@@ -85,9 +88,89 @@ def _check_fields(item: Dict[str, Any], allowed: tuple, label: str, id_key: str)
         raise ToolError(f"{label}: unknown field(s) {', '.join(unknown)}. Allowed: {id_key}, {', '.join(allowed)}")
 
 
+#: Per id key: what kind of rule it is, its slot (identity) function and the API's id prefix.
+_RULE_KINDS: Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple], str]] = {
+    "rule_id": ("deduction", deduction_rule_key, "DED"),
+    "price_id": ("price", price_rule_key, "PRC"),
+}
+#: Records listed in full in an upsert result (the counts always cover everything).
+UPSERT_LIST_LIMIT = 50
+
+
+def _slot_view(item: Dict[str, Any]) -> Dict[str, Any]:
+    """The item as the API will store its scope (text trimmed, months as YYYY-MM), for slot matching."""
+    view: Dict[str, Any] = {}
+    for key, value in item.items():
+        if isinstance(value, str):
+            value = value.strip() or None
+        if key in ("start_period", "end_period") and value is not None:
+            value = normalize_month(value) or value
+        view[key] = value
+    return view
+
+
+def _changes_for_existing(item: Dict[str, Any], existing: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """
+    The PUT body that turns an id-less item into an update of the existing
+    rule in its slot: the item's fields, plus the method when the item's
+    values only make sense with another one (a rate sent for a per_unit
+    rule, a unit_price for a discount rule, ...). Everything else the item
+    leaves out keeps its stored value.
+    """
+    changes = dict(item)
+    if item.get("method") not in (None, ""):
+        return changes
+    if kind == "deduction":
+        has_rate, has_amount = item.get("rate") is not None, item.get("amount_per_unit") is not None
+        if has_amount and not has_rate and existing.get("method") != "per_unit":
+            changes["method"] = "per_unit"
+        elif has_rate and not has_amount and existing.get("method") == "per_unit":
+            dtype = item.get("deduction_type") or existing.get("deduction_type")
+            changes["method"] = "embedded_tax" if dtype == "excise_tax" else "percent_of_gross"
+    else:
+        has_price, has_discount = item.get("unit_price") is not None, item.get("discount_pct") is not None
+        method = existing.get("method") or "fixed"
+        if has_price and not has_discount and method != "fixed":
+            changes["method"] = "fixed"
+        elif has_discount and not has_price and method != "discount_from_base":
+            changes["method"] = "discount_from_base"
+    return changes
+
+
+def _conflict_ids(detail: str, prefix: str, sent: int) -> Dict[int, str]:
+    """
+    {1-based position in the bulk request: existing rule id} from the API's
+    409 detail ('rule 2: A chargebacks rule with this scope already exists
+    (DED-1A2B3C4D); update it instead; rule 5: ...').
+    """
+    found: Dict[int, str] = {}
+    pattern = re.compile(r"\b(?:rule|price) (\d+): .*?\((" + prefix + r"-[0-9A-Za-z]+)\)", re.S)
+    for match in pattern.finditer(detail):
+        position = int(match.group(1))
+        if 1 <= position <= sent:
+            found.setdefault(position, match.group(2))
+    if not found and sent == 1:  # a single item: the detail has no "rule N:" prefix
+        single = re.search(r"\((" + prefix + r"-[0-9A-Za-z]+)\)", detail)
+        if single:
+            found[1] = single.group(1)
+    return found
+
+
 async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, path: str, bulk_key: str,
                   label: str, shape) -> Dict[str, Any]:
-    """Create the items without an id in one all-or-nothing call, then update the others one by one."""
+    """
+    Create the items without an id, then update the others one by one.
+
+    An item without an id whose slot (type, scenario, every scope field,
+    months and, for other_allowance, the program name: see
+    services.pricing.deduction_rule_key / price_rule_key) matches an ACTIVE
+    rule updates that rule instead of creating a duplicate the precedence
+    tie-break would then pick between. Matching is done up front from the
+    rule listing and again from the API's 409 answer (which names the
+    existing rule), so a retried or repeated call never stacks rules. The
+    creates are one all-or-nothing call.
+    """
+    kind, slot_of, prefix = _RULE_KINDS[id_key]
     for index, item in enumerate(items):
         if not isinstance(item, dict) or not item:
             raise ToolError(f"{label} {index}: must be a non-empty object")
@@ -97,16 +180,59 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
         if item.get(id_key) and len(item) == 1:
             raise ToolError(f"{label} {index}: only {id_key} given; add the fields to change")
     creates = [(i, item) for i, item in enumerate(items) if not item.get(id_key)]
-    updates = [(i, item) for i, item in enumerate(items) if item.get(id_key)]
+    updates: List[Tuple[int, Dict[str, Any], str, bool]] = [
+        (i, {k: v for k, v in item.items() if k != id_key}, str(item[id_key]).strip(), False)
+        for i, item in enumerate(items) if item.get(id_key)]
     result: Dict[str, Any] = {"created": [], "updated": [], "warnings": []}
+
     if creates:
-        body = await call("POST", path, json={bulk_key: [item for _, item in creates]})
-        result["created"] = [shape(r) for r in body.get(bulk_key) or []]
-        result["warnings"].extend(body.get("warnings") or [])
+        listing = await call("GET", path, params={"include_inactive": False})
+        active = [r for r in (listing.get(bulk_key) or []) if r.get("is_active") is not False and r.get("is_active") != 0]
+        by_id = {r.get(id_key): r for r in active}
+        by_slot: Dict[Tuple, Dict[str, Any]] = {}
+        for rule in active:
+            slot = slot_of(rule)
+            if slot not in by_slot or precedence_key(rule, kind) > precedence_key(by_slot[slot], kind):
+                by_slot[slot] = rule
+        first_in_request: Dict[Tuple, int] = {}
+        pending: List[Tuple[int, Dict[str, Any]]] = []
+        for index, item in creates:
+            slot = slot_of(_slot_view(item))
+            if slot in first_in_request:
+                what = "price" if kind == "price" else f"{item.get('deduction_type')} rule" + (
+                    " with the same name" if item.get("deduction_type") == "other_allowance" else "")
+                raise ToolError(f"{label} {first_in_request[slot]} and {index} define the same {what} for the same "
+                                f"scope and months; combine them into one or scope them differently. Nothing was "
+                                f"written.")
+            first_in_request[slot] = index
+            existing = by_slot.get(slot)
+            if existing:
+                updates.append((index, _changes_for_existing(item, existing, kind), existing[id_key], True))
+            else:
+                pending.append((index, item))
+
+        for _attempt in range(3):
+            if not pending:
+                break
+            try:
+                body = await call("POST", path, json={bulk_key: [item for _, item in pending]})
+            except ToolError as exc:
+                conflicts = _conflict_ids(str(exc), prefix, len(pending)) if "HTTP 409" in str(exc) else {}
+                if not conflicts:
+                    raise
+                for position, existing_id in sorted(conflicts.items()):
+                    index, item = pending[position - 1]
+                    existing = by_id.get(existing_id) or {}
+                    updates.append((index, _changes_for_existing(item, existing, kind), existing_id, True))
+                pending = [p for position, p in enumerate(pending, start=1) if position not in conflicts]
+                continue
+            result["created"] = [shape(r) for r in body.get(bulk_key) or []]
+            result["warnings"].extend(body.get("warnings") or [])
+            break
+
     errors = []
-    for index, item in updates:
-        item_id = str(item[id_key]).strip()
-        changes = {k: v for k, v in item.items() if k != id_key}
+    matched = []
+    for index, changes, item_id, by_scope in sorted(updates, key=lambda u: u[0]):
         try:
             body = await call("PUT", f"{path}/{quote(item_id, safe='')}", json=changes)
         except ToolError as exc:
@@ -115,9 +241,23 @@ async def _upsert(items: List[Dict[str, Any]], *, id_key: str, allowed: tuple, p
         record = body.get("rule") or body.get("price") or {}
         result["updated"].append(shape(record))
         result["warnings"].extend(body.get("warnings") or [])
+        if by_scope:
+            matched.append({"index": index, id_key: item_id})
     if errors and not (result["created"] or result["updated"]):
         raise ToolError("Nothing was changed: " + "; ".join(f"{label} {e['index']} ({e[id_key]}): {e['error']}"
                                                             for e in errors[:10]))
+    result["created_count"] = len(result["created"])
+    result["updated_count"] = len(result["updated"])
+    for key in ("created", "updated"):
+        kept, omitted = cap(result[key], UPSERT_LIST_LIMIT)
+        result[key] = kept
+        if omitted:
+            result[f"{key}_omitted"] = omitted
+    if matched:
+        put_capped(result, "matched_existing", matched, UPSERT_LIST_LIMIT)
+        result["note"] = (f"{len(matched)} {label} without {id_key} had the same scope and months as an active "
+                          f"rule{'' if kind == 'price' else ' (and, for other_allowance, the same name)'}, so that "
+                          f"rule was updated instead of adding a duplicate.")
     if errors:
         result["errors"] = errors
         result["status"] = "partial"
@@ -143,9 +283,13 @@ async def list_deduction_rules(
 ) -> str:
     """Sales deduction rules (terms allowance, chargebacks, other allowances,
     excise tax, commissions) with their scope and specificity (customer 8 +
-    customer type 4 + product 2 + product type 1; the most specific matching
-    rule of each type applies to a sale, a rate of 0 is an exemption).
-    Rates are fractions (0.02 = 2%). forecast_id null = company-wide."""
+    customer type 4 + product 2 + product type 1). The most specific
+    matching rule of each type applies to a sale; on equal specificity a
+    scenario rule beats a company-wide one. other_allowance rules are
+    programs named by the rule name: every matching program applies (they
+    add up), the most specific rule within each. A rate of 0 is an
+    exemption. Rates are fractions (0.02 = 2%). forecast_id null =
+    company-wide."""
     body = await call("GET", "/pricing/deductions", params={
         "forecast_id": forecast_id, "deduction_type": deduction_type, "include_inactive": include_inactive,
     })
@@ -177,12 +321,20 @@ async def upsert_deduction_rules(
                     "(YYYY-MM), forecast_id (omit = company-wide), is_active, notes.",
         min_length=1)],
 ) -> str:
-    """Create or update sales deduction rules. Creations are all-or-nothing
-    (any invalid rule -> nothing created, every problem listed); updates are
-    applied rule by rule and failures are reported. Examples: dealer terms
-    2% => {deduction_type: terms_allowance, customer_type: Dealer, rate:
-    0.02}; FET => {deduction_type: excise_tax, method: embedded_tax, rate:
-    0.11}; government exempt from FET => {deduction_type: excise_tax,
+    """Create or update sales deduction rules. A rule without rule_id whose
+    deduction_type, scope (scenario, customer, customer type, product,
+    product type) and months equal an active rule's UPDATES that rule
+    (only the fields sent change) instead of adding a duplicate, so sending
+    'dealer terms are now 3%' twice is safe; matches are listed in
+    matched_existing. other_allowance rules are separate programs keyed by
+    name ('Co-op advertising', 'Freight allowance'): every matching program
+    applies and they add up, and the same name + scope updates that
+    program. Creations are all-or-nothing (any invalid rule -> nothing
+    created, every problem listed); updates are applied rule by rule and
+    failures are reported. Examples: dealer terms 2% => {deduction_type:
+    terms_allowance, customer_type: Dealer, rate: 0.02}; FET =>
+    {deduction_type: excise_tax, method: embedded_tax, rate: 0.11};
+    government exempt from FET => {deduction_type: excise_tax,
     customer_type: Government, rate: 0}; distributor commission 3% of net =>
     {deduction_type: commission, method: percent_of_net, customer_type:
     Distributor, rate: 0.03}. Verify with forecast_simulate_deductions."""
@@ -326,14 +478,16 @@ async def list_prices(
     customer_id: Annotated[Optional[str], Field(description="Only rules for this customer")] = None,
     customer_type: Annotated[Optional[str], Field(description="Only rules for this customer type")] = None,
     include_inactive: bool = True,
-    limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+    limit: Annotated[int, Field(description="Rules per page", ge=1, le=2000)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> str:
-    """The price list: per rule the product, customer / customer type, fixed
-    unit_price or discount_pct off base_price (fraction: 0.40 = 40% off), the
-    effective price, effective months and scope (source: customer_product,
-    customer_all, type_product, type_all, product, all). forecast_id null =
-    company-wide."""
+    """The price list: per rule the product (or product type), customer /
+    customer type, fixed unit_price or discount_pct off base_price
+    (fraction: 0.40 = 40% off), the effective price, effective months and
+    scope (source: customer_product, customer_product_type, customer_all,
+    type_product, type_product_type, type_all, product, product_type, all).
+    forecast_id null = company-wide. Paged: total_count covers every
+    matching rule; narrow with unit_id / customer_id / customer_type."""
     body = await call("GET", "/pricing/prices", params={
         "forecast_id": forecast_id, "unit_id": unit_id, "customer_id": customer_id,
         "customer_type": customer_type, "include_inactive": include_inactive,
@@ -351,7 +505,8 @@ async def list_prices(
 async def upsert_prices(
     prices: Annotated[List[Dict[str, Any]], Field(
         description="Price rules to create (no price_id) or partially update (price_id + fields to change). "
-                    "Fields: unit_id (required for a fixed price; omit with discount_from_base = every product), "
+                    "Fields: unit_id (a fixed price needs unit_id or unit_type; omit both with discount_from_base = "
+                    "every product), unit_type (product type, e.g. Rifle: every product of that type), "
                     "customer_type and/or customer_id (omit = every customer), method (fixed | discount_from_base; "
                     "inferred), unit_price (fixed), discount_pct as a FRACTION off the product's base_price "
                     "(0.40 = 40% off), start_period / end_period (YYYY-MM), forecast_id (omit = company-wide), "
@@ -359,11 +514,15 @@ async def upsert_prices(
         min_length=1)],
 ) -> str:
     """Create or update price-list rules (what a customer type / customer
-    pays per product). Creations are all-or-nothing; updates are applied one
-    by one with failures reported. Example: dealers pay 1199 for RFL-308 in
-    2027 => {unit_id: RFL-308, customer_type: Dealer, unit_price: 1199,
-    start_period: 2027-01, end_period: 2027-12}. New sales rows without a
-    price use this list; run forecast_apply_price_list to re-price existing
+    pays per product). A rule without price_id whose scope (scenario,
+    product, product type, customer, customer type) and months equal an
+    active rule's UPDATES that rule (only the fields sent change) instead of
+    adding a duplicate, so re-sending a changed price is safe; matches are
+    listed in matched_existing. Creations are all-or-nothing; updates are
+    applied one by one with failures reported. Example: dealers pay 1199 for
+    RFL-308 in 2027 => {unit_id: RFL-308, customer_type: Dealer, unit_price:
+    1199, start_period: 2027-01, end_period: 2027-12}. New sales rows without
+    a price use this list; run forecast_apply_price_list to re-price existing
     rows."""
     result = await _upsert(prices, id_key="price_id", allowed=PRICE_FIELDS, path="/pricing/prices",
                            bulk_key="prices", label="prices", shape=compact_price)
@@ -390,8 +549,9 @@ async def resolve_price(
     forecast_id: Annotated[Optional[str], Field(description="Scenario; omit for company-wide prices only")] = None,
 ) -> str:
     """The price a customer (or customer type) pays for a product in a month
-    and which rule gave it (source customer_product > customer_all >
-    type_product > type_all > product > base_price > none)."""
+    and which rule gave it (source customer_product > customer_product_type
+    > customer_all > type_product > type_product_type > type_all > product >
+    product_type > all > base_price > none)."""
     body = await call("GET", "/pricing/resolve", params={
         "unit_id": require(unit_id, "unit_id"), "customer_id": customer_id, "customer_type": customer_type,
         "period": period, "forecast_id": forecast_id,
@@ -401,7 +561,7 @@ async def resolve_price(
     return out(drop_empty({k: body.get(k) for k in keep}, keep=("price", "source")))
 
 
-@register("forecast_apply_price_list", WRITE)
+@register("forecast_apply_price_list", UPSERT)
 async def apply_price_list(
     forecast_id: Annotated[str, Field(description="Scenario whose sales rows are re-priced")],
     periods: Annotated[Optional[List[str]], Field(description="Only these months (YYYY-MM)")] = None,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Dict, List, Optional
+from urllib.parse import quote
 
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
@@ -9,7 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 import db.database as dbmod
 from services.model_adjustments import AdjustmentError, adjust_material_costs
 from utils.cost_rollup import bom_line_cost
-from mcp_server.core import READ, WRITE, call, drop_keys, mcp
+from mcp_server.core import DESTRUCTIVE, READ, call, drop_keys, mcp
 
 Scenario = Annotated[Optional[str], Field(description=(
     "Scenario id whose sales quantities drive the numbers; omit for the base scenario "
@@ -32,15 +33,57 @@ def _trim(body: Dict[str, Any], include_monthly: bool) -> Dict[str, Any]:
     return out
 
 
+async def _check_scenario(forecast_id: Optional[str]) -> None:
+    """An unknown scenario id is an error (the costing endpoints would answer with zeros)."""
+    if forecast_id is None or not str(forecast_id).strip():
+        return
+    try:
+        await call("GET", f"/forecast/scenario/{quote(str(forecast_id).strip(), safe='')}")
+    except ToolError as exc:
+        if "404" in str(exc):
+            raise ToolError(f"Scenario '{forecast_id}' not found; see forecast_list_scenarios")
+        raise
+
+
+def _top(body: Dict[str, Any], key: str, top_n: int, sort_key: Optional[str] = None) -> None:
+    """Keep the first ``top_n`` entries of body[key] (largest ``sort_key`` first); report how many were left out."""
+    items = body.get(key)
+    if not isinstance(items, list):
+        return
+    if sort_key:
+        items = sorted(items, key=lambda r: -float((r or {}).get(sort_key) or 0))
+    body[key] = items[:top_n]
+    body[f"{key}_total_count"] = len(items)
+    if len(items) > top_n:
+        body[f"{key}_omitted"] = len(items) - top_n
+        body["hint"] = (f"{len(items) - top_n} more {key.replace('_', ' ')} not shown (totals cover all); raise "
+                        f"top_n or filter by unit_id")
+
+
+TopN = Annotated[int, Field(description="Max products listed, largest net sales first (totals cover all)", ge=1, le=2000)]
+
+
 @mcp.tool(name="forecast_product_cost_summary", annotations=READ)
 async def product_cost_summary(forecast_id: Scenario = None, start_period: Start = None,
-                               end_period: End = None) -> Dict[str, Any]:
+                               end_period: End = None,
+                               unit_id: Annotated[Optional[str], Field(description="Only this product")] = None,
+                               top_n: TopN = 50) -> Dict[str, Any]:
     """Per-product forecast quantity, gross / net sales, material / labor /
     machine cost, total product COGS and gross margin for the window, rolled
     up from BOM + routing for the scenario's quantities (ties to the
     statements' product COGS). Includes per-unit costs and data-quality
-    warnings for products missing a BOM, routing, machine or labor rate."""
-    return _trim(await call("GET", "/products/cost-summary", params=_window(forecast_id, start_period, end_period)), True)
+    warnings for products missing a BOM, routing, machine or labor rate.
+    Lists the top_n products by net sales; summary.totals cover every
+    product. An unknown scenario id is an error."""
+    await _check_scenario(forecast_id)
+    body = _trim(await call("GET", "/products/cost-summary", params=_window(forecast_id, start_period, end_period)), True)
+    if unit_id:
+        products = [p for p in body.get("products") or [] if p.get("product_id") == unit_id]
+        if not products:
+            raise ToolError(f"Product '{unit_id}' not found; check ids with forecast_query_table(table='units')")
+        body["products"] = products
+    _top(body, "products", top_n, "net_sales")
+    return body
 
 
 @mcp.tool(name="forecast_unit_cost_preview", annotations=READ)
@@ -67,13 +110,16 @@ async def cost_breakdown(
         "(one summary row per product)"))] = None,
     start_period: Start = None,
     end_period: End = None,
+    top_n: Annotated[int, Field(description="Max products listed, largest forecast net sales first", ge=1, le=2000)] = 50,
 ) -> Dict[str, Any]:
     """Per-unit COGS per product: material, labor and machine cost, and with
     include_lines each BOM material line and each routing operation with
     its labor and machine cost. `margin` / `margin_percentage` are against
     the product's LIST price (units.base_price), not the forecast's selling
     prices; for margin at forecast prices use forecast_product_cost_summary.
-    forecast_quantity / forecast_net_sales are the window's sales."""
+    forecast_quantity / forecast_net_sales are the window's sales. Lists the
+    top_n products by forecast net sales."""
+    await _check_scenario(forecast_id)
     body = await call("GET", "/source-data/cost-breakdown", params={
         **_window(forecast_id, start_period, end_period), "unit_id": unit_id,
     })
@@ -83,16 +129,62 @@ async def cost_breakdown(
             if isinstance(product, dict):
                 product["bom_line_count"] = len(product.pop("bom_items", None) or [])
                 product["routing_step_count"] = len(product.pop("router_operations", None) or [])
+    _top(body, "cost_breakdown", top_n, "forecast_net_sales")
     return _trim(body, False)
 
 
+#: Products / BOMs named per material unless include_products (the counts are always given).
+MATERIAL_USERS_SHOWN = 3
+
+
 @mcp.tool(name="forecast_materials_usage", annotations=READ)
-async def materials_usage(forecast_id: Scenario = None, start_period: Start = None, end_period: End = None,
-                          include_monthly: Monthly = False) -> Dict[str, Any]:
+async def materials_usage(
+    forecast_id: Scenario = None, start_period: Start = None, end_period: End = None,
+    top_n: Annotated[int, Field(description="Max materials listed, largest spend first (totals cover every material)",
+                                ge=1, le=5000)] = 50,
+    material_contains: Annotated[Optional[str], Field(
+        description="Case-insensitive substring of the material description, e.g. 'barrel'")] = None,
+    bom_id: Annotated[Optional[str], Field(description="Only materials of this BOM")] = None,
+    include_products: Annotated[bool, Field(
+        description="List every product and BOM using each material (default: the first 3 plus counts)")] = False,
+    include_monthly: Monthly = False,
+) -> Dict[str, Any]:
     """Total quantity and spend per material for the scenario's forecast
-    volume in the window, with the products and BOMs that use each
-    material; totals tie to the statements' material COGS."""
+    volume in the window, largest spend first, with the products and BOMs
+    that use each material; totals tie to the statements' material COGS
+    (and always cover every material, also when the list is cut to top_n or
+    filtered: filtered_totals then gives the filter's share)."""
     body = await call("GET", "/products/materials/usage", params=_window(forecast_id, start_period, end_period))
+    materials = body.get("materials") or []
+    filters: Dict[str, Any] = {}
+    if material_contains:
+        wanted = material_contains.strip().lower()
+        materials = [m for m in materials if wanted in str(m.get("material_description") or "").lower()]
+        filters["material_contains"] = material_contains
+    if bom_id:
+        prefix = f"{bom_id.strip()} v"
+        materials = [m for m in materials if any(str(b).startswith(prefix) for b in m.get("boms") or [])]
+        filters["bom_id"] = bom_id
+    materials = sorted(materials, key=lambda m: -float(m.get("total_cost") or 0))
+    shown = []
+    for m in materials[:top_n]:
+        m = dict(m)
+        m["products_using_count"] = len(m.get("products_using") or [])
+        m["boms_count"] = len(m.get("boms") or [])
+        if not include_products:
+            m["products_using"] = (m.get("products_using") or [])[:MATERIAL_USERS_SHOWN]
+            m["boms"] = (m.get("boms") or [])[:MATERIAL_USERS_SHOWN]
+        shown.append(m)
+    body["materials"] = shown
+    body["materials_total_count"] = len(materials)
+    if len(materials) > top_n:
+        body["materials_omitted"] = len(materials) - top_n
+        body["hint"] = (f"{len(materials) - top_n} smaller materials not listed (totals cover all); raise top_n or "
+                        f"filter with material_contains / bom_id")
+    if filters:
+        body["filters"] = filters
+        body["filtered_totals"] = {"material_count": len(materials),
+                                   "total_cost": round(sum(float(m.get("total_cost") or 0) for m in materials), 2)}
     return _trim(body, include_monthly)
 
 
@@ -124,7 +216,7 @@ async def list_bom(
     bom_id: Annotated[Optional[str], Field(description="One BOM; omit for all lines")] = None,
     version: Annotated[Optional[str], Field(description="BOM version, e.g. '1.0'")] = None,
     material_contains: Annotated[Optional[str], Field(description="Case-insensitive substring of material_description, e.g. 'steel'")] = None,
-    limit: Annotated[int, Field(description="Max lines returned (totals cover every matching line)", ge=1, le=2000)] = 200,
+    limit: Annotated[int, Field(description="Max lines returned (totals cover every matching line)", ge=1, le=2000)] = 100,
 ) -> Dict[str, Any]:
     """List BOM lines (material, qty, unit price, line cost) with the products
     that use each BOM and the record_id forecast_update_record needs. Use it
@@ -174,7 +266,7 @@ async def list_bom(
     return out
 
 
-@mcp.tool(name="forecast_adjust_material_costs", annotations=WRITE)
+@mcp.tool(name="forecast_adjust_material_costs", annotations=DESTRUCTIVE)
 async def adjust_material_costs_tool(
     material_contains: Annotated[Optional[str], Field(description="Case-insensitive substring of material_description, e.g. 'steel'")] = None,
     bom_ids: Annotated[Optional[List[str]], Field(description="Restrict to these BOM ids")] = None,

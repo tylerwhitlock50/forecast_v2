@@ -47,6 +47,7 @@ const DeductionRuleModal = ({ open, rule, defaults, onClose, onSave, customers, 
   });
 
   const typeInfo = DEDUCTION_TYPE_MAP[form.deduction_type];
+  const stacks = Boolean(typeInfo?.stacks);
   const perUnit = form.method === 'per_unit';
   const fraction = percentToFraction(form.ratePct);
   const example = (() => {
@@ -85,7 +86,7 @@ const DeductionRuleModal = ({ open, rule, defaults, onClose, onSave, customers, 
         <ModalHeader>
           <div>
             <ModalTitle>{rule ? 'Edit rule' : 'Add a rule'}</ModalTitle>
-            <p className="mt-1 text-sm text-gray-500">The most specific matching rule of each kind is applied to every sales row.</p>
+            <p className="mt-1 text-sm text-gray-500">The most specific matching rule of each kind is applied to every sales row. Other allowances: one rule per program name, and the programs add up.</p>
           </div>
         </ModalHeader>
         <ModalContent className="space-y-5">
@@ -95,9 +96,15 @@ const DeductionRuleModal = ({ open, rule, defaults, onClose, onSave, customers, 
                 {DEDUCTION_TYPES.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
               </select>
             </Field>
-            <Field label="Name" htmlFor="ded-name" help="Optional. Leave blank for an automatic name.">
-              <input id="ded-name" className={inputClass} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. 2% 10 net 30" />
-            </Field>
+            {stacks ? (
+              <Field label="Program name" htmlFor="ded-name" help="Each program (co-op, freight, rebate…) applies on its own and they add up. Rules with the same name are one program: the most specific applies.">
+                <input id="ded-name" className={inputClass} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Co-op advertising" />
+              </Field>
+            ) : (
+              <Field label="Name" htmlFor="ded-name" help="Optional. Leave blank for an automatic name.">
+                <input id="ded-name" className={inputClass} value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. 2% 10 net 30" />
+              </Field>
+            )}
           </div>
 
           <div>
@@ -142,7 +149,10 @@ const DeductionRuleModal = ({ open, rule, defaults, onClose, onSave, customers, 
 
           <fieldset className="rounded-md border border-gray-200 p-4">
             <legend className="px-1 text-sm font-medium text-gray-800">Applies to</legend>
-            <p className="mb-3 text-xs text-gray-500">Leave everything on “Any” to apply to all sales. A customer rule beats a customer-type rule, which beats a product rule, which beats a product-type rule.</p>
+            <p className="mb-3 text-xs text-gray-500">
+              Leave everything on “Any” to apply to all sales. A customer rule beats a customer-type rule, which beats a product rule, which beats a product-type rule
+              {stacks ? ' (for other allowances, among rules with the same program name).' : '.'}
+            </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Customer" htmlFor="ded-customer">
                 <select id="ded-customer" className={selectClass} value={form.customer_id} onChange={(e) => set('customer_id', e.target.value)}>

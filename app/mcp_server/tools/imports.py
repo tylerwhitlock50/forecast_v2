@@ -11,9 +11,12 @@ the csv module / openpyxl and its rows are sent to the same endpoint.
 
 File paths: a relative path is read from the data folder (``db_manager.
 data_dir``; ``/data`` in Docker, which is ``./data`` on the host), and a
-leading ``data/`` or ``./data/`` is accepted so host-style paths work. A
-relative path may not leave the data folder. An absolute path is accepted
-when it exists and is readable by the API process (a local, non-Docker run).
+leading ``data/`` or ``./data/`` is accepted so host-style paths work. No
+path may leave the data folder (symlinks are resolved first): there is no
+authentication, so an MCP caller must not be able to list or read the rest
+of the API's machine. An absolute path inside the data folder is fine. An
+absolute or '~' path elsewhere is refused unless the API runs with
+``FORECAST_ALLOW_ABSOLUTE_PATHS=1`` (a local, single-user run).
 """
 import csv
 import io
@@ -27,6 +30,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 import db.database as dbmod
+from utils.period_normalizer import month_from_name, normalize_month
 from mcp_server.core import DESTRUCTIVE, READ, UPSERT, api, call
 from mcp_server.tools._common import cap, out, put_capped, register
 
@@ -52,8 +56,9 @@ Rows = Annotated[Optional[List[Dict[str, Any]]], Field(
                 "ignoring case / spaces / underscores, plus aliases: see forecast_list_import_templates). "
                 "Give rows OR file_path.")]
 FilePath = Annotated[Optional[str], Field(
-    description="Instead of rows: a .csv/.xlsx the API can read. Relative = inside the data folder (Docker: "
-                "./data on the host), e.g. 'imports/boms.xlsx'; absolute paths work when the API runs locally.")]
+    description="Instead of rows: a .csv/.xlsx in the data folder, relative to it (Docker: ./data on the host), "
+                "e.g. 'imports/boms.xlsx'. Paths outside the data folder are refused unless the API runs with "
+                "FORECAST_ALLOW_ABSOLUTE_PATHS=1.")]
 Sheet = Annotated[Optional[str], Field(description="XLSX sheet (default: the active one)")]
 HeaderRow = Annotated[Optional[int], Field(
     description="1-based header row (default: first row with 2+ filled cells)", ge=1)]
@@ -81,6 +86,14 @@ def _docker_hint() -> str:
     return f" Relative paths are read from the data folder {data_dir}."
 
 
+#: Environment switch for reading files outside the data folder (absolute and '~' paths). Off by default.
+ALLOW_ABSOLUTE_PATHS_ENV = "FORECAST_ALLOW_ABSOLUTE_PATHS"
+
+
+def absolute_paths_allowed() -> bool:
+    return os.getenv(ALLOW_ABSOLUTE_PATHS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def resolve_path(file_path: Optional[str], allow_dir: bool = False) -> str:
     """Absolute path of an importable file (or, with allow_dir, a folder); ToolError otherwise."""
     raw = (file_path or "").strip()
@@ -89,9 +102,15 @@ def resolve_path(file_path: Optional[str], allow_dir: bool = False) -> str:
         if allow_dir:
             return data_dir
         raise ToolError("file_path is empty")
-    expanded = os.path.expanduser(raw)
-    if os.path.isabs(expanded):
-        path = os.path.realpath(expanded)
+    outside_hint = (f" Copy the file into the data folder ({data_dir}) and pass a path relative to it"
+                    f"{' (in Docker: ./data on the host)' if data_dir == '/data' else ''}; for a local single-user "
+                    f"run the API can be started with {ALLOW_ABSOLUTE_PATHS_ENV}=1 to allow other folders.")
+    if raw.startswith("~") or os.path.isabs(raw):
+        if raw.startswith("~") and not absolute_paths_allowed():
+            raise ToolError(f"'{raw}': home-folder paths are not read.{outside_hint}")
+        path = os.path.realpath(os.path.expanduser(raw))
+        if not _inside(path, data_dir) and not absolute_paths_allowed():
+            raise ToolError(f"'{raw}' is outside the data folder.{outside_hint}")
         if not os.path.exists(path):
             raise ToolError(f"File not found: {raw}.{_docker_hint()}")
     else:
@@ -105,7 +124,7 @@ def resolve_path(file_path: Optional[str], allow_dir: bool = False) -> str:
             resolved = os.path.realpath(os.path.join(data_dir, candidate))
             if not _inside(resolved, data_dir):
                 raise ToolError(f"'{raw}' points outside the data folder ({data_dir}). Relative paths must stay "
-                                f"inside it; give an absolute path for a file elsewhere on the API's machine.")
+                                f"inside it.{outside_hint}")
             if os.path.exists(resolved):
                 path = resolved
                 break
@@ -314,14 +333,19 @@ def _summarize(body: Dict[str, Any], source: Optional[Dict[str, Any]], detail: b
 
 
 def _records_summary(records: List[Dict[str, Any]], key: str, detail: bool) -> Dict[str, Any]:
-    """Ids by action (created / updated / skipped / unchanged), capped; the full list with detail."""
+    """
+    Ids by action (created_ids / updated_ids / skipped_ids / unchanged_ids),
+    capped; updates that name their changed fields go in updated_records
+    (never in 'updated', which stays the endpoint's count). The full list
+    with detail.
+    """
     if detail:
         return {"records": records}
     summary: Dict[str, Any] = {}
     for action in ("created", "updated", "skipped", "unchanged"):
         items = [r for r in records if r.get("action") == action]
         if action == "updated" and any(r.get("fields") for r in items):
-            put_capped(summary, "updated", [{key: r.get(key), "fields": r.get("fields")} for r in items], 25)
+            put_capped(summary, "updated_records", [{key: r.get(key), "fields": r.get("fields")} for r in items], 25)
         else:
             put_capped(summary, f"{action}_ids", [r.get(key) for r in items], 50)
     return summary
@@ -408,11 +432,32 @@ def _key(name: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
+#: A template counts as a match only when the file has one of these columns: what makes it that kind of
+#: file (a customer + product file is not a price list without a price or discount column).
+_DEFINING_COLUMNS = {
+    "prices": ("unit_price", "discount_pct"),
+    "deductions": ("deduction_type", "rate", "amount_per_unit"),
+}
+
+
+def _month_columns(columns: List[str]) -> List[str]:
+    """Headers that are months (2027-01, Jan-27, an Excel date, or a bare month name): a wide layout."""
+    return [c for c in columns if normalize_month(c) or month_from_name(c)]
+
+
 def _match_templates(columns: List[str], templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Rank templates by how many of the file's headers they recognise (a hint; the import decides)."""
-    headers = {_key(c): c for c in columns}
+    """
+    Rank templates by how many of the file's headers they recognise (a hint;
+    the import decides). Two or more month headers (one column per month)
+    stand for the sales template's period + quantity, as forecast_import_sales
+    reads that wide layout.
+    """
+    months = _month_columns(columns)
+    wide = len(months) >= 2
+    headers = {_key(c): c for c in columns if c not in months}
     ranked = []
     for t in templates:
+        kind = t.get("kind")
         matched: Dict[str, str] = {}
         missing = []
         for c in t.get("columns") or []:
@@ -420,11 +465,24 @@ def _match_templates(columns: List[str], templates: List[Dict[str, Any]]) -> Lis
             hit = next((headers[_key(n)] for n in names if _key(n) in headers), None)
             if hit:
                 matched[hit] = c.get("name")
+            elif kind == "sales" and wide and c.get("name") in ("period", "quantity"):
+                continue
             elif c.get("required"):
                 missing.append(c.get("name"))
-        if matched:
-            ranked.append({"kind": t.get("kind"), "tool": KIND_TOOLS.get(t.get("kind")), "columns": matched,
-                           "missing_required": missing, "_score": (len(matched) - 2 * len(missing))})
+        defining = _DEFINING_COLUMNS.get(kind)
+        if defining and not set(defining) & set(matched.values()):
+            continue
+        if not matched:
+            continue
+        score = len(matched) - 2 * len(missing)
+        entry: Dict[str, Any] = {"kind": kind, "tool": KIND_TOOLS.get(kind), "columns": matched,
+                                 "missing_required": missing}
+        if kind == "sales" and wide:
+            entry["month_columns"] = f"{len(months)} ({months[0]} .. {months[-1]}): one column per month, read as " \
+                                     f"period + quantity"
+            score += 2 + len(months)
+        entry["_score"] = score
+        ranked.append(entry)
     ranked.sort(key=lambda r: -r["_score"])
     for r in ranked:
         r.pop("_score")
@@ -448,13 +506,18 @@ async def import_records(
     dry_run: DryRun = False,
     detail: Detail = False,
 ) -> str:
-    """Bulk create / update master data: customers (customer_type drives
-    customer-type prices and deduction rules), products (base_price is the
-    fallback price; bom_id / router_id link costing), machines and labor
-    rates. Rows match by id, or by name when the id is blank; new rows
-    without an id get one in the existing style (CUST-001, PROD-001, M0001,
-    RATE-001). Load in this order: customers, products, machines, labor
-    rates, then routings and BOMs."""
+    """Bulk create / update master data from a file or rows: customers
+    (customer_type drives customer-type prices and deduction rules),
+    products (base_price is the fallback price; bom_id / router_id link
+    costing), machines and labor rates. The tool for loading the user's
+    files: it reads file_path, accepts the header aliases of
+    forecast_list_import_templates and reports per-row errors without
+    stopping the rest. Rows match by id, or by name when the id is blank;
+    new rows without an id get one in the existing style (CUST-001,
+    PROD-001, M0001, RATE-001). Load in this order: customers, products,
+    machines, labor rates, then routings and BOMs. Returns counts (created,
+    updated, skipped), the ids by action and, in updated_records, which
+    fields each update changed."""
     data, source = await load_rows_async(rows, file_path, sheet, header_row)
     body = await call("POST", "/import/records", json={"table": table, "rows": data, "mode": mode, "dry_run": dry_run})
     result = _summarize(body, source, detail)
@@ -553,7 +616,8 @@ RuleMode = Annotated[Literal["upsert", "append", "replace"], Field(
 @register("forecast_import_prices", DESTRUCTIVE)
 async def import_prices(
     rows: Annotated[Optional[List[Dict[str, Any]]], Field(
-        description="One price rule per row: unit_id (blank = every product, discounts only), customer_type and/or "
+        description="One price rule per row: unit_id (blank = every product, discounts only) or unit_type (product "
+                    "type), customer_type and/or "
                     "customer_id (blank = every customer), unit_price (fixed price) OR discount_pct (off the "
                     "product's base_price: 40%, 0.40 or 40), start_period / end_period (YYYY-MM, blank = open), "
                     "forecast_id? (blank = company-wide), notes?. Customers / products may be given by name. "
@@ -568,9 +632,10 @@ async def import_prices(
     detail: Detail = False,
 ) -> str:
     """Import the price list (what each customer type / customer pays per
-    product). Most specific rule wins: customer + product > customer (all
-    products) > type + product > type (all products) > product (all
-    customers) > the product's base_price. Sales rows without a price are
+    product or product type). Most specific rule wins: customer + product >
+    customer + product type > customer (all products) > type + product >
+    type + product type > type (all products) > product (all customers) >
+    product type > the product's base_price. Sales rows without a price are
     priced from this list on import; forecast_apply_price_list re-prices
     existing rows."""
     data, source = await load_rows_async(rows, file_path, sheet, header_row)
@@ -605,8 +670,12 @@ async def import_deductions(
     allowances and excise tax come off gross sales (net sales = gross -
     deductions); commissions are a selling expense. FET embedded in the
     price at 11%: deduction_type excise_tax, method embedded_tax, rate 11%
-    (tax = price x 0.11 / 1.11). One rule per type applies to each sale (the
-    most specific); types stack. Check with forecast_deduction_preview."""
+    (tax = price x 0.11 / 1.11). One terms / chargebacks / excise /
+    commission rule applies to each sale (the most specific; on equal
+    specificity the scenario rule); other_allowance rows are programs keyed
+    by name (Co-op, Freight allowance): every matching program applies and
+    they add up, so give each allowance its own name. Types stack. Check
+    with forecast_deduction_preview."""
     data, source = await load_rows_async(rows, file_path, sheet, header_row)
     payload: Dict[str, Any] = {"rows": data, "mode": mode, "dry_run": dry_run}
     if forecast_id:

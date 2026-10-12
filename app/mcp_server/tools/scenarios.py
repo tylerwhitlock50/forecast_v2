@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Dict, List, Optional
+from urllib.parse import quote
 
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
@@ -183,8 +184,10 @@ async def branch_scenario(
     copy_assumptions: bool = True,
 ) -> Dict[str, Any]:
     """Branch a scenario in one transaction: copies sales, scenario-specific
-    expenses / payroll / capex, assumptions and notes into a new scenario, with
-    optional across-the-board price / quantity multipliers and period extension.
+    expenses / payroll / capex, the scenario's own price-list rules and
+    deduction rules, assumptions and notes into a new scenario (company-wide
+    rules apply to every scenario and are not copied), with optional
+    across-the-board price / quantity multipliers and period extension.
     Use this before experimenting so the user can compare against the original.
     For whole units and 4-decimal prices, branch without multipliers and then
     run forecast_adjust_sales(all_rows=true, ...) on the copy."""
@@ -200,9 +203,19 @@ async def branch_scenario(
 @mcp.tool(name="forecast_delete_scenario", annotations=DESTRUCTIVE)
 async def delete_scenario(forecast_id: ForecastId) -> Dict[str, Any]:
     """Delete a scenario and cascade-delete its sales, scenario-specific
-    expenses / payroll / capex and assumptions. Company-wide rows are kept.
-    Irreversible: consider forecast_save_database first."""
-    return await call("DELETE", f"/forecast/scenario/{require(forecast_id, 'forecast_id')}")
+    expenses / payroll / capex, its own price-list rules and deduction rules
+    (forecast_id = this scenario) and assumptions. Company-wide rows and
+    rules are kept. Irreversible: consider forecast_save_database first.
+    `deleted` gives the row count per table."""
+    fid = require(forecast_id, "forecast_id")
+    before = await call("GET", f"/forecast/scenario/{quote(fid, safe='')}")
+    result = await call("DELETE", f"/forecast/scenario/{quote(fid, safe='')}")
+    deleted = result.get("deleted")
+    if isinstance(deleted, dict):
+        for label, key in (("prices", "price_count"), ("deduction_rules", "deduction_rule_count")):
+            if label not in deleted and before.get(key) is not None:
+                deleted[label] = before[key]
+    return result
 
 
 @mcp.tool(name="forecast_compare_scenarios", annotations=READ)
@@ -212,7 +225,22 @@ async def compare_scenarios(
     end_period: Annotated[Optional[str], Field(description="YYYY-MM; defaults to the latest sales month across the selection")] = None,
 ) -> Dict[str, Any]:
     """Side-by-side statement totals for several scenarios over a shared window
-    (revenue, COGS, gross profit, operating income, net income, closing cash)."""
+    (revenue, COGS, gross profit, operating income, net income, closing cash).
+    An unknown scenario id is an error."""
+    ids = [str(f).strip() for f in forecast_ids if f is not None and str(f).strip()]
+    if not ids:
+        raise ToolError("forecast_ids needs at least one scenario id, e.g. ['F001'] (see forecast_list_scenarios)")
+    missing = []
+    for fid in ids:
+        try:
+            await call("GET", f"/forecast/scenario/{quote(fid, safe='')}")
+        except ToolError as exc:
+            if "404" not in str(exc):
+                raise
+            missing.append(fid)
+    if missing:
+        raise ToolError(f"Scenario(s) not found: {', '.join(missing)}; see forecast_list_scenarios. Nothing was compared.")
+    forecast_ids = ids
     return await call("GET", "/forecast/comparison", params={
         "forecast_ids": forecast_ids, "start_period": start_period, "end_period": end_period,
     })

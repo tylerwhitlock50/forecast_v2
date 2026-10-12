@@ -1075,6 +1075,20 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "message": "No discount, allowance, excise or commission rules are set up, so net sales equal gross sales. "
                        "Add them under Pricing & Deductions.",
         })
+    elif window_gross and not any(line.get("applied_rules") for line in sales_lines["lines"]
+                                  if line["period"] in window_set):
+        # Rules exist but every one is scoped to customers / types / products / months with no sales in the window
+        # (e.g. FET for product type 'Rifles' when the products are 'Rifle').
+        rule_count = int(sales["deduction_rule_count"])
+        warnings.append({
+            "code": "no_deduction_rules",
+            "level": "info",
+            "rule_count": rule_count,
+            "message": f"{rule_count} deduction rule{'s are' if rule_count != 1 else ' is'} set up but none applies to "
+                       f"any sales row in {periods[0]}..{periods[-1]}, so net sales equal gross sales. Check the "
+                       f"customers, customer types, products, product types and months the rules are scoped to "
+                       f"under Pricing & Deductions.",
+        })
 
     tax_rate = float(assumptions.get("income_tax_rate") or 0)
     dso = float(assumptions.get("dso_days") or 0)

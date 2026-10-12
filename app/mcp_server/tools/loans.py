@@ -1,12 +1,13 @@
 """Loan tools: debt, amortization schedules and debt-service cash flow."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
+from urllib.parse import quote
 
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, mcp, require, strip_none
+from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, mcp, require, strip_none
 
 LOAN_TYPES = ("term_loan", "line_of_credit", "sba_loan", "equipment_loan", "real_estate_loan")
 LOAN_FIELDS = (
@@ -78,10 +79,33 @@ async def delete_loan(loan_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool(name="forecast_loan_schedule", annotations=READ)
-async def loan_schedule(loan_id: str) -> Dict[str, Any]:
-    """Full amortization schedule for one loan: each payment's principal,
-    interest and remaining balance."""
-    return await call("GET", f"/loans/{require(loan_id, 'loan_id')}/schedule")
+async def loan_schedule(
+    loan_id: str,
+    start_period: Annotated[Optional[str], Field(description="Only payments from this month (YYYY-MM)")] = None,
+    end_period: Annotated[Optional[str], Field(description="Only payments up to this month (YYYY-MM)")] = None,
+    limit: Annotated[int, Field(description="Payments per page (totals cover the whole loan)", ge=1, le=1000)] = 120,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    layout: Annotated[Literal["table", "records"], Field(description=(
+        "table: payment_schedule is {columns, rows} (default, about half the size); records: one object per "
+        "payment"))] = "table",
+) -> Dict[str, Any]:
+    """Amortization schedule for one loan: each payment's principal,
+    interest and remaining balance, paged (a 30-year mortgage has 360
+    payments; filter by start_period / end_period or page with offset).
+    total_payments / total_interest and loan_summary cover the whole loan."""
+    body = await call("GET", f"/loans/{quote(require(loan_id, 'loan_id'), safe='')}/schedule")
+    payments = body.get("payment_schedule")
+    if not isinstance(payments, list):
+        return body
+    if start_period or end_period:
+        lo, hi = (start_period or "0000-00").strip(), (end_period or "9999-99").strip()
+        payments = [p for p in payments if lo <= str(p.get("payment_date") or "")[:7] <= hi]
+    chunk = payments[offset:offset + limit]
+    more = offset + len(chunk) < len(payments)
+    body["payment_schedule"] = as_table(chunk) if layout == "table" else chunk
+    body.update({"payment_count": len(payments), "returned": len(chunk), "offset": offset,
+                 "next_offset": offset + len(chunk) if more else None})
+    return body
 
 
 @mcp.tool(name="forecast_loan_summary", annotations=READ)

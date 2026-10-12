@@ -45,15 +45,15 @@ SERVER_NAME = "forecast"
 # The tools call the API in-process; one log line per internal request is noise.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-INSTRUCTIONS = """Financial model of a manufacturer: monthly (YYYY-MM) sales forecast by customer and product, gross-to-net deductions, product cost from BOMs and routings, payroll, expenses, loans, capex, and the resulting income statement, cash flow and balance sheet. Writes go straight to the app's database; the user sees them after refreshing the web UI.
+INSTRUCTIONS = """Financial model of a manufacturer: monthly (YYYY-MM) sales by customer and product, gross-to-net deductions, BOM / routing product costs, payroll, expenses, loans, capex -> income statement, cash flow, balance sheet. Writes go straight to the database; the user sees them after refreshing the web UI.
 
 Start with forecast_get_overview (scenarios, base scenario, sales windows). Sales belong to one scenario (forecast_id, e.g. F001); prices, deduction rules, payroll, expenses and capex are per scenario or company-wide (forecast_id null). Products, BOMs, routings, machines and labor rates are company-wide.
 
 BUILDING A MODEL (in this order; forecast_list_import_templates gives each step's columns and header aliases, forecast_preview_file shows a file's columns first):
-1 customers with customer_type (Dealer, Distributor, Government...; it drives prices and deductions) -> 2 products (unit_id, unit_name, unit_type e.g. Rifle/Pistol, base_price) -> 3 machines ($/h, monthly capacity) and labor rates ($/h): all forecast_import_records -> 4 forecast_import_routings (minutes per unit per operation) -> 5 forecast_import_boms (a unit_id column links products; version '1' = '1.0') -> 6 prices by customer type / customer (forecast_import_prices or forecast_upsert_prices) -> 7 deduction rules (forecast_import_deductions / forecast_upsert_deduction_rules) -> 8 sales forecast (forecast_import_sales into a scenario; periods 2027-01, 1/2027, Jan-27, Jan 2027 or a date, quarters / weeks are rejected; a blank unit_price is priced from the price list, then base_price; unknown customer / product ids are errors unless auto_create) -> 9 check the tools' warnings, forecast_data_quality and forecast_cogs_forecast group_by=unit_costs (missing BOM, routing or rate = understated COGS) -> 10 forecast_cogs_forecast, forecast_labor_forecast, forecast_financial_statements -> 11 forecast_export_workbook (Excel, saved in the data folder's exports/).
-Import tools take rows (objects read from the user's file) or file_path (relative to the data folder; in Docker that is ./data on the host).
+1 customers with customer_type (Dealer, Distributor...; drives prices and deductions) -> 2 products (unit_id, unit_name, unit_type e.g. Rifle/Pistol, base_price) -> 3 machines ($/h, monthly capacity) and labor rates ($/h): all forecast_import_records -> 4 forecast_import_routings -> 5 forecast_import_boms (a unit_id column links products) -> 6 prices by customer type / customer (forecast_import_prices or forecast_upsert_prices) -> 7 deduction rules (forecast_import_deductions / forecast_upsert_deduction_rules) -> 8 sales forecast (forecast_import_sales into a scenario; a row per month or a column per month; quarters / weeks rejected; a blank unit_price comes from the price list, then base_price; unknown ids are errors unless auto_create) -> 9 check warnings, forecast_data_quality, forecast_cogs_forecast group_by=unit_costs (missing BOM / routing / rate = understated COGS) -> 10 forecast_cogs_forecast, forecast_labor_forecast, forecast_financial_statements -> 11 forecast_export_workbook (Excel, saved in the data folder's exports/).
+Import tools take rows or file_path (relative to the data folder, ./data on the host in Docker; other folders need FORECAST_ALLOW_ABSOLUTE_PATHS=1 on the API).
 
-GROSS TO NET: gross sales (qty x price) - terms allowance - chargebacks - other allowances - excise tax = net sales (the statements' revenue). Commissions are a selling expense below gross profit. Rates are fractions: 2% = 0.02 (imports also accept '2%'). Methods: percent_of_gross; embedded_tax = price x rate / (1 + rate), so FET included in the price at 11% is excise_tax, embedded_tax, rate 0.11 ($1,110 invoice -> $110 tax); percent_of_net; per_unit. One rule per deduction type applies to a sale: the most specific (customer > customer type > product > product type; scenario beats company-wide); types stack; a 0% rule is an exemption (e.g. Government exempt from FET). Prices: customer+product > customer > type+product > type > product > base_price. Verify with forecast_simulate_deductions, forecast_resolve_price, forecast_deduction_preview.
+GROSS TO NET: gross sales (qty x price) - terms allowance - chargebacks - other allowances - excise tax = net sales (the statements' revenue). Commissions are a selling expense below gross profit. Rates are fractions: 2% = 0.02 (imports also accept '2%'). Methods: percent_of_gross; embedded_tax = price x rate / (1 + rate), so FET included in the price at 11% is excise_tax, embedded_tax, rate 0.11 ($1,110 invoice -> $110 tax); percent_of_net; per_unit. Which rule applies: SPECIFICITY FIRST (customer 8 + customer type 4 + product 2 + product type 1; highest wins). Only on equal specificity does a scenario rule beat a company-wide one: a scenario rule for all customers does NOT override a company-wide Dealer rule, so scope it the same (customer_type Dealer). One terms / chargebacks / excise / commission rule per sale; other_allowance rules are programs named by the rule name (Co-op, Freight): matching programs add up. Types stack; rate 0 = exemption (Government exempt from FET). Prices use the same specificity, then the product's base_price. Verify with forecast_simulate_deductions, forecast_resolve_price, forecast_deduction_preview.
 
 ADJUSTING: forecast_branch_scenario to compare; forecast_adjust_sales (e.g. ASP -35% in June => periods=[2026-06], price_multiplier=0.65); forecast_upsert_prices then forecast_apply_price_list; forecast_adjust_material_costs (e.g. steel +12% => material_contains=steel, price_multiplier=1.12) is company-wide, every scenario and month; a change starting in a given month cannot be modelled yet, say so. Show the effect with forecast_financial_statements before and after.
 
@@ -104,10 +104,49 @@ def to_json_text(result: Any) -> str:
 def _too_large_message(tool_name: str, size: int) -> str:
     return (
         f"The {tool_name} result is {size // 1000} KB, over the {MAX_RESPONSE_CHARS // 1000} KB response budget "
-        f"(an assistant's tool-result limit). Nothing is wrong with the data; ask for less: a smaller limit, "
-        f"a narrower period window, filters, sections=[...] / fields=[...] where the tool offers them, or "
-        f"forecast_sql_query with GROUP BY for an aggregate."
+        f"(an assistant's tool-result limit). Nothing is wrong with the data and nothing was changed; ask for "
+        f"less: a smaller limit / top_n, a narrower period window, filters, sections=[...] / fields=[...] where "
+        f"the tool offers them, or forecast_sql_query with GROUP BY for an aggregate."
     )
+
+
+#: List lengths tried, longest first, when a write tool's result must be cut to fit.
+_WRITE_TRIM_STEPS = (100, 50, 25, 10, 5, 2, 1, 0)
+
+
+def _fit_write_result(tool_name: str, text: str) -> str:
+    """
+    A WRITE tool's oversized result, cut to fit the budget instead of being
+    turned into an error: the tool has already run, so an error would invite
+    a retry that writes the same data again. Counts and other scalars are
+    kept; lists are cut to their first entries (``result_truncated`` gives
+    each cut list's full length) and the note says the write was applied.
+    """
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    dry_run = isinstance(payload, dict) and payload.get("dry_run") is True
+    note = (f"{tool_name} completed; its result was cut to fit the {MAX_RESPONSE_CHARS // 1000} KB response "
+            f"budget. " + ("This was a dry run: nothing was written." if dry_run else
+                           "The write WAS applied: do not call it again for the same rows. Read the details "
+                           "with the list / query tools."))
+    budget = MAX_RESPONSE_CHARS
+    if isinstance(payload, (dict, list)):
+        for max_items in _WRITE_TRIM_STEPS:
+            trimmed, cut = trim_lists(payload, max_items)
+            wrapped = dict(trimmed) if isinstance(trimmed, dict) else {"items": trimmed}
+            wrapped["result_truncated"] = {"note": note, "lists_cut": cut}
+            candidate = to_json_text(wrapped)
+            if len(candidate) <= budget:
+                return candidate
+        if isinstance(payload, dict):  # long text values: keep the numbers and flags only
+            scalars = {k: v for k, v in payload.items() if isinstance(v, (int, float, bool)) or v is None}
+            scalars["result_truncated"] = {"note": note, "kept": "numbers and flags only"}
+            candidate = to_json_text(scalars)
+            if len(candidate) <= budget:
+                return candidate
+    return to_json_text({"result_truncated": {"note": note}, "result_start": text[:max(0, budget // 2)]})
 
 
 class _CompactFuncMetadata(FuncMetadata):
@@ -118,15 +157,23 @@ class _CompactFuncMetadata(FuncMetadata):
     indentation adds a third on top. The tools' declared return type is a
     plain ``Dict[str, Any]``, so the output schema carries no information
     and is dropped (tools are registered with ``structured_output=False``).
+
+    Over the response budget, a READ-ONLY tool's result becomes an error
+    asking for a narrower request (nothing happened, so asking again is
+    safe); any other tool's result is cut to fit and stays a success that
+    says the write was applied (see ``_fit_write_result``).
     """
 
     tool_name: str = ""
+    read_only: bool = True
 
     def convert_result(self, result: Any) -> Any:
         if isinstance(result, CallToolResult) or type(result).__name__ == "InputRequiredResult":
             return super().convert_result(result)
         text = result if isinstance(result, str) else to_json_text(result)
         if MAX_RESPONSE_CHARS and len(text) > MAX_RESPONSE_CHARS:
+            if not self.read_only:
+                return CallToolResult(content=[TextContent(type="text", text=_fit_write_result(self.tool_name, text))])
             return CallToolResult(content=[TextContent(type="text", text=_too_large_message(self.tool_name, len(text)))],
                                   is_error=True)
         return CallToolResult(content=[TextContent(type="text", text=text)])
@@ -210,7 +257,8 @@ def _tidy_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 def harden_tool(tool: Any) -> None:
     """Strict arguments + compact results + tidy description for one tool."""
     strict = _strict_arg_model(tool.fn_metadata.arg_model, tool.name)
-    tool.fn_metadata = _CompactFuncMetadata(arg_model=strict, tool_name=tool.name)
+    read_only = bool(tool.annotations is not None and tool.annotations.read_only_hint)
+    tool.fn_metadata = _CompactFuncMetadata(arg_model=strict, tool_name=tool.name, read_only=read_only)
     tool.parameters = _tidy_schema(strict.model_json_schema(by_alias=True))
     tool.description = _clean_description(tool.description)
 
@@ -252,9 +300,16 @@ TRANSPORT_SECURITY = TransportSecuritySettings(
 )
 
 # Tool annotation presets. Hints only; the API enforces nothing on top.
+# destructive_hint follows the MCP spec: true unless the tool ONLY adds new
+# records, so anything that overwrites or deletes stored values is destructive
+# (clients may ask the user before running it).
+#: Reads nothing but the model; never changes it.
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+#: Only adds new records (a repeat adds them again).
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
-UPSERT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+#: Creates or overwrites records; repeating the same call leaves the same state.
+UPSERT = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)
+#: Deletes records, or changes them relative to their current values (a repeat changes them again).
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)
 
 
@@ -396,6 +451,21 @@ def page(rows: List[Any], limit: int, offset: int = 0) -> Dict[str, Any]:
         "has_more": more,
         "next_offset": offset + len(chunk) if more else None,
     }
+
+
+#: Row lists of the generic read tools (forecast_query_table, forecast_sql_query) are cut to fit this many
+#: characters, so a default call on a wide table returns a page instead of an over-budget error.
+ROWS_BUDGET_CHARS = 40_000
+
+
+def fit_rows(rows: List[Any], budget: int = ROWS_BUDGET_CHARS) -> int:
+    """How many leading ``rows`` fit in ``budget`` characters of compact JSON (always at least one)."""
+    total = 2
+    for i, row in enumerate(rows):
+        total += len(to_json_text(row)) + 1
+        if total > budget and i > 0:
+            return i
+    return len(rows)
 
 
 def trim_lists(obj: Any, max_items: int, *, path: str = "", skip: Tuple[str, ...] = ()) -> Tuple[Any, Dict[str, int]]:

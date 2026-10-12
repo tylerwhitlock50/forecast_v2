@@ -26,9 +26,18 @@ import { errorMessage } from '../DataImport/importSteps';
 
 const SHORT_SOURCE = {
   type_all: 'type discount',
+  type_product_type: 'product-type price',
   product: 'all customers',
+  product_type: 'product-type price',
   all: 'all customers',
   base_price: 'list price',
+};
+
+/** 'Hunter Rifle', 'Product type Accessory' or 'All products'. */
+const describeProducts = (rule) => {
+  if (rule.unit_id) return rule.unit_name || rule.unit_id;
+  if (rule.unit_type) return `Product type ${rule.unit_type}`;
+  return 'All products';
 };
 
 const describePrice = (rule) => {
@@ -41,7 +50,7 @@ const describePrice = (rule) => {
 const PriceCell = ({ rules, product, customerType, scenarioId, onOpen }) => {
   const explicit = cellRules(rules, product.unit_id, customerType).filter(ruleIsActive);
   const own = explicit[0] || null;
-  const resolved = resolveCellPrice(rules, { unitId: product.unit_id, basePrice: product.base_price, customerType, forecastId: scenarioId });
+  const resolved = resolveCellPrice(rules, { unitId: product.unit_id, unitType: product.unit_type, basePrice: product.base_price, customerType, forecastId: scenarioId });
   const extra = explicit.length - 1;
   const ownPrice = own ? rulePrice(own, product.base_price) : null;
   const dated = own && (own.start_period || own.end_period);
@@ -94,7 +103,7 @@ const RuleList = ({ title, help, rules, empty, customers, scenarios, onEdit, onD
           <thead className="bg-gray-50 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
             <tr>
               <th className="px-5 py-2">Who pays</th>
-              {showProduct && <th className="px-3 py-2">Product</th>}
+              {showProduct && <th className="px-3 py-2">Products</th>}
               <th className="px-3 py-2 text-right">Price</th>
               <th className="px-3 py-2">Months</th>
               <th className="px-3 py-2">Scenario</th>
@@ -116,10 +125,18 @@ const RuleList = ({ title, help, rules, empty, customers, scenarios, onEdit, onD
                       {!active && ' · switched off'}
                     </div>
                   </td>
-                  {showProduct && <td className="px-3 py-2 text-gray-700">{r.unit_id ? (r.unit_name || r.unit_id) : 'All products'}</td>}
+                  {showProduct && (
+                    <td className="px-3 py-2 text-gray-700">
+                      {r.unit_type && !r.unit_id ? (
+                        <span className="inline-flex items-center whitespace-nowrap rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-800" title={`Every product with product type ${r.unit_type}`}>
+                          <span className="mr-1 opacity-60">Product type</span>{r.unit_type}
+                        </span>
+                      ) : describeProducts(r)}
+                    </td>
+                  )}
                   <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                     <div className="font-medium text-gray-900">{describePrice(r)}</div>
-                    {r.method === 'discount_from_base' && r.effective_price !== null && r.effective_price !== undefined && (
+                    {r.method === 'discount_from_base' && r.unit_id && r.effective_price !== null && r.effective_price !== undefined && (
                       <div className="text-[11px] text-gray-500">= {formatMoney(r.effective_price)}</div>
                     )}
                   </td>
@@ -143,7 +160,7 @@ const RuleList = ({ title, help, rules, empty, customers, scenarios, onEdit, onD
  * Price list: product x customer-type matrix, customer-specific prices,
  * all-product discounts, and "apply to forecast".
  */
-const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios, onChanged }) => {
+const PriceListTab = ({ customers, products, customerTypes, productTypes = [], scenario, scenarios, onChanged }) => {
   const confirm = useConfirm();
   const [rules, setRules] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -193,7 +210,7 @@ const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios,
 
   const remove = async (rule) => {
     const who = rule.customer_id ? (rule.customer_name || rule.customer_id) : rule.customer_type || 'all customers';
-    const what = rule.unit_id ? (rule.unit_name || rule.unit_id) : 'all products';
+    const what = rule.unit_id ? (rule.unit_name || rule.unit_id) : rule.unit_type ? `every ${rule.unit_type} product` : 'all products';
     const ok = await confirm({
       title: 'Delete this price?',
       body: `${describePrice(rule)} for ${who} on ${what}. Sales rows already priced keep their price until you apply prices again.`,
@@ -227,7 +244,7 @@ const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios,
         <div className="max-w-3xl">
           <h2 className="flex items-center gap-1.5 text-lg font-semibold text-gray-900">
             Price list
-            <HelpTip text="For each sale the most specific price wins: a price for that customer, then for its customer type, then for all customers, then the product list price." />
+            <HelpTip text="For each sale the most specific price wins: a price for that customer, then for its customer type, then for all customers, then the product list price. Within each, a price for the product beats one for its product type, which beats one for every product." />
           </h2>
           <p className="text-sm text-gray-600">
             What each customer type pays per product. Sales rows imported without a price get their price from here;
@@ -258,7 +275,7 @@ const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios,
             <div>
               <h3 className="text-sm font-semibold text-gray-900">Prices by customer type</h3>
               <p className="text-xs text-gray-500">
-                <span className="font-semibold text-gray-700">Bold</span> = set here. <span className="text-gray-400">Grey</span> = inherited (from a type discount, the all-customers price or list price). Click any cell to set a price.
+                <span className="font-semibold text-gray-700">Bold</span> = set here. <span className="text-gray-400">Grey</span> = inherited (from a product-type or all-products discount, the all-customers price or list price). Click any cell to set a price.
               </p>
             </div>
             {columns.length === 0 && (
@@ -302,16 +319,15 @@ const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios,
       {products.length > 0 && loaded && (
         <div className="space-y-6">
           <RuleList
-            title="Discounts off list price on every product"
-            help="For example: Distributor 40% off list. A price set for a product beats these."
+            title="Prices for a product type or every product"
+            help="For example: Distributor 40% off list on every product, or 40% off list for product type Accessory. A product-type price beats an every-product one; a price set for a product beats both."
             rules={parts.allProducts}
-            empty="None. Add one with “Add price” → Discount off list price → All products."
+            empty="None. Add one with “Add price” → Discount off list price → A product type or All products."
             customers={customers}
             scenarios={scenarios}
             onEdit={(r) => setModal({ open: true, rule: r, defaults: null })}
             onDelete={remove}
             busyId={busyId}
-            showProduct={false}
           />
           <RuleList
             title="Customer-specific prices"
@@ -336,6 +352,7 @@ const PriceListTab = ({ customers, products, customerTypes, scenario, scenarios,
         customers={customers}
         products={products}
         customerTypes={columns}
+        productTypes={productTypes}
         scenario={scenario}
       />
       <ApplyPricesModal

@@ -40,9 +40,12 @@ from api.pricing_routes import (
     update_deduction_rule,
     update_price_rule,
 )
+from api import pricing_routes
 from db.database import db_manager
 from db.models import ForecastResponse
-from utils.cost_rollup import calculate_unit_costs
+from services.pricing import STACKING_TYPES, deduction_rule_key, precedence_key, price_rule_key, program_name
+from utils.cost_rollup import calculate_unit_costs, load_bom_lines, resolve_bom_version
+from utils.period_normalizer import month_from_name, normalize_month
 
 router = APIRouter(prefix="/import", tags=["import"])
 logger = logging.getLogger(__name__)
@@ -109,6 +112,17 @@ class FieldMap:
     def aliases(self, canonical: str) -> List[str]:
         return list(self.fields.get(canonical, ()))
 
+    def source_column(self, row: Dict[str, Any], canonical: str) -> Optional[str]:
+        """The raw column ``map_row`` takes ``canonical`` from (None when no filled column maps to it)."""
+        best: Optional[Tuple[str, int]] = None
+        for raw_key, value in row.items():
+            hit = self.lookup.get(header_key(raw_key))
+            if not hit or hit[0] != canonical or _blank(value):
+                continue
+            if best is None or hit[1] < best[1]:
+                best = (raw_key, hit[1])
+        return best[0] if best else None
+
 
 BOM_FIELDS = FieldMap({
     "bom_id": ("bom", "bom_number", "bom_no", "parent", "parent_part", "parent_item", "parent_part_number",
@@ -138,14 +152,21 @@ ROUTING_FIELDS = FieldMap({
                  "operation_seq", "sequence_number"),
     "machine_id": ("machine", "work_center", "workcenter", "work_center_id", "resource", "machine_name"),
     "machine_minutes": ("machine_min", "run_minutes", "machine_time", "machine_mins", "run_time",
-                        "cycle_minutes", "cycle_time", "machine_minutes_per_unit"),
-    "machine_hours": ("machine_hrs", "run_hours"),
-    "labor_minutes": ("labor_min", "labor_time", "labor_mins", "labour_minutes", "labor_minutes_per_unit"),
-    "labor_hours": ("labor_hrs", "labour_hours"),
+                        "cycle_minutes", "cycle_time", "machine_minutes_per_unit", "run_min", "run_mins",
+                        "run_min_per_unit", "run_minutes_per_unit", "run_time_min", "run_time_mins",
+                        "run_time_minutes", "cycle_min", "cycle_mins", "cycle_time_min", "machine_run_minutes",
+                        "machine_run_min", "machine_time_min"),
+    "machine_hours": ("machine_hrs", "run_hours", "run_hrs", "run_hr", "run_time_hrs", "run_time_hours",
+                      "machine_hr"),
+    "labor_minutes": ("labor_min", "labor_time", "labor_mins", "labour_minutes", "labor_minutes_per_unit",
+                      "labour_min", "labour_mins", "labor_time_min", "direct_labor_min", "direct_labor_minutes",
+                      "labor_min_per_unit", "labor_run_min"),
+    "labor_hours": ("labor_hrs", "labour_hours", "labor_hr", "labour_hrs"),
     "labor_type_id": ("labor_type", "labor_rate", "rate_id", "labor_rate_id", "labor_type_name", "labor_class",
                       "labor_category"),
     "operation_description": ("description", "operation_name", "op_description", "operation_desc", "op_name"),
-    "unit_id": ("product_id", "sku", "product"),
+    "unit_id": ("product_id", "sku", "product", "item_number", "item", "part_number", "product_code", "item_no",
+                "part_no"),
 })
 
 SALES_FIELDS = FieldMap({
@@ -167,9 +188,11 @@ SALES_FIELDS = FieldMap({
 PRICE_IMPORT_FIELDS = FieldMap({
     "price_id": (),
     "forecast_id": ("scenario", "scenario_id"),
-    "unit_id": ("product", "product_id", "sku", "item", "item_number", "part_number"),
+    "unit_id": ("product", "product_id", "sku", "item", "item_number", "part_number", "product_code", "model"),
     "unit_name": ("product_name",),
-    "customer_id": ("customer", "customer_number", "account", "account_number", "cust_id"),
+    "unit_type": ("product_type", "product_category", "product_family", "family", "category"),
+    "customer_id": ("customer", "customer_number", "account", "account_number", "cust_id", "customer_no",
+                    "customer_code", "cust_no", "customer_num", "account_no", "cust"),
     "customer_name": (),
     "customer_type": ("type", "channel", "class", "customer_class", "segment", "price_level", "tier"),
     "method": ("price_method", "pricing_method"),
@@ -189,10 +212,11 @@ DEDUCTION_IMPORT_FIELDS = FieldMap({
     "method": ("calculation", "calc_method", "basis"),
     "rate": ("percent", "pct", "rate_pct", "percentage", "rate_percent"),
     "amount_per_unit": ("per_unit", "per_unit_amount", "amount", "dollars_per_unit"),
-    "customer_id": ("customer", "customer_number", "account", "account_number", "cust_id"),
+    "customer_id": ("customer", "customer_number", "account", "account_number", "cust_id", "customer_no",
+                    "customer_code", "cust_no", "customer_num", "account_no", "cust"),
     "customer_name": (),
     "customer_type": ("channel", "class", "customer_class", "segment"),
-    "unit_id": ("product", "product_id", "sku", "item"),
+    "unit_id": ("product", "product_id", "sku", "item", "item_number", "part_number", "product_code"),
     "unit_name": ("product_name",),
     "unit_type": ("product_type", "product_category", "product_family", "family"),
     "start_period": ("start", "effective", "effective_period", "effective_date", "from", "start_date", "valid_from"),
@@ -206,7 +230,8 @@ RECORD_TABLES: Dict[str, Dict[str, Any]] = {
         "key": "customer_id", "name": "customer_name", "id_format": ("CUST-", 3), "label": "customer",
         "fields": FieldMap({
             "customer_id": ("id", "customer_number", "customer_no", "customer_code", "account", "account_number",
-                            "cust_id"),
+                            "cust_id", "customer", "cust", "cust_no", "cust_number", "customer_num", "account_no",
+                            "acct", "acct_no"),
             "customer_name": ("name", "account_name", "company", "company_name"),
             "customer_type": ("type", "channel", "class", "customer_class", "segment"),
             "region": ("territory", "state", "area", "sales_region"),
@@ -217,7 +242,8 @@ RECORD_TABLES: Dict[str, Dict[str, Any]] = {
     "units": {
         "key": "unit_id", "name": "unit_name", "id_format": ("PROD-", 3), "label": "product",
         "fields": FieldMap({
-            "unit_id": ("product_id", "sku", "item", "item_number", "part_number", "product_code", "id"),
+            "unit_id": ("product_id", "sku", "item", "item_number", "part_number", "product_code", "id", "product",
+                        "model", "item_no", "part", "part_no", "product_number", "product_no", "model_number"),
             "unit_name": ("product_name", "name", "description", "item_name"),
             "unit_description": ("product_description", "long_description", "details"),
             "base_price": ("msrp", "list_price", "price", "base", "wholesale_price"),
@@ -228,7 +254,9 @@ RECORD_TABLES: Dict[str, Dict[str, Any]] = {
             "router_version": ("routing_version", "routing_rev"),
         }),
         "numeric": ("base_price",),
-        "defaults": {"bom_version": "1.0", "router_version": "1.0"},
+        # No bom_version default: a blank version is resolved against the BOM's stored versions (or left
+        # NULL), so a product on a single-version BOM is costed from it whatever the version is called.
+        "defaults": {"router_version": "1.0"},
     },
     "machines": {
         "key": "machine_id", "name": "machine_name", "id_format": ("M", 4), "label": "machine",
@@ -236,7 +264,8 @@ RECORD_TABLES: Dict[str, Dict[str, Any]] = {
             "machine_id": ("machine", "work_center", "workcenter", "work_center_id", "id"),
             "machine_name": ("name", "work_center_name"),
             "machine_description": ("description",),
-            "machine_rate": ("rate", "hourly_rate", "cost_per_hour", "rate_per_hour", "burden_rate"),
+            "machine_rate": ("rate", "hourly_rate", "cost_per_hour", "rate_per_hour", "burden_rate", "rate_hr",
+                             "rate_per_hr", "cost_per_hr", "hourly", "hourly_cost"),
             "labor_type": (),
             "available_minutes_per_month": ("capacity_minutes", "available_minutes", "capacity_minutes_per_month",
                                             "minutes_per_month"),
@@ -252,7 +281,8 @@ RECORD_TABLES: Dict[str, Dict[str, Any]] = {
             "rate_id": ("labor_type_id", "labor_type", "labor_rate_id", "id", "code", "rate_code"),
             "rate_name": ("name", "labor_type_name", "title", "job_title"),
             "rate_description": ("description",),
-            "rate_amount": ("rate", "hourly_rate", "amount", "wage", "cost_per_hour", "rate_per_hour"),
+            "rate_amount": ("rate", "hourly_rate", "amount", "wage", "cost_per_hour", "rate_per_hour", "rate_hr",
+                            "rate_per_hr", "cost_per_hr", "hourly", "hourly_wage", "pay_rate"),
             "rate_type": ("type", "pay_type"),
         }),
         "numeric": ("rate_amount",),
@@ -280,8 +310,12 @@ def _text(value: Any) -> Optional[str]:
     return str(value).strip()
 
 
+#: Accounting-format zero: Excel's accounting style shows 0 as '-' (or ' $ - ').
+_ACCOUNTING_ZEROS = {"-", "--", "\u2013", "\u2014", "\u2212"}
+
+
 def _number(value: Any, field: str) -> Optional[float]:
-    """'$1,234.50', '(12)', 3 -> float; blank -> None."""
+    """'$1,234.50', '(12)', 3 -> float; an accounting zero ('-', ' - ', '\u2014') -> 0; blank -> None."""
     if _blank(value):
         return None
     if isinstance(value, bool):
@@ -289,6 +323,8 @@ def _number(value: Any, field: str) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value).strip().replace(",", "").replace("$", "").replace(" ", "")
+    if text in _ACCOUNTING_ZEROS:
+        return 0.0
     negative = text.startswith("(") and text.endswith(")")
     if negative:
         text = text[1:-1]
@@ -353,13 +389,49 @@ def _parse_body(payload: Any, modes: Sequence[str], default_mode: str) -> Tuple[
     return rows, mode, _flag(payload.get("dry_run"), False)
 
 
-def _map_rows(rows: List[Dict[str, Any]], fields: FieldMap,
-              prepare=None) -> Tuple[List[Tuple[int, Dict[str, Any]]], List[str], int]:
-    """[(1-based row number, mapped row)], unknown columns, blank-row count."""
+#: An ERP subtotal / total line ('Total', 'Grand Total', 'Subtotal:', 'Total for SRA-R100').
+_TOTAL_RE = re.compile(r"^(grand\s+|sub-?\s*)?totals?(\s*(:|-|for\b).*)?$", re.IGNORECASE)
+
+
+def note_or_total_row(row: Dict[str, Any]) -> Optional[str]:
+    """
+    The text of a row that is a footnote or a total line rather than data, else None: its first filled
+    cell is 'Total' / 'Grand Total' / 'Subtotal' ..., or its only filled cell is a note ('Note: ...' or a
+    sentence of five words or more). Such rows are skipped (and reported) instead of being imported as a
+    component / price / customer named 'Total'.
+    """
+    cells = [v for v in row.values() if not _blank(v)]
+    if not cells or not isinstance(cells[0], str):
+        return None
+    text = cells[0].strip()
+    if _TOTAL_RE.match(text):
+        return text
+    if len(cells) == 1 and (text.lower().startswith(("note:", "notes:", "note -", "*")) or len(text.split()) >= 5):
+        return text
+    return None
+
+
+def _skipped_rows_warning(skipped: List[Tuple[int, str]]) -> List[str]:
+    if not skipped:
+        return []
+    shown = "; ".join(f"row {r} ('{t[:60]}{'...' if len(t) > 60 else ''}')" for r, t in skipped[:5])
+    many = len(skipped) != 1
+    return [f"Skipped {len(skipped)} row{'s' if many else ''} that look{'' if many else 's'} like notes or totals, "
+            f"not data: {shown}" + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else "")]
+
+
+def _map_rows(rows: List[Dict[str, Any]], fields: FieldMap, prepare=None,
+              skipped: Optional[List[Tuple[int, str]]] = None) -> Tuple[List[Tuple[int, Dict[str, Any]]], List[str], int]:
+    """[(1-based row number, mapped row)], unknown columns, blank-row count. Note / total rows go to ``skipped``."""
     mapped: List[Tuple[int, Dict[str, Any]]] = []
     unknown: List[str] = []
     blank = 0
     for index, row in enumerate(rows, start=1):
+        note = note_or_total_row(row)
+        if note is not None:
+            if skipped is not None:
+                skipped.append((index, note))
+            continue
         data, extra = fields.map_row(prepare(row) if prepare else row)
         for column in extra:
             if column not in unknown:
@@ -374,6 +446,124 @@ def _map_rows(rows: List[Dict[str, Any]], fields: FieldMap,
 
 def _ignored_columns_warning(unknown: List[str]) -> List[str]:
     return [f"Ignored columns (not recognised): {', '.join(unknown)}"] if unknown else []
+
+
+# ---------------------------------------------------------------------------
+# Header row detection and continuation rows
+# ---------------------------------------------------------------------------
+
+def _all_field_maps() -> List[FieldMap]:
+    return [BOM_FIELDS, ROUTING_FIELDS, SALES_FIELDS, PRICE_IMPORT_FIELDS, DEDUCTION_IMPORT_FIELDS,
+            *(spec["fields"] for spec in RECORD_TABLES.values())]
+
+
+def _is_column_name(cell: Any, maps: Sequence[FieldMap]) -> bool:
+    """A cell that is a known column name or alias (any import), or a month label (Jan-27, 2027-01, Jan)."""
+    if not isinstance(cell, str) or not cell.strip():
+        return False
+    key = header_key(cell)
+    return (any(key in m.lookup for m in maps) or normalize_month(cell) is not None
+            or month_from_name(cell) is not None)
+
+
+def guess_header_row(grid: Sequence[Sequence[Any]], scan: int = 30) -> Optional[int]:
+    """
+    0-based index of the row of a sheet that holds the column names.
+
+    A report title ('Costed Bill of Material ... Run date: 10/12/2026') often
+    sits above the real header. The first row (of the first ``scan``) in
+    which at least two cells, and at least half of the filled cells, are
+    known column names or aliases of any import wins; otherwise the first row
+    with two filled cells, then the first non-empty row; None when the grid
+    is empty. File readers (the MCP file tools, scripts) use this to pick
+    ``header_row``.
+    """
+    maps = _all_field_maps()
+    first_two = first_one = None
+    for index, row in enumerate(list(grid)[:scan]):
+        cells = [c for c in (row or []) if not _blank(c)]
+        if not cells:
+            continue
+        if first_one is None:
+            first_one = index
+        if len(cells) >= 2 and first_two is None:
+            first_two = index
+        known = sum(1 for c in cells if _is_column_name(c, maps))
+        if known >= 2 and known * 2 >= len(cells):
+            return index
+    return first_two if first_two is not None else first_one
+
+
+def _header_problem(rows: List[Dict[str, Any]], fields: FieldMap, mapped: List[Tuple[int, Dict[str, Any]]],
+                    expected: Sequence[str]) -> Optional[Dict[str, Any]]:
+    """
+    One file-level error when no column of the file is recognised (nothing
+    could be imported): usually a title row above the header was read as the
+    header. Points at the data row that looks like the real header.
+    """
+    if any(data for _, data in mapped):
+        return None
+    columns: List[str] = []
+    for row in rows:
+        for key in row:
+            if not _blank(key) and str(key) not in columns:
+                columns.append(str(key))
+    shown = ", ".join(f"'{c}'" for c in columns[:6]) + (" ..." if len(columns) > 6 else "")
+    message = f"No column name was recognised (the columns are {shown})"
+    for index, row in enumerate(rows[:30], start=1):
+        names = [str(v).strip() for v in row.values() if isinstance(v, str) and fields.canonical(v)]
+        if len(names) >= 2:
+            listed = ", ".join(f"'{n}'" for n in names[:6])
+            return {"row": index, "error": (
+                f"{message}, so the header was probably taken from a title row. Data row {index} looks like the "
+                f"real header ({listed}): read the file again with header_row set to the row that holds the column "
+                f"names (nothing was imported)")}
+    return {"row": 1, "error": (
+        f"{message}. Check that the header row holds the column names (pass header_row when a title sits above "
+        f"it); expected columns such as {', '.join(expected)} (nothing was imported)")}
+
+
+def _fill_down(mapped: List[Tuple[int, Dict[str, Any]]], id_field: str, parent_fields: Sequence[str],
+               child_fields: Sequence[str]) -> Tuple[List[Tuple[int, Dict[str, Any]]], List[int]]:
+    """
+    ERP exports often put the parent id (and its name / version / product)
+    only on the first row of each block. A row with a blank parent id but
+    component / operation data takes the parent fields of the row above.
+    Returns the rows and the row numbers that were filled.
+    """
+    out: List[Tuple[int, Dict[str, Any]]] = []
+    filled: List[int] = []
+    last: Optional[Dict[str, Any]] = None
+    for row_no, data in mapped:
+        if _blank(data.get(id_field)):
+            if last is not None and any(not _blank(data.get(f)) for f in child_fields):
+                data = dict(data)
+                for field in parent_fields:
+                    if _blank(data.get(field)) and not _blank(last.get(field)):
+                        data[field] = last[field]
+                filled.append(row_no)
+        else:
+            last = {f: data.get(f) for f in parent_fields}
+        out.append((row_no, data))
+    return out, filled
+
+
+def _lookup_unit_by_id(cursor, value: str) -> Optional[str]:
+    """The product whose unit_id is value (exact, else the one case-insensitive match); never by name."""
+    cursor.execute("SELECT unit_id FROM units WHERE unit_id = ?", (value,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    cursor.execute("SELECT unit_id FROM units WHERE LOWER(TRIM(unit_id)) = LOWER(TRIM(?))", (value,))
+    rows = cursor.fetchall()
+    return rows[0][0] if len(rows) == 1 else None
+
+
+def _header_problem_result(problem: Dict[str, Any], kind: str, rows: List[Dict[str, Any]], mode: str,
+                           dry_run: bool, unknown: List[str], **extra: Any) -> ForecastResponse:
+    data = _result(kind=kind, dry_run=dry_run, mode=mode, rows=len(rows), errors=[problem],
+                   warnings=_ignored_columns_warning(unknown), **extra)
+    return ForecastResponse(status="success", data=data, message=f"Nothing imported: {problem['error']}")
 
 
 def next_sequential_id(cursor, table: str, column: str, prefix: str, width: int) -> str:
@@ -430,6 +620,11 @@ def _lookup_ci(cursor, table: str, key: str, name_col: str, value: str) -> Optio
 _BOM_CODE_COLUMNS = ("component", "item", "material")
 _BOM_TEXT_COLUMNS = {"description", "componentdescription", "partdescription", "itemdescription",
                      "materialdescription", "materialname", "componentname"}
+#: Columns that are the component in most BOM exports but sometimes name the finished product.
+_BOM_LINK_KEYS = {"itemnumber", "item", "partnumber", "itemno", "partno"}
+_BOM_PARENT_FIELDS = ("bom_id", "version", "bom_name", "bom_description", "unit_id")
+_BOM_CHILD_FIELDS = ("material_description", "part_number", "qty", "unit", "unit_price", "material_cost",
+                     "target_cost", "bom_line")
 
 
 def _prepare_bom_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -452,6 +647,52 @@ def _prepare_bom_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+def _bom_link_columns(rows: List[Dict[str, Any]], product_ids: set) -> List[str]:
+    """
+    'Item Number' / 'Item' / 'Part Number' columns that name the finished
+    product (the BOM's unit_id) instead of a component: another column gives
+    the component, the value is the same on every row of a BOM (or blank on
+    continuation rows), every value is an existing product id and at least
+    one BOM has two or more rows. Otherwise the column stays the component.
+    """
+    headers: List[str] = []
+    for row in rows:
+        for key in row:
+            if key not in headers:
+                headers.append(key)
+    links: List[str] = []
+    for column in (h for h in headers if header_key(h) in _BOM_LINK_KEYS):
+        others = [h for h in headers if h != column]
+        if not any(BOM_FIELDS.canonical(h) in ("part_number", "material_description")
+                   or header_key(h) in _BOM_CODE_COLUMNS for h in others):
+            continue
+        values: Dict[str, set] = {}
+        sizes: Dict[str, int] = {}
+        last_bom: Optional[str] = None
+        is_link = True
+        for row in rows:
+            data, _ = BOM_FIELDS.map_row({k: v for k, v in row.items() if k != column})
+            bom = _text(data.get("bom_id"))
+            if bom:
+                last_bom = bom
+            elif any(not _blank(data.get(f)) for f in _BOM_CHILD_FIELDS):
+                bom = last_bom
+            if not bom:
+                continue
+            sizes[bom] = sizes.get(bom, 0) + 1
+            value = _text(row.get(column))
+            if value is None:
+                continue
+            if value.lower() not in product_ids:
+                is_link = False
+                break
+            values.setdefault(bom, set()).add(value.lower())
+        if (is_link and values and all(len(v) == 1 for v in values.values())
+                and any(n >= 2 for n in sizes.values())):
+            links.append(column)
+    return links
+
+
 def _clean_bom_row(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     notes: List[str] = []
     bom_id = _text(data.get("bom_id"))
@@ -472,17 +713,26 @@ def _clean_bom_row(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         notes.append("qty_defaulted")
     unit_price = _non_negative(data.get("unit_price"), "unit_price")
     material_cost = _non_negative(data.get("material_cost"), "material_cost")
+    given_cost: Optional[float] = None
     if unit_price is None and material_cost is None:
         unit_price, material_cost = 0.0, 0.0
         notes.append("no_cost")
-    elif unit_price is None:
+    elif not unit_price and material_cost:
+        # Only the extended cost (or a zero unit cost next to it): costing falls back to it, so the
+        # unit price is derived from it and the two stored fields agree.
         if qty == 0:
             raise ImportRowError("qty is 0, so unit_price cannot be derived from material_cost; give unit_price")
         unit_price = material_cost / qty
-    elif material_cost is None:
-        material_cost = qty * unit_price
-    elif abs(material_cost - qty * unit_price) > max(0.01, 0.005 * abs(material_cost)):
-        notes.append("cost_mismatch")
+    elif unit_price is None:
+        unit_price = 0.0                       # material_cost 0
+    else:
+        # Costing (utils.cost_rollup.bom_line_cost) uses qty x unit_price whenever the unit price is set,
+        # so that is what is stored; a different extended cost in the file is reported.
+        computed = qty * unit_price
+        if material_cost is not None and round(abs(material_cost - computed), 6) > 0.01:
+            notes.append("cost_mismatch")
+            given_cost = material_cost
+        material_cost = computed
     return {
         "bom_id": bom_id,
         "version": version,
@@ -492,11 +742,20 @@ def _clean_bom_row(data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         "unit": _text(data.get("unit")),
         "unit_price": unit_price,
         "material_cost": material_cost,
+        "given_material_cost": given_cost,
         "target_cost": _non_negative(data.get("target_cost"), "target_cost"),
         "unit_id": _text(data.get("unit_id")),
         "bom_name": _text(data.get("bom_name")),
         "bom_description": _text(data.get("bom_description")),
     }, notes
+
+
+def _all_unit_ids() -> set:
+    conn = db_manager.get_connection()
+    try:
+        return {str(r[0]).strip().lower() for r in conn.execute("SELECT unit_id FROM units").fetchall() if r[0]}
+    finally:
+        db_manager.close_connection(conn)
 
 
 @router.post("/boms", response_model=ForecastResponse)
@@ -508,21 +767,50 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
     dry_run = false}``. ``replace`` deletes the existing lines of every BOM +
     version in the file and inserts the file's lines; ``append`` upserts by
     bom_id + version + bom_line. Missing bom_line numbers are assigned in
-    file order; version '1' becomes '1.0'. unit_price = material_cost / qty
-    when only the extended cost is given (and vice versa). Rows with a
-    unit_id (product) link that product to the BOM + version. A BOM with any
-    row error is skipped as a whole so it is never half-replaced.
+    file order; version '1' becomes '1.0'. A row with a blank bom_id but
+    component data belongs to the BOM above it (ERP layouts that show the
+    parent once per block). Costing uses qty x unit_price, so that is what is
+    stored as material_cost; unit_price = material_cost / qty when only the
+    extended cost is given, and an extended cost that differs from qty x
+    unit_price by more than a cent is reported. Rows with a unit_id (product)
+    link that product to the BOM + version; a BOM whose id is an existing
+    product's id links that product when it has no BOM yet. A BOM with any
+    row error is skipped as a whole so it is never half-replaced. The
+    bom_definitions header only ever moves to a newer version.
     """
+    from utils.data_loader import version_sort_key  # data_loader imports this module
+
     rows, mode, dry_run = _parse_body(payload, ("replace", "append"), "replace")
     link_products = _flag(payload.get("link_products"), True)
-    mapped, unknown, blank_rows = _map_rows(rows, BOM_FIELDS, prepare=_prepare_bom_row)
+    link_columns: List[str] = []
+    if any(header_key(k) in _BOM_LINK_KEYS for row in rows for k in row):
+        link_columns = _bom_link_columns(rows, _all_unit_ids())
+
+    def _prepare(row: Dict[str, Any]) -> Dict[str, Any]:
+        if link_columns:
+            row = {("unit_id" if k in link_columns else k): v for k, v in row.items()}
+        return _prepare_bom_row(row)
+
+    notes: List[Tuple[int, str]] = []
+    mapped, unknown, blank_rows = _map_rows(rows, BOM_FIELDS, prepare=_prepare, skipped=notes)
+    problem = _header_problem(rows, BOM_FIELDS, mapped, ("bom_id", "material_description", "qty", "unit_price"))
+    if problem:
+        return _header_problem_result(problem, "boms", rows, mode, dry_run, unknown, boms=[])
+    mapped, filled = _fill_down(mapped, "bom_id", _BOM_PARENT_FIELDS, _BOM_CHILD_FIELDS)
     errors: List[Dict[str, Any]] = []
-    warnings: List[str] = _ignored_columns_warning(unknown)
+    warnings: List[str] = _ignored_columns_warning(unknown) + _skipped_rows_warning(notes)
+    if link_columns:
+        warnings.append(f"Read {', '.join(link_columns)} as the finished product of each BOM (the same product on "
+                        f"every line of a BOM); the component comes from the other columns")
+    if filled:
+        warnings.append(f"{len(filled)} rows had no bom_id, so each was given the BOM of the row above "
+                        f"(continuation rows {_row_list(filled)})")
 
     groups: Dict[Tuple[str, str], List[Tuple[int, Dict[str, Any]]]] = {}
     bad_groups: Dict[Tuple[str, str], List[int]] = {}
     qty_defaulted: List[int] = []
     no_cost: List[int] = []
+    mismatches: List[Tuple[int, float, float]] = []
     for row_no, data in mapped:
         try:
             line, notes = _clean_bom_row(data)
@@ -539,8 +827,14 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
         if "no_cost" in notes:
             no_cost.append(row_no)
         if "cost_mismatch" in notes:
-            warnings.append(f"Row {row_no}: material_cost {line['material_cost']:,.2f} differs from qty x unit_price "
-                            f"({line['qty'] * line['unit_price']:,.2f}); the BOM uses material_cost")
+            mismatches.append((row_no, line["given_material_cost"], line["material_cost"]))
+    if mismatches:
+        details = "; ".join(f"row {r}: {given:,.2f} in the file, qty x unit_price {stored:,.2f}"
+                            for r, given, stored in mismatches[:12])
+        warnings.append(
+            f"Material cost differs from qty x unit_price by more than 1 cent on rows "
+            f"{_row_list([m[0] for m in mismatches])}; material_cost is stored as qty x unit_price, which is what "
+            f"costing uses ({details}). Fix unit_price, or leave it blank to cost the line from the extended cost")
     if qty_defaulted:
         warnings.append(f"No qty on rows {_row_list(qty_defaulted)}; imported as 1 per assembly")
     if no_cost:
@@ -588,13 +882,17 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
             bom_id, version = key
             bom_name = next((l["bom_name"] for _, l in entries if l["bom_name"]), None)
             bom_description = next((l["bom_description"] for _, l in entries if l["bom_description"]), None)
-            cursor.execute("SELECT 1 FROM bom_definitions WHERE bom_id = ?", (bom_id,))
-            if cursor.fetchone():
+            cursor.execute("SELECT version FROM bom_definitions WHERE bom_id = ?", (bom_id,))
+            header = cursor.fetchone()
+            if header:
+                # The header shows the newest version; importing an older one never moves it back.
+                newest = version if _blank(header[0]) or version_sort_key(version) > version_sort_key(header[0]) \
+                    else header[0]
                 cursor.execute(
                     """UPDATE bom_definitions SET bom_name = COALESCE(?, bom_name),
                               bom_description = COALESCE(?, bom_description), version = ?,
                               updated_at = CURRENT_TIMESTAMP WHERE bom_id = ?""",
-                    (bom_name, bom_description, version, bom_id),
+                    (bom_name, bom_description, newest, bom_id),
                 )
             else:
                 cursor.execute(
@@ -651,22 +949,40 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
             cursor.execute("UPDATE units SET bom_id = ?, bom_version = ? WHERE unit_id = ?", (bom_id, version, unit_id))
             linked.setdefault((bom_id, version), []).append(unit_id)
 
+        # A BOM numbered like the product it builds (Parent Item = SKU) costs that product when the
+        # product has no BOM yet.
+        auto_linked: List[str] = []
+        if link_products:
+            explicit = {u.lower() for u in links}
+            for entry in boms:
+                unit_id = _lookup_unit_by_id(cursor, entry["bom_id"])
+                if not unit_id or unit_id.lower() in explicit:
+                    continue
+                cursor.execute("SELECT bom_id FROM units WHERE unit_id = ?", (unit_id,))
+                if _blank(cursor.fetchone()[0]):
+                    cursor.execute("UPDATE units SET bom_id = ?, bom_version = ? WHERE unit_id = ?",
+                                   (entry["bom_id"], entry["version"], unit_id))
+                    linked.setdefault((entry["bom_id"], entry["version"]), []).append(unit_id)
+                    auto_linked.append(unit_id)
+        if auto_linked:
+            warnings.append(f"Linked {len(auto_linked)} products to the BOM with the same id (they had no BOM): "
+                            f"{_row_list(auto_linked)}")
+
         for entry in boms:
             key = (entry["bom_id"], entry["version"])
-            cursor.execute("SELECT COUNT(*), COALESCE(SUM(material_cost), 0) FROM bom WHERE bom_id = ? AND version = ?", key)
-            count, cost = cursor.fetchone()
-            cursor.execute("SELECT unit_id FROM units WHERE bom_id = ? AND bom_version = ? ORDER BY unit_id", key)
-            used_by = [r[0] for r in cursor.fetchall()]
-            entry.update({"lines": int(count or 0), "material_cost_per_unit": round(float(cost or 0), 4),
-                          "linked_products": sorted(linked.get(key, [])), "used_by_products": used_by})
-            cursor.execute(
-                "SELECT unit_id, bom_version FROM units WHERE bom_id = ? AND COALESCE(bom_version, '') != ?", key
-            )
-            for unit_id, other_version in cursor.fetchall():
-                cursor.execute("SELECT COUNT(*) FROM bom WHERE bom_id = ? AND version = ?", (key[0], other_version))
-                if not cursor.fetchone()[0]:
-                    warnings.append(f"Product {unit_id} points at BOM {key[0]} version {other_version!s}, which has no "
+            bom_lines = load_bom_lines(cursor, key[0], key[1])["lines"]
+            cost = sum(line["line_cost"] for line in bom_lines)          # what costing uses
+            cursor.execute("SELECT unit_id, bom_version FROM units WHERE bom_id = ? ORDER BY unit_id", (key[0],))
+            used_by: List[str] = []
+            for unit_id, unit_version in cursor.fetchall():
+                found, version_used, _versions = resolve_bom_version(cursor, key[0], unit_version)
+                if found and version_used == key[1]:
+                    used_by.append(unit_id)
+                elif not found:
+                    warnings.append(f"Product {unit_id} points at BOM {key[0]} version {unit_version!s}, which has no "
                                     f"lines, so its material cost is $0; link it to version {key[1]}")
+            entry.update({"lines": len(bom_lines), "material_cost_per_unit": round(float(cost), 4),
+                          "linked_products": sorted(linked.get(key, [])), "used_by_products": used_by})
             if not used_by:
                 warnings.append(f"BOM {key[0]} v{key[1]} is not used by any product yet (add a unit_id column or set "
                                 f"bom_id on the product)")
@@ -683,10 +999,11 @@ async def import_boms(payload: Dict[str, Any] = Body(...)):
 
     data = _result(
         kind="boms", dry_run=dry_run, mode=mode, rows=len(rows), created=created, updated=updated,
-        replaced=replaced, skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=warnings,
+        replaced=replaced, skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=_dedupe(warnings),
         boms=boms,
         summary={"boms": len(boms), "lines_written": created + updated, "lines_deleted": lines_deleted,
                  "products_linked": sum(len(v) for v in linked.values()), "blank_rows": blank_rows,
+                 "auto_linked_products": auto_linked, "continuation_rows": len(filled),
                  "material_cost_by_bom": {f"{b['bom_id']} v{b['version']}": b["material_cost_per_unit"] for b in boms}},
     )
     return ForecastResponse(status="success", data=data,
@@ -704,6 +1021,31 @@ def _row_list(rows: Sequence[int], limit: int = 12) -> str:
 # ---------------------------------------------------------------------------
 
 MANUAL_MACHINE_ID = "MANUAL"
+_ROUTING_PARENT_FIELDS = ("router_id", "router_name", "router_description", "version", "unit_id")
+_ROUTING_CHILD_FIELDS = ("sequence", "machine_id", "machine_minutes", "machine_hours", "labor_minutes", "labor_hours",
+                         "labor_type_id", "operation_description")
+
+
+def _routing_column_warnings(unknown: List[str], mapped: List[Tuple[int, Dict[str, Any]]]) -> List[str]:
+    """
+    Ignored-column warnings for a routing file. Setup time is per batch, not
+    per unit, so a setup column is ignored on purpose (and said so); when no
+    machine-time column was recognised, a time-like ignored column is named.
+    """
+    setup = [c for c in unknown if header_key(c).startswith("setup")]
+    other = [c for c in unknown if c not in setup]
+    warnings = _ignored_columns_warning(other)
+    if setup:
+        warnings.append(f"Ignored {', '.join(setup)}: setup time is per batch, not per unit, so it is not part of the "
+                        f"per-unit routing cost (only run / machine and labor minutes are)")
+    has_machine_time = any(not _blank(d.get("machine_minutes")) or not _blank(d.get("machine_hours"))
+                           for _, d in mapped)
+    has_machine = any(not _blank(d.get("machine_id")) for _, d in mapped)
+    timeish = [c for c in other if any(t in header_key(c) for t in ("min", "time", "hr", "hour"))]
+    if has_machine and not has_machine_time and timeish:
+        warnings.append(f"No machine minutes column was recognised ({', '.join(timeish)} ignored), so machine cost is "
+                        f"$0: rename the run-time column to machine_minutes (or machine_hours)")
+    return warnings
 
 
 def _clean_routing_row(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -745,14 +1087,27 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
     Machines and labor types are matched by id or name; unknown ones are row
     errors unless ``auto_create`` makes $0 placeholders (reported as
     warnings; they show up as cost warnings until rates are set). Rows with a
-    unit_id link that product to the routing.
+    unit_id (product / item number) link that product to the routing; a
+    routing whose id is an existing product's id links that product when it
+    has no routing yet. A row with a blank router_id but operation data
+    belongs to the routing above it. Run time aliases include 'Run Min',
+    'Run Time (min)' and 'Cycle Time'; setup minutes are ignored (per batch).
     """
     rows, mode, dry_run = _parse_body(payload, ("replace", "append"), "replace")
     auto_create = _flag(payload.get("auto_create"), False)
     link_products = _flag(payload.get("link_products"), True)
-    mapped, unknown, blank_rows = _map_rows(rows, ROUTING_FIELDS)
+    notes: List[Tuple[int, str]] = []
+    mapped, unknown, blank_rows = _map_rows(rows, ROUTING_FIELDS, skipped=notes)
+    problem = _header_problem(rows, ROUTING_FIELDS, mapped, ("router_id", "machine_id", "machine_minutes",
+                                                             "labor_minutes"))
+    if problem:
+        return _header_problem_result(problem, "routings", rows, mode, dry_run, unknown, routings=[])
+    mapped, filled = _fill_down(mapped, "router_id", _ROUTING_PARENT_FIELDS, _ROUTING_CHILD_FIELDS)
     errors: List[Dict[str, Any]] = []
-    warnings: List[str] = _ignored_columns_warning(unknown)
+    warnings: List[str] = _routing_column_warnings(unknown, mapped) + _skipped_rows_warning(notes)
+    if filled:
+        warnings.append(f"{len(filled)} rows had no router_id, so each was given the routing of the row above "
+                        f"(continuation rows {_row_list(filled)})")
 
     conn = db_manager.get_connection()
     try:
@@ -927,6 +1282,24 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
                            (router_id, version, unit_id))
             linked.setdefault(router_id, []).append(unit_id)
 
+        # A routing numbered like the product it makes costs that product when it has no routing yet.
+        auto_linked: List[str] = []
+        if link_products:
+            explicit = {u.lower() for u in links}
+            for entry in routings:
+                unit_id = _lookup_unit_by_id(cursor, entry["router_id"])
+                if not unit_id or unit_id.lower() in explicit:
+                    continue
+                cursor.execute("SELECT router_id FROM units WHERE unit_id = ?", (unit_id,))
+                if _blank(cursor.fetchone()[0]):
+                    cursor.execute("UPDATE units SET router_id = ?, router_version = ? WHERE unit_id = ?",
+                                   (entry["router_id"], entry["version"], unit_id))
+                    linked.setdefault(entry["router_id"], []).append(unit_id)
+                    auto_linked.append(unit_id)
+        if auto_linked:
+            warnings.append(f"Linked {len(auto_linked)} products to the routing with the same id (they had no "
+                            f"routing): {_row_list(auto_linked)}")
+
         for entry in routings:
             costs = calculate_unit_costs(cursor, None, None, entry["router_id"])
             cursor.execute("SELECT COUNT(*) FROM router_operations WHERE router_id = ?", (entry["router_id"],))
@@ -962,7 +1335,8 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
         replaced=replaced, skipped=skipped, errors=sorted(errors, key=lambda e: e["row"]), warnings=warnings,
         routings=routings, created_machines=created_machines, created_labor_types=created_labor,
         summary={"routings": len(routings), "operations_written": created + updated, "operations_deleted": ops_deleted,
-                 "products_linked": sum(len(v) for v in linked.values()), "blank_rows": blank_rows},
+                 "products_linked": sum(len(v) for v in linked.values()), "blank_rows": blank_rows,
+                 "auto_linked_products": auto_linked, "continuation_rows": len(filled)},
     )
     return ForecastResponse(status="success", data=data,
                             message=_message("routing operations", dry_run, created, updated, replaced, skipped, len(errors)))
@@ -971,6 +1345,41 @@ async def import_routings(payload: Dict[str, Any] = Body(...)):
 # ---------------------------------------------------------------------------
 # Master records: customers, products, machines, labor rates
 # ---------------------------------------------------------------------------
+
+#: Headers that may hold either the id or the name of a customer / product ('Customer', 'Product', 'Item').
+#: With '#' ('Customer #', 'Item #') or a separate name column they are the id; with no name column a
+#: column whose values read like names ('Main Street Guns') is the name.
+_AMBIGUOUS_ID_COLUMNS: Dict[str, set] = {
+    "customers": {"customer", "cust", "account", "acct"},
+    "units": {"product", "item", "model"},
+}
+
+
+def _record_column_overrides(table: str, spec: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Raw column -> canonical field for an ambiguous id column that holds names (decided per file)."""
+    ambiguous_keys = _AMBIGUOUS_ID_COLUMNS.get(table)
+    if not ambiguous_keys:
+        return {}
+    fields: FieldMap = spec["fields"]
+    headers: List[str] = []
+    for row in rows:
+        for key in row:
+            if key not in headers:
+                headers.append(key)
+    ambiguous = [h for h in headers if header_key(h) in ambiguous_keys and "#" not in str(h)]
+    if not ambiguous:
+        return {}
+    others = [h for h in headers if h not in ambiguous]
+    if any(fields.canonical(h) == spec["name"] for h in others):
+        return {}                                   # a name column exists: the ambiguous column is the id
+    has_id = any(fields.canonical(h) == spec["key"] for h in others)
+    for column in ambiguous:
+        values = [str(r[column]).strip() for r in rows if not _blank(r.get(column))]
+        names = sum(1 for v in values if " " in v)
+        if has_id or (values and names * 2 > len(values)):
+            return {column: spec["name"]}
+    return {}
+
 
 def _resolve_table(value: Any) -> str:
     key = header_key(value or "")
@@ -993,6 +1402,11 @@ async def import_records(payload: Dict[str, Any] = Body(...)):
     erases a stored value), ``skip`` leaves existing rows alone. New rows
     without an id get one in the existing style (CUST-001, PROD-001, M0001,
     RATE-001). Machines accept capacity in hours (x 60) or minutes.
+    'Customer' / 'Customer #' / 'Account' and 'Product' / 'Item' / 'SKU'
+    columns are the id when the file has a name column (a 'Customer' column
+    of names with no name column is the name). A product given a bom_id
+    without a bom_version takes the BOM's version when it has one (or the
+    one matching '1.0'), else NULL; never a made-up '1.0'.
     """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Body must be an object: {table, rows, mode, dry_run}")
@@ -1000,9 +1414,19 @@ async def import_records(payload: Dict[str, Any] = Body(...)):
     rows, mode, dry_run = _parse_body(payload, ("upsert", "skip"), "upsert")
     spec = RECORD_TABLES[table]
     key_col, name_col = spec["key"], spec["name"]
-    mapped, unknown, blank_rows = _map_rows(rows, spec["fields"])
+    overrides = _record_column_overrides(table, spec, rows)
+
+    def _prepare(row: Dict[str, Any]) -> Dict[str, Any]:
+        return {overrides.get(k, k): v for k, v in row.items()} if overrides else row
+
+    notes: List[Tuple[int, str]] = []
+    mapped, unknown, blank_rows = _map_rows(rows, spec["fields"], prepare=_prepare, skipped=notes)
+    problem = _header_problem(rows, spec["fields"], mapped, (key_col, name_col))
+    if problem:
+        return _header_problem_result(problem, "records", rows, mode, dry_run, unknown, table=table, records=[],
+                                      summary={"unchanged": 0, "blank_rows": blank_rows})
     errors: List[Dict[str, Any]] = []
-    warnings: List[str] = _ignored_columns_warning(unknown)
+    warnings: List[str] = _ignored_columns_warning(unknown) + _skipped_rows_warning(notes)
     records: List[Dict[str, Any]] = []
     created = updated = skipped = unchanged = 0
 
@@ -1047,6 +1471,16 @@ async def import_records(payload: Dict[str, Any] = Body(...)):
                                                            f"give {key_col} to say which one"})
                     continue
                 existing_id = found[0][0] if found else None
+            if table == "units" and values.get("bom_id") and values.get("bom_version") is None:
+                # A new BOM without a version: use the version the BOM has (the single-version / '1.0'
+                # fallback of costing), else NULL. A stored version of a different BOM never carries over.
+                keep = False
+                if existing_id:
+                    cursor.execute("SELECT bom_id FROM units WHERE unit_id = ?", (existing_id,))
+                    keep = (cursor.fetchone() or (None,))[0] == values["bom_id"]
+                if not keep:
+                    found_version, version, _versions = resolve_bom_version(cursor, values["bom_id"], None)
+                    values["bom_version"] = version if found_version else None
             record_id = existing_id or key
             if record_id in seen:
                 warnings.append(f"Row {row_no}: {spec['label']} {record_id} already appeared in row {seen[record_id]}; "
@@ -1145,9 +1579,13 @@ def _unit_link_warnings(cursor, unit_ids: List[str]) -> List[str]:
             continue
         bom_id, bom_version, router_id = row
         if bom_id:
-            cursor.execute("SELECT COUNT(*) FROM bom WHERE bom_id = ? AND version = ?", (bom_id, bom_version))
-            if not cursor.fetchone()[0]:
-                warnings.append(f"Product {unit_id}: BOM {bom_id} v{bom_version} has no lines yet (import BOMs next)")
+            found, _version, versions = resolve_bom_version(cursor, bom_id, bom_version)
+            if not found and versions:
+                warnings.append(f"Product {unit_id}: BOM {bom_id} has no version {bom_version} (it has "
+                                f"{', '.join(str(v) for v in versions)}), so its material cost is $0")
+            elif not found:
+                label = f"{bom_id} v{bom_version}" if bom_version else bom_id
+                warnings.append(f"Product {unit_id}: BOM {label} has no lines yet (import BOMs next)")
         if router_id:
             cursor.execute("SELECT COUNT(*) FROM router_operations WHERE router_id = ?", (router_id,))
             if not cursor.fetchone()[0]:
@@ -1160,7 +1598,7 @@ def _unit_link_warnings(cursor, unit_ids: List[str]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def _resolve_reference(cursor, data: Dict[str, Any], id_field: str, name_field: str, table: str,
-                       key_col: str, name_col: str, label: str, row_no: int, warnings: List[str]) -> None:
+                       key_col: str, name_col: str, label: str, row_label: str, warnings: List[str]) -> None:
     """Accept a name where an id is expected ('Main Street Guns' -> CUST-001); warn when nothing matches."""
     value = _text(data.get(id_field))
     name = _text(data.get(name_field))
@@ -1169,7 +1607,7 @@ def _resolve_reference(cursor, data: Dict[str, Any], id_field: str, name_field: 
         if resolved:
             data[id_field] = resolved
         else:
-            warnings.append(f"Row {row_no}: {label} '{value}' does not exist yet, so the rule matches no sales")
+            warnings.append(f"{row_label}: {label} '{value}' does not exist yet, so the rule matches no sales")
     elif name:
         resolved = _lookup_ci(cursor, table, key_col, name_col, name)
         if resolved:
@@ -1178,17 +1616,202 @@ def _resolve_reference(cursor, data: Dict[str, Any], id_field: str, name_field: 
             raise ImportRowError(f"{label} '{name}' not found; give its id")
 
 
-def _scope_key(values: Dict[str, Any], fields: Sequence[str]) -> Tuple:
+# Rates and discounts: a '2%' string is always a percent. Plain numbers are decided per file column: if
+# any plain number in the column is >= 1 the column holds percents (2 -> 2%, 0.5 -> 0.5%), otherwise
+# fractions (0.02 = 2%; Excel percent-formatted cells arrive as fractions).
+_PERCENT_TEXT_RE = re.compile(r"^\s*([-+]?(?:\d[\d,]*(?:\.\d*)?|\.\d+))\s*%\s*(?:off\b.*)?$", re.IGNORECASE)
+_RATE_WARN_ABOVE = 0.25
+_EXCISE_WARN_ABOVE = 0.20          # FET is 10% / 11%; state excise can add a little
+_DISCOUNT_WARN_ABOVE = 0.80
+_METHOD_WORDS: Dict[str, str] = {
+    "percentofgross": "percent_of_gross", "percentgross": "percent_of_gross", "percentofgrosssales": "percent_of_gross",
+    "percentgrosssales": "percent_of_gross", "percentofsales": "percent_of_gross", "percentofinvoice": "percent_of_gross",
+    "percentofprice": "percent_of_gross", "percentoflist": "percent_of_gross",
+    "percentofnet": "percent_of_net", "percentnet": "percent_of_net", "percentofnetsales": "percent_of_net",
+    "percentnetsales": "percent_of_net", "percentofnetprice": "percent_of_net",
+    "dollarsperunit": "per_unit", "dollarsunit": "per_unit", "dollarseach": "per_unit", "dollarsea": "per_unit",
+    "perunit": "per_unit", "perea": "per_unit", "peritem": "per_unit", "flatperunit": "per_unit",
+    "percentembedded": "embedded_tax", "embeddedpercent": "embedded_tax",
+}
+_MATRIX_BLANKS = {"n/a", "na", "none"} | _ACCOUNTING_ZEROS
+_LIST_PRICE_KEYS = {"listprice", "msrp", "baseprice", "list", "retailprice", "retail", "suggestedretail", "map"}
+
+
+def _bare_number(value: Any) -> Optional[float]:
+    """A plain number cell (no '%' sign) as a float; None for blanks, '%' strings and text."""
+    if _blank(value) or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if "%" in text:
+        return None
+    try:
+        return _number(text, "rate")
+    except ImportRowError:
+        return None
+
+
+def _percent_columns(rows: List[Dict[str, Any]], fields: FieldMap, canonical: str) -> Dict[str, bool]:
+    """Raw column -> True when its plain numbers are percents (some plain number in it is >= 1)."""
+    scale: Dict[str, bool] = {}
+    for row in rows:
+        for raw, value in row.items():
+            if fields.canonical(raw) != canonical:
+                continue
+            number = _bare_number(value)
+            if number is not None:
+                scale[raw] = scale.get(raw, False) or abs(number) >= 1
+    return scale
+
+
+def _friendly_method(value: Any) -> Any:
+    """'% of gross' -> percent_of_gross, '% of net sales' -> percent_of_net, '$ per unit' -> per_unit."""
+    text = _text(value)
+    if text is None:
+        return value
+    key = re.sub(r"[^a-z0-9%$]", "", text.lower()).replace("%", "percent").replace("$", "dollars")
+    return _METHOD_WORDS.get(key, value)
+
+
+def _prepare_rule_row(row: Dict[str, Any], fields: FieldMap, percent_field: str, scale: Dict[str, bool],
+                      is_price: bool) -> Dict[str, Any]:
+    out = dict(row)
+    for raw, value in row.items():
+        canonical = fields.canonical(raw)
+        if canonical == percent_field:
+            if isinstance(value, str):
+                match = _PERCENT_TEXT_RE.match(value)
+                if match:                                    # '40% off list' -> '40%'
+                    out[raw] = f"{match.group(1)}%"
+                    continue
+            number = _bare_number(value)
+            if number is not None and scale.get(raw):
+                out[raw] = f"{number!r}%"
+        elif canonical == "method" and not is_price:
+            out[raw] = _friendly_method(value)
+    return out
+
+
+def _matrix_columns(cursor, unknown: List[str]) -> Dict[str, str]:
+    """
+    Price-matrix columns: an unrecognised column named after an existing
+    customer type ('Dealer', 'Distributor', 'Dealer Price') holds that
+    type's price for the row's product. Raw column -> customer type.
+    """
+    cursor.execute("SELECT DISTINCT customer_type FROM customers WHERE customer_type IS NOT NULL")
+    types: Dict[str, str] = {}
+    for (value,) in cursor.fetchall():
+        key = header_key(value)
+        if key:
+            types.setdefault(key, str(value).strip())
+    columns: Dict[str, str] = {}
+    for raw in unknown:
+        key = header_key(raw)
+        match = types.get(key)
+        if match is None:
+            for suffix in ("netprice", "price", "pricing", "cost"):
+                if key.endswith(suffix) and types.get(key[:-len(suffix)]):
+                    match = types[key[:-len(suffix)]]
+                    break
+        if match:
+            columns[raw] = match
+    return columns
+
+
+def _matrix_blank(value: Any) -> bool:
+    return _blank(value) or (isinstance(value, str) and value.strip().lower() in _MATRIX_BLANKS)
+
+
+def _numeric_columns(rows: List[Dict[str, Any]], columns: Sequence[str]) -> List[str]:
+    """Columns whose filled cells are mostly numbers or percents (an unrecognised price matrix)."""
     out = []
-    for field in fields:
-        value = values.get(field)
-        out.append(value.strip().lower() if isinstance(value, str) and field in ("customer_type", "unit_type") else value)
-    return tuple(out)
+    for column in columns:
+        values = [r.get(column) for r in rows if not _matrix_blank(r.get(column))]
+        numeric = sum(1 for v in values if _bare_number(v) is not None
+                      or (isinstance(v, str) and _PERCENT_TEXT_RE.match(v)))
+        if values and numeric * 2 > len(values):
+            out.append(column)
+    return out
 
 
-PRICE_KEY_FIELDS = ("forecast_id", "unit_id", "customer_id", "customer_type", "start_period", "end_period")
-DEDUCTION_KEY_FIELDS = ("forecast_id", "deduction_type", "customer_id", "customer_type", "unit_id", "unit_type",
-                        "start_period", "end_period")
+def _expand_matrix(mapped: List[Tuple[int, Dict[str, Any]]], rows: List[Dict[str, Any]],
+                   matrix: Dict[str, str]) -> List[Tuple[int, Optional[str], Dict[str, Any]]]:
+    """(row, matrix column or None, rule data): one price rule per filled matrix cell, plus the row's own price."""
+    items: List[Tuple[int, Optional[str], Dict[str, Any]]] = []
+    scope_fields = ("customer_id", "customer_name", "customer_type", "unit_price", "discount_pct", "method")
+    for row_no, data in mapped:
+        raw = rows[row_no - 1]
+        cells = [(column, ctype, raw.get(column)) for column, ctype in matrix.items()
+                 if not _matrix_blank(raw.get(column))]
+        if not cells:
+            items.append((row_no, None, data))
+            continue
+        base = {k: v for k, v in data.items() if k not in scope_fields}
+        for column, ctype, value in cells:
+            item = {**base, "customer_type": ctype}
+            if isinstance(value, str) and "%" in value:
+                match = _PERCENT_TEXT_RE.match(value)
+                item["discount_pct"] = f"{match.group(1)}%" if match else value
+            else:
+                item["unit_price"] = value
+            items.append((row_no, column, item))
+        if not _blank(data.get("unit_price")) or not _blank(data.get("discount_pct")):
+            items.append((row_no, None, data))
+    return items
+
+
+def _plausibility_warnings(clean: Dict[str, Any], data: Dict[str, Any], label: str, is_price: bool) -> List[str]:
+    """Rates / discounts that are probably a fraction-vs-percent mix-up (0.5 meant as 0.5%)."""
+    if is_price:
+        discount = clean.get("discount_pct")
+        if discount is not None and discount > _DISCOUNT_WARN_ABOVE:
+            return [f"{label}: a discount of {discount * 100:g}% off list is unusually high (over "
+                    f"{_DISCOUNT_WARN_ABOVE * 100:g}%); check it ('40%' or 0.40 = 40% off)"]
+        return []
+    if clean.get("method") == "per_unit":
+        return []
+    rate = float(clean.get("rate") or 0)
+    limit = _EXCISE_WARN_ABOVE if clean.get("deduction_type") == "excise_tax" else _RATE_WARN_ABOVE
+    if rate <= limit:
+        return []
+    hint = ""
+    number = _bare_number(data.get("rate"))
+    if number is not None and number < 1:
+        hint = (f"; the plain number {number:g} was read as a fraction ({rate * 100:g}%): write '{number:g}%' "
+                f"if you meant {number:g} percent")
+    return [f"{label}: {clean.get('deduction_type')} rate {rate * 100:g}% is unusually high (over {limit * 100:g}%)"
+            f"{hint}; check it"]
+
+
+def _echo(clean: Dict[str, Any], is_price: bool) -> Dict[str, Any]:
+    """What a record stores, so a dry run shows how each rate / discount / price was read."""
+    if is_price:
+        return {"method": clean.get("method"), "unit_price": clean.get("unit_price"),
+                "discount_pct": clean.get("discount_pct")}
+    return {"deduction_type": clean.get("deduction_type"), "method": clean.get("method"), "rate": clean.get("rate"),
+            "amount_per_unit": clean.get("amount_per_unit")}
+
+
+def _row_ref(row_no: int, column: Optional[str]) -> str:
+    return f"{row_no} ({column})" if column else str(row_no)
+
+
+def _duplicate_in_file(is_price: bool, clean: Dict[str, Any], first: str, second: str) -> str:
+    if is_price:
+        return (f"rows {first} and {second} both price the same product / customer scope for the same months; keep "
+                f"one row (the later row would replace the earlier)")
+    dtype = clean.get("deduction_type")
+    if dtype in STACKING_TYPES:
+        if program_name(clean) is None:
+            return (f"rows {first} and {second} are both {dtype} rules with no name for the same scope and months; "
+                    f"other allowances stack as separate programs, so give each row a name (e.g. 'Co-op "
+                    f"advertising', 'Freight allowance') or combine them into one row")
+        return (f"rows {first} and {second} define the same {dtype} program '{clean.get('name')}' for the same "
+                f"scope and months; combine them into one row")
+    return (f"rows {first} and {second} both define {dtype} for the same scope and months; one {dtype} rule "
+            f"applies to a sale, so the later row would replace the earlier: combine them into one row or scope "
+            f"them differently")
 
 
 def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
@@ -1197,18 +1820,24 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
     fields = PRICE_IMPORT_FIELDS if is_price else DEDUCTION_IMPORT_FIELDS
     table = "price_list" if is_price else "sales_deduction_rules"
     id_col = "price_id" if is_price else "rule_id"
-    key_fields = PRICE_KEY_FIELDS if is_price else DEDUCTION_KEY_FIELDS
+    rule_kind = "price" if is_price else "deduction"
+    key_fn = price_rule_key if is_price else deduction_rule_key
     clean_fn = clean_price_rule if is_price else clean_deduction_rule
     insert_fn = insert_price_rule if is_price else insert_deduction_rule
     update_fn = update_price_rule if is_price else update_deduction_rule
+    percent_field = "discount_pct" if is_price else "rate"
 
     rows, mode, dry_run = _parse_body(payload, ("upsert", "append", "replace"), "upsert")
     default_forecast = _text(payload.get("forecast_id"))
-    mapped, unknown, blank_rows = _map_rows(rows, fields)
+    scale = _percent_columns(rows, fields, percent_field)
+    notes: List[Tuple[int, str]] = []
+    mapped, unknown, blank_rows = _map_rows(
+        rows, fields, prepare=lambda row: _prepare_rule_row(row, fields, percent_field, scale, is_price), skipped=notes)
     errors: List[Dict[str, Any]] = []
-    warnings: List[str] = _ignored_columns_warning(unknown)
+    warnings: List[str] = _skipped_rows_warning(notes)
     results: List[Dict[str, Any]] = []
     created = updated = replaced = 0
+    replace_blocked = False
 
     conn = db_manager.get_connection()
     try:
@@ -1217,26 +1846,74 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
             cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ?", (default_forecast,))
             if not cursor.fetchone():
                 raise HTTPException(status_code=404, detail=f"Forecast scenario '{default_forecast}' not found")
-        cleaned: List[Tuple[int, Dict[str, Any], Optional[str]]] = []
-        for row_no, data in mapped:
+        matrix = _matrix_columns(cursor, unknown) if is_price else {}
+        problem = None if matrix else _header_problem(
+            rows, fields, mapped, ("unit_id", "customer_type", "unit_price") if is_price
+            else ("deduction_type", "rate", "customer_type"))
+        if problem:
+            conn.rollback()
+            return _header_problem_result(problem, kind, rows, mode, dry_run, unknown, records=[],
+                                          replace_blocked=False,
+                                          summary={"blank_rows": blank_rows, "rules_written": 0, "rules_deleted": 0})
+        ignored = [c for c in unknown if c not in matrix]
+        warnings.extend(_ignored_columns_warning(ignored))
+        numeric_unknown: List[str] = []
+        if is_price:
+            list_columns = [c for c in ignored if header_key(c) in _LIST_PRICE_KEYS]
+            if list_columns:
+                warnings.append(f"{', '.join(list_columns)} ignored: the list (base) price is set on the product "
+                                f"(base_price in the product import); this file sets customer / customer-type prices")
+            if matrix:
+                warnings.append(f"Read {', '.join(matrix)} as one price per customer type: each filled cell is a "
+                                f"price rule for that customer type and the row's product ('40% off' cells are a "
+                                f"discount off the list price)")
+            numeric_unknown = _numeric_columns(rows, [c for c in ignored if header_key(c) not in _LIST_PRICE_KEYS])
+
+        items = _expand_matrix(mapped, rows, matrix) if matrix else [(r, None, d) for r, d in mapped]
+        cleaned: List[Tuple[int, Optional[str], Dict[str, Any], Optional[str]]] = []
+        for row_no, column, data in items:
+            label = f"Row {_row_ref(row_no, column)}"
             data = dict(data)
             if _blank(data.get("forecast_id")) and default_forecast:
                 data["forecast_id"] = default_forecast
             try:
                 _resolve_reference(cursor, data, "customer_id", "customer_name", "customers", "customer_id",
-                                   "customer_name", "customer", row_no, warnings)
+                                   "customer_name", "customer", f"Row {row_no}", warnings)
                 _resolve_reference(cursor, data, "unit_id", "unit_name", "units", "unit_id", "unit_name",
-                                   "product", row_no, warnings)
-                clean, rule_warnings = clean_fn(cursor, data, percent_input=True, label=f"Row {row_no}")
+                                   "product", f"Row {row_no}", warnings)
+                if is_price and not _blank(data.get("unit_type")) and "unit_type" not in pricing_routes.PRICE_FIELDS:
+                    raise ImportRowError("this price list has no product type (unit_type) scope yet; give one row per "
+                                         "product (unit_id) instead")
+                clean, rule_warnings = clean_fn(cursor, data, percent_input=True, label=label)
             except (ImportRowError, RuleValidationError) as exc:
-                errors.append({"row": row_no, "error": str(exc)})
+                message = str(exc)
+                if is_price and column is None and len(numeric_unknown) >= 2 and "needs unit_price" in message:
+                    message = (f"no unit_price: columns {', '.join(numeric_unknown)} look like one price per customer "
+                               f"type, but no customer has those customer types (import customers with these types "
+                               f"first, or use the columns unit_id, customer_type, unit_price)")
+                errors.append({"row": row_no, **({"column": column} if column else {}), "error": message})
                 continue
             # Unknown-id warnings were already given by _resolve_reference.
             warnings.extend(w for w in rule_warnings if "does not exist yet" not in w)
-            cleaned.append((row_no, clean, _text(data.get(id_col))))
+            warnings.extend(_plausibility_warnings(clean, data, label, is_price))
+            cleaned.append((row_no, column, clean, _text(data.get(id_col))))
 
-        if mode == "replace" and cleaned:
-            scopes = sorted({c[1]["forecast_id"] for c in cleaned}, key=lambda v: v or "")
+        # The same slot twice in one file: the later row would silently replace the earlier.
+        first_by_key: Dict[Tuple, str] = {}
+        kept: List[Tuple[int, Optional[str], Dict[str, Any], Optional[str]]] = []
+        for row_no, column, clean, given_id in cleaned:
+            if not given_id and clean.get("is_active", 1):
+                key = key_fn(clean)
+                if key in first_by_key:
+                    errors.append({"row": row_no, **({"column": column} if column else {}),
+                                   "error": _duplicate_in_file(is_price, clean, first_by_key[key],
+                                                               _row_ref(row_no, column))})
+                    continue
+                first_by_key[key] = _row_ref(row_no, column)
+            kept.append((row_no, column, clean, given_id))
+
+        if mode == "replace" and kept:
+            scopes = sorted({c[2]["forecast_id"] for c in kept}, key=lambda v: v or "")
             for fid in scopes:
                 if fid is None:
                     cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE forecast_id IS NULL")
@@ -1247,35 +1924,56 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
                     replaced += int(cursor.fetchone()[0] or 0)
                     cursor.execute(f"DELETE FROM {table} WHERE forecast_id = ?", (fid,))
 
-        # upsert and replace match rows of the same scope (after replace's delete only the file's own
-        # earlier rows can match), so a repeated scope updates instead of stacking duplicate rules.
-        existing_by_key: Dict[Tuple, str] = {}
-        if mode in ("upsert", "replace"):
-            cursor.execute(f"SELECT * FROM {table}")
-            columns = [d[0] for d in cursor.description]
-            for row in cursor.fetchall():
-                record = dict(zip(columns, row))
-                existing_by_key.setdefault(_scope_key(record, key_fields), record[id_col])
+        # Stored rules by slot (services.pricing deduction_rule_key / price_rule_key: scenario, scope, months
+        # and, for other allowances, the program name). An active rule, then the winning one, holds a slot.
+        existing_by_key: Dict[Tuple, Tuple[str, bool]] = {}
+        ranks: Dict[Tuple, Tuple] = {}
+        cursor.execute(f"SELECT * FROM {table}")
+        columns = [d[0] for d in cursor.description]
+        for row in cursor.fetchall():
+            record = dict(zip(columns, row))
+            active = record.get("is_active") is None or bool(record.get("is_active"))
+            key = key_fn(record)
+            rank = (active, precedence_key(record, rule_kind))
+            if key not in ranks or rank > ranks[key]:
+                ranks[key] = rank
+                existing_by_key[key] = (record[id_col], active)
 
-        for row_no, clean, given_id in cleaned:
+        for row_no, column, clean, given_id in kept:
+            ref = {"row": row_no, **({"column": column} if column else {})}
+            key = key_fn(clean)
             target = None
             if mode in ("upsert", "replace"):
                 if given_id:
                     cursor.execute(f"SELECT 1 FROM {table} WHERE {id_col} = ?", (given_id,))
                     target = given_id if cursor.fetchone() else None
-                if target is None and not given_id:
-                    target = existing_by_key.get(_scope_key(clean, key_fields))
+                if target is None and key in existing_by_key:
+                    target = existing_by_key[key][0]
+            elif clean.get("is_active", 1) and existing_by_key.get(key, (None, False))[1]:
+                # append: a second active rule in the same slot would tie with the stored one.
+                what = "price rule" if is_price else f"{clean.get('deduction_type')} rule"
+                errors.append({**ref, "error": f"an active {what} with this scope and months already exists "
+                                               f"({existing_by_key[key][0]}); a second one would never apply: import "
+                                               f"with mode upsert to update it"})
+                continue
             if target:
                 update_fn(cursor, target, clean)
                 updated += 1
-                results.append({"row": row_no, id_col: target, "action": "updated"})
+                results.append({**ref, id_col: target, "action": "updated", **_echo(clean, is_price)})
             else:
                 keep_id = given_id if given_id and _id_free(cursor, table, id_col, given_id) else None
                 new_id = insert_fn(cursor, clean, keep_id)
                 created += 1
-                existing_by_key[_scope_key(clean, key_fields)] = new_id
-                results.append({"row": row_no, id_col: new_id, "action": "created"})
-        _finish(conn, dry_run)
+                existing_by_key[key] = (new_id, bool(clean.get("is_active", 1)))
+                results.append({**ref, id_col: new_id, "action": "created", **_echo(clean, is_price)})
+
+        # Replacing is all-or-nothing: never delete a scenario's rules on the strength of a file that did
+        # not fully import.
+        replace_blocked = mode == "replace" and bool(errors)
+        if replace_blocked:
+            conn.rollback()
+        else:
+            _finish(conn, dry_run)
     except HTTPException:
         conn.rollback()
         raise
@@ -1288,12 +1986,19 @@ def _import_rules(payload: Dict[str, Any], kind: str) -> ForecastResponse:
 
     data = _result(
         kind=kind, dry_run=dry_run, mode=mode, rows=len(rows), created=created, updated=updated, replaced=replaced,
-        skipped=0, errors=errors, warnings=_dedupe(warnings), records=results,
-        summary={"blank_rows": blank_rows, "rules_written": created + updated, "rules_deleted": replaced},
+        skipped=0, errors=sorted(errors, key=lambda e: e["row"]), warnings=_dedupe(warnings), records=results,
+        replace_blocked=replace_blocked,
+        summary={"blank_rows": blank_rows, "rules_written": created + updated, "rules_deleted": replaced,
+                 "matrix_columns": matrix},
     )
     label = "price rules" if is_price else "deduction rules"
-    return ForecastResponse(status="success", data=data,
-                            message=_message(label, dry_run, created, updated, replaced, 0, len(errors)))
+    message = _message(label, dry_run, created, updated, replaced, 0, len(errors))
+    if replace_blocked:
+        message = (f"Nothing was changed: {len(errors)} row{'s' if len(errors) != 1 else ''} had errors, and a replace "
+                   f"import only runs when every row is valid. Fix the rows (or import with mode=upsert) and try again.")
+        if dry_run:
+            message = "Dry run, nothing written: " + message
+    return ForecastResponse(status="success", data=data, message=message)
 
 
 def _id_free(cursor, table: str, id_col: str, value: str) -> bool:
@@ -1319,11 +2024,19 @@ async def import_prices(payload: Dict[str, Any] = Body(...)):
     Body: ``{rows, mode: 'upsert'|'append'|'replace' = 'upsert', forecast_id?,
     dry_run}``. ``forecast_id`` (body) applies to rows without one; leave
     both empty for company-wide prices. ``upsert`` updates the rule with the
-    same price_id, or the same scope (scenario, product, customer, customer
-    type, start, end); ``replace`` first deletes every price rule of the
-    scenarios in the file. A row with a discount and no price is a
-    discount_from_base rule; discounts accept 0.4, '40%' or 40.
-    Customers / products may be given by name.
+    same price_id, or the same scope (scenario, product, product type,
+    customer, customer type, start, end); ``replace`` first deletes every
+    price rule of the scenarios in the file and is all-or-nothing (any row
+    error -> nothing changes, ``replace_blocked``). A row with a discount and
+    no price is a discount_from_base rule; discounts accept '40%', '40% off
+    list' or a plain number, read per column: a column with any plain number
+    >= 1 is percents (40 -> 40%, 0.5 -> 0.5%), otherwise fractions (0.4).
+    Discounts over 80% are flagged. A unit_type / product_type column prices
+    every product of that type. A wide price matrix (Product | Dealer |
+    Distributor | ...: columns named after existing customer types) makes
+    one rule per filled cell (records / errors carry the ``column``). The
+    same scope twice in one file is a row error. Customers / products may
+    be given by name.
     """
     return _import_rules(payload, "prices")
 
@@ -1336,8 +2049,16 @@ async def import_deductions(payload: Dict[str, Any] = Body(...)):
 
     Body as /import/prices. deduction_type accepts friendly names ('terms',
     'chargebacks', 'FET', 'excise', 'commission'); method accepts 'percent',
-    'embedded', 'per unit', 'net'; rate accepts 0.02, '2%' or 2 (values >= 1
-    are percents). Excise rules default to the embedded_tax method.
+    '% of gross', '% of net sales', 'embedded', 'per unit', '$ per unit';
+    rate accepts '2%' (always a percent) or a plain number read per column:
+    a column with any plain number >= 1 is percents (2 -> 2%, 0.5 -> 0.5%),
+    otherwise fractions (0.02 = 2%). Rates over 25% (excise over 20%) are
+    flagged. Excise rules default to the embedded_tax method. Rows upsert
+    on the rule's slot (type, scenario, scope, months; for other_allowance
+    also the program name, so 'Co-op' and 'Freight allowance' are separate
+    programs that both apply). The same slot twice in one file is a row
+    error; in append mode a row that would duplicate an active rule is a
+    row error.
     """
     return _import_rules(payload, "deductions")
 
@@ -1434,7 +2155,8 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             _col("router_name", False, "Routing name", ROUTING_FIELDS),
             _col("sequence", False, "Operation number (10, 20, 30 assigned when blank)", ROUTING_FIELDS),
             _col("machine_id", True, "Machine / work center (id or name)", ROUTING_FIELDS),
-            _col("machine_minutes", False, "Machine minutes per unit", ROUTING_FIELDS),
+            _col("machine_minutes", False, "Machine (run) minutes per unit; setup minutes are not used",
+                 ROUTING_FIELDS),
             _col("labor_minutes", False, "Labor minutes per unit", ROUTING_FIELDS),
             _col("labor_type_id", False, "Labor type (rate id or name); needed when labor_minutes > 0", ROUTING_FIELDS),
             _col("operation_description", False, "What the step does", ROUTING_FIELDS),
@@ -1451,7 +2173,8 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
         "description": "Components per finished product. One row per component; material cost per unit = "
                        "sum of qty x unit_price. mode=replace swaps the BOM's lines.",
         "columns": [
-            _col("bom_id", True, "BOM / parent part number", BOM_FIELDS),
+            _col("bom_id", True, "BOM / parent part number (blank on a row = the BOM above; equal to a product "
+                                 "id = that product's BOM)", BOM_FIELDS),
             _col("bom_name", False, "BOM name", BOM_FIELDS),
             _col("version", False, "Version (default 1.0; '1' becomes '1.0')", BOM_FIELDS),
             _col("bom_line", False, "Line number (assigned in file order when blank)", BOM_FIELDS),
@@ -1460,7 +2183,9 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             _col("qty", True, "Quantity per finished unit", BOM_FIELDS),
             _col("unit", False, "Unit of measure", BOM_FIELDS),
             _col("unit_price", True, "Cost per component unit (or give material_cost)", BOM_FIELDS),
-            _col("material_cost", False, "Extended cost (qty x unit_price); derived when blank", BOM_FIELDS),
+            _col("material_cost", False, "Extended cost; stored as qty x unit_price when unit_price is given (a "
+                                         "different value is reported), else unit_price = material_cost / qty",
+                 BOM_FIELDS),
             _col("unit_id", False, "Product to link to this BOM", BOM_FIELDS),
         ],
         "rows": [
@@ -1478,8 +2203,10 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             _col("customer_type", False, "Customer type the price applies to", PRICE_IMPORT_FIELDS),
             _col("customer_id", False, "A single customer (overrides its type)", PRICE_IMPORT_FIELDS),
             _col("unit_price", False, "Fixed price per unit", PRICE_IMPORT_FIELDS),
-            _col("discount_pct", False, "Discount off base_price instead of a fixed price (40% or 0.40)",
+            _col("discount_pct", False, "Discount off base_price instead of a fixed price ('40%'; plain numbers "
+                                        "are percents when the column has any number >= 1, else fractions)",
                  PRICE_IMPORT_FIELDS),
+            _col("unit_type", False, "Product type: one price for every product of the type", PRICE_IMPORT_FIELDS),
             _col("start_period", False, "First month (YYYY-MM); blank = always", PRICE_IMPORT_FIELDS),
             _col("end_period", False, "Last month (YYYY-MM); blank = open", PRICE_IMPORT_FIELDS),
             _col("forecast_id", False, "Scenario; blank = company-wide (or set forecast_id on the request)",
@@ -1487,9 +2214,9 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             _col("notes", False, "Notes", PRICE_IMPORT_FIELDS),
         ],
         "rows": [
-            ["RFL-308", "Dealer", "", "1199.00", "", "2027-01", "2027-12", "", "2027 dealer price"],
-            ["RFL-308", "Distributor", "", "1049.00", "", "2027-01", "2027-12", "", "2027 distributor price"],
-            ["", "", "CUST-003", "", "20%", "2027-01", "2027-12", "", "Sheriff contract: 20% off list"],
+            ["RFL-308", "Dealer", "", "1199.00", "", "", "2027-01", "2027-12", "", "2027 dealer price"],
+            ["RFL-308", "Distributor", "", "1049.00", "", "", "2027-01", "2027-12", "", "2027 distributor price"],
+            ["", "", "CUST-003", "", "20%", "", "2027-01", "2027-12", "", "Sheriff contract: 20% off list"],
         ],
     },
     "deductions": {
@@ -1503,7 +2230,8 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             _col("name", False, "Label", DEDUCTION_IMPORT_FIELDS),
             _col("method", False, "percent_of_gross (default), embedded_tax (default for excise), percent_of_net, "
                                   "per_unit", DEDUCTION_IMPORT_FIELDS),
-            _col("rate", False, "Rate: 2%, 0.02 or 2", DEDUCTION_IMPORT_FIELDS),
+            _col("rate", False, "Rate: '2%' (safest), or plain numbers: percents when the column has any number "
+                                ">= 1 (2, 0.5 = 0.5%), else fractions (0.02)", DEDUCTION_IMPORT_FIELDS),
             _col("amount_per_unit", False, "$ per unit for method per_unit", DEDUCTION_IMPORT_FIELDS),
             _col("customer_type", False, "Limit to a customer type", DEDUCTION_IMPORT_FIELDS),
             _col("customer_id", False, "Limit to one customer", DEDUCTION_IMPORT_FIELDS),

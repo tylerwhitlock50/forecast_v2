@@ -42,12 +42,13 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from services.financial_statements import build_statements, period_range
+from services.financial_statements import build_statements, load_assumptions, period_range
 from services.operations_forecast import (
     DEFAULT_HOURS_PER_FTE,
     build_cogs_forecast,
     build_labor_forecast,
-    sales_detail_rows,
+    detail_totals,
+    sales_detail_report,
 )
 from services.pricing import (
     DEDUCTION_EXAMPLE,
@@ -95,7 +96,7 @@ SHEET_DESCRIPTIONS: Dict[str, str] = {
     "Unit Costs": "Per-unit material, labor and machine cost of each product sold, from its BOM and routing, "
                   "with data-quality warnings.",
     "Sales Detail": "Every forecast sales line with its deductions, net sales, product COGS and the deduction rules "
-                    "applied. Use the filter buttons on the header row.",
+                    "applied, each amount rounded to the cent. Use the filter buttons on the header row.",
     "Deduction Rules": "The discount, allowance, excise tax and commission rules visible to the selected scenario(s).",
     "Price List": "Customer, customer-type and product prices used to price sales rows imported without a price.",
     "Cash Flow": "Monthly cash flow. The Total column carries the window's opening and closing cash (balances, "
@@ -253,7 +254,7 @@ SALES_DETAIL_COLUMNS: List[Tuple[str, str, Optional[str]]] = [
     ("unit_name", "Product", None),
     ("unit_type", "Product type", None),
     ("quantity", "Quantity", "units"),
-    ("unit_price", "Unit price", "money"),
+    ("unit_price", "Unit price", "price"),
     ("gross_sales", "Gross sales", "money"),
     ("terms_allowance", "Terms allowance", "money"),
     ("chargebacks", "Chargebacks allowance", "money"),
@@ -272,24 +273,15 @@ SALES_DETAIL_COLUMNS: List[Tuple[str, str, Optional[str]]] = [
     ("rules_applied", "Deduction rules applied", None),
 ]
 
-#: Columns that are not meaningful to add up across lines.
-_NON_SUMMABLE = frozenset({"unit_price"})
-
-
 def sales_detail_totals(rows: Iterable[Dict[str, Any]]) -> Dict[str, float]:
     """
     Column totals over sales detail rows (every numeric column except the
-    unit price). Totals are sums of the rows as exported, so they equal a
-    SUM of the column in Excel; they tie to the statements to the cent
-    apart from per-line rounding.
+    unit price). Totals are sums of the rows as exported (each money value a
+    cent amount), so they equal a SUM of the column in Excel. The
+    statements add up the unrounded lines instead; the difference is the
+    ``rounding`` that operations_forecast.sales_detail_report returns.
     """
-    totals: Dict[str, float] = {}
-    for row in rows:
-        for key, value in row.items():
-            if key in _NON_SUMMABLE or not _is_number(value):
-                continue
-            totals[key] = totals.get(key, 0.0) + float(value)
-    return {k: round(v, 2) for k, v in totals.items()}
+    return detail_totals(rows)
 
 
 def sales_detail_columns(rows: Sequence[Dict[str, Any]]) -> List[Tuple[str, str, Optional[str]]]:
@@ -334,6 +326,7 @@ TREATMENT_LABELS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 MONEY = "#,##0.00"
+PRICE = "#,##0.00##"   # cents, plus up to two more decimals when the price has them (23.994)
 MONEY_WHOLE = "#,##0"
 PERCENT = "0.0%"
 RATE_PERCENT = "0.00%"
@@ -345,6 +338,7 @@ MINUTES = "#,##0.00"
 
 _FORMATS = {
     "money": MONEY,
+    "price": PRICE,
     "money0": MONEY_WHOLE,
     "pct": PERCENT,
     "rate": RATE_PERCENT,
@@ -514,6 +508,9 @@ def _display_length(value: Any, number_format: str) -> int:
             return len(f"{value * 100:,.2f}%")
         if number_format in (MONEY_WHOLE, UNITS_WHOLE):
             return len(f"{value:,.0f}")
+        if number_format == PRICE:
+            text = f"{value:,.4f}"
+            return len(text[:-2] + text[-2:].rstrip("0"))
         return len(f"{value:,.2f}")
     return max((len(part) for part in str(value).split("\n")), default=0)
 
@@ -541,7 +538,10 @@ def collect_workbook_data(cursor, forecast_ids: Sequence[str], start_period: str
     statements = build_statements(cursor, ids, start_period, end_period)
     cogs = build_cogs_forecast(cursor, ids, start_period, end_period)
     labor = build_labor_forecast(cursor, ids, start_period, end_period, hours_per_fte=hours_per_fte)
-    detail = sales_detail_rows(cursor, ids, start_period, end_period)
+    detail = sales_detail_report(cursor, ids, start_period, end_period)
+    # The statements' assumptions block is rounded to 2 decimals for display
+    # (a 25.5% tax rate reads 0.26); the Read Me states the stored values.
+    assumptions, _found = load_assumptions(cursor, ids[0])
 
     scenario_names = {fid: vals[0] for fid, vals in _lookup(cursor, "SELECT forecast_id, name FROM forecast").items()}
     customers = {cid: vals[0] for cid, vals in
@@ -558,7 +558,11 @@ def collect_workbook_data(cursor, forecast_ids: Sequence[str], start_period: str
         "statements": statements,
         "cogs": cogs,
         "labor": labor,
-        "sales_detail": detail,
+        "sales_detail": detail["rows"],
+        "sales_detail_totals": detail["totals"],
+        "sales_detail_report_totals": detail["report_totals"],
+        "sales_detail_rounding": detail["rounding"],
+        "assumptions": assumptions,
         "deduction_rules": load_deduction_rules(cursor, ids, include_inactive=True),
         "price_rules": load_price_rules(cursor, ids, include_inactive=True),
         "scenario_names": scenario_names,
@@ -657,9 +661,10 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
 
     w.section("How the numbers are computed")
     hpf = data["hours_per_fte"]
-    assumptions = stmt.get("assumptions") or {}
+    assumptions = data.get("assumptions") or stmt.get("assumptions") or {}
     explanations: List[Tuple[str, str]] = [
-        ("Gross sales", "Quantity x unit price for each forecast sales line (the line's stored total when present)."),
+        ("Gross sales", "Quantity x unit price for each forecast sales line; the line's stored total is used only "
+                        "when the line has no price."),
     ]
     for dtype, meta in DEDUCTION_TYPES.items():
         treatment = ("It is a sales deduction: it reduces gross sales to net sales."
@@ -697,10 +702,15 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Working capital", "Accounts receivable = (net sales + excise tax) x DSO / 30.44; inventory = product "
                             "COGS x DIO / 30.44; accounts payable = purchases x DPO / 30.44; excise tax payable = "
                             "excise tax x excise payable days / 30.44. This scenario uses DSO "
-                            f"{_num_text(assumptions.get('dso_days'))}, DIO {_num_text(assumptions.get('dio_days'))}, "
-                            f"DPO {_num_text(assumptions.get('dpo_days'))}, excise payable days "
-                            f"{_num_text(assumptions.get('excise_payable_days'))} and an income tax rate of "
-                            f"{_num_text((assumptions.get('income_tax_rate') or 0) * 100)}%."),
+                            f"{_num_text(assumptions.get('dso_days'), 4)}, "
+                            f"DIO {_num_text(assumptions.get('dio_days'), 4)}, "
+                            f"DPO {_num_text(assumptions.get('dpo_days'), 4)}, excise payable days "
+                            f"{_num_text(assumptions.get('excise_payable_days'), 4)} and an income tax rate of "
+                            f"{_rate_text(assumptions.get('income_tax_rate'))}."),
+        ("Rounding", "Sales Detail rounds every money amount of a line to the cent (unit prices keep up to 4 "
+                     "decimals), so each line cross-foots and its Total row is the SUM of the lines. The statements "
+                     "add up the unrounded lines, so that SUM can differ from the Income Statement by a few cents; "
+                     "the Rounding row under the Sales Detail total shows the difference."),
     ]
     for topic, text in explanations:
         w.cell(w.row, 1, topic, bold=True)
@@ -723,10 +733,17 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
     w.finish(widths={"A": 34, "B": 110})
 
 
-def _num_text(value: Any) -> str:
+def _num_text(value: Any, decimals: int = 2) -> str:
     if not _is_number(value):
         return "n/a"
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+    return f"{value:,.{decimals}f}".rstrip("0").rstrip(".")
+
+
+def _rate_text(rate: Any) -> str:
+    """A stored fraction as a percent with the precision it has: 0.255 -> '25.5%', 0.21 -> '21%'."""
+    if not _is_number(rate):
+        return "n/a"
+    return f"{_num_text(float(rate) * 100, 4)}%"
 
 
 _GROSS_MARGIN_LINES: List[Tuple[str, str, str, bool, int]] = [
@@ -1055,7 +1072,7 @@ def _sheet_sales_detail(ws, data: Dict[str, Any]) -> None:
     if rows:
         last = w.row - 1
         ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{last}"
-        totals = sales_detail_totals(rows)
+        totals = data.get("sales_detail_totals") or sales_detail_totals(rows)
         r = w.row
         w.cell(r, 1, "Total")
         for i, (key, _h, kind) in enumerate(columns, start=1):
@@ -1063,6 +1080,28 @@ def _sheet_sales_detail(ws, data: Dict[str, Any]) -> None:
                 w.cell(r, i, totals[key], kind)
         w.style_row(r, len(columns))
         w.row += 1
+        rounding = data.get("sales_detail_rounding") or {}
+        report_totals = data.get("sales_detail_report_totals") or {}
+        if any(abs(v) >= 0.005 for v in rounding.values()):
+            # Lines are rounded to the cent; the statements add up the
+            # unrounded lines. Bridge the SUM of the lines to the statements.
+            r = w.row
+            w.cell(r, 1, "Rounding (lines rounded to the cent)")
+            for i, (key, _h, kind) in enumerate(columns, start=1):
+                if key in rounding and i > 1:
+                    w.cell(r, i, rounding[key], kind)
+            w.row += 1
+            r = w.row
+            w.cell(r, 1, "Total per Income Statement")
+            for i, (key, _h, kind) in enumerate(columns, start=1):
+                if key in rounding and key in report_totals and i > 1:
+                    w.cell(r, i, report_totals[key], kind)
+            w.style_row(r, len(columns))
+            w.row += 1
+        w.blank()
+        w.note("Each line's amounts are rounded to the cent (unit price to 4 decimals), so every line cross-foots "
+               "and Total is the SUM of the lines. The statements add up the unrounded lines; any difference is "
+               "shown on the Rounding row.")
     else:
         w.cell(w.row, 1, "No sales lines in this window.")
         w.row += 1
@@ -1135,10 +1174,10 @@ def _sheet_price_list(ws, data: Dict[str, Any]) -> None:
             (data["customers"].get(rule.get("customer_id")), None),
             (rule.get("customer_type"), None),
             (rule.get("method") or "fixed", None),
-            (rule.get("unit_price"), "money"),
+            (rule.get("unit_price"), "price"),
             (rule.get("discount_pct"), "rate"),
-            (base_price, "money"),
-            (resulting, "money"),
+            (base_price, "price"),
+            (resulting, "price"),
             (_scenario_label(data, rule.get("forecast_id")), None),
             (rule.get("start_period"), None),
             (rule.get("end_period"), None),

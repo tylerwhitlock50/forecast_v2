@@ -310,7 +310,7 @@ async def save_current_state():
     """
     Save the live database as ``autosave_<timestamp>.db`` (no name needed).
     Take one right before a bulk change; /database/revert-to-last-save
-    restores the newest snapshot.
+    restores the newest named save or autosave.
     """
     try:
         mgr = _manager()
@@ -458,27 +458,42 @@ async def delete_saved_database(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete database: {str(e)}")
 
+#: Snapshot kinds the user made (POST /save and /save-current); revert-to-last-save only restores these.
+USER_SNAPSHOT_KINDS = ("manual_save", "autosave")
+
+
 @router.post("/revert-to-last-save")
 async def revert_to_last_save():
     """
-    Restore the most recent snapshot of any kind (named save, autosave or
-    system backup), newest by save time. The live state is first saved as
-    ``pre_revert_backup_<timestamp>.db``, so a revert can itself be undone.
+    Restore the newest snapshot the USER made: a named save (POST /save) or
+    an autosave (POST /save-current), newest by save time. System backups
+    taken automatically before a load, revert, reset or start-clean
+    (current_backup_*, pre_revert_backup_*, reset_backup_*, ...) are never
+    picked, so reverting twice restores the same save instead of toggling
+    back. The live state is first saved as ``pre_revert_backup_<timestamp>.db``;
+    to undo a revert, load that file with POST /database/load.
+    ``data.reverted_from`` names the file restored. 404 when there is no
+    named save or autosave.
     """
     try:
-        snapshots = _list_snapshots()
+        snapshots = [s for s in _list_snapshots() if s["type"] in USER_SNAPSHOT_KINDS]
         if not snapshots:
-            raise HTTPException(status_code=404, detail="No saved snapshots found; save one with POST /database/save")
+            raise HTTPException(
+                status_code=404,
+                detail="No named save or autosave found to revert to (system backups are not used); "
+                       "save one with POST /database/save or /database/save-current")
         latest = snapshots[0]
         path = os.path.join(_manager().snapshot_dir, latest["filename"])
         print(f"Reverting to latest snapshot: {latest['filename']}")
         backup = _restore(path, "pre_revert_backup_")
         return {
             "status": "success",
-            "message": f"Reverted to {latest['filename']} (saved {latest['saved_at']})",
+            "message": f"Reverted to {latest['filename']} ({latest['type'].replace('_', ' ')}, saved "
+                       f"{latest['saved_at']}). The state before the revert was kept as {backup['filename']}.",
             "data": {
                 "reverted_from": latest["filename"],
                 "snapshot_type": latest["type"],
+                "saved_at": latest["saved_at"],
                 "backup_created": backup["filename"],
                 "reverted_time": datetime.fromtimestamp(latest["_mtime_ns"] / 1e9).strftime('%Y-%m-%d %H:%M:%S')
             }

@@ -1,4 +1,6 @@
 import {
+  PRECEDENCE_TEXT,
+  STACKING_TYPES,
   cellRules,
   describeRate,
   distinctValues,
@@ -14,6 +16,10 @@ import {
   normalizeSimulation,
   partitionPriceRules,
   percentToFraction,
+  priceSource,
+  priceSpecificity,
+  priceToForm,
+  programKey,
   resolveCellPrice,
   ruleToForm,
   scopeChips,
@@ -197,5 +203,103 @@ describe('API readers', () => {
     expect(a).toMatchObject({ matched: 360, changed: 300, unchanged: 50, unpriced: 10, revenueBefore: 100, revenueAfter: 120 });
     expect(a.bySource[0]).toEqual({ source: 'type_product', count: 280 });
     expect(a.samples).toHaveLength(1);
+  });
+});
+
+describe('other allowances are programs', () => {
+  it('explains and flags the stacking type', () => {
+    expect(STACKING_TYPES).toEqual(['other_allowance']);
+    expect(PRECEDENCE_TEXT).toMatch(/programs/);
+    expect(programKey('  Co-op   Advertising ')).toBe('co-op advertising');
+    expect(programKey(null)).toBe('');
+  });
+
+  it('keeps each program together, broadest rule first', () => {
+    const groups = groupRulesByType([
+      { rule_id: 'F2', deduction_type: 'other_allowance', name: 'Freight', customer_id: 'C1' },
+      { rule_id: 'C1', deduction_type: 'other_allowance', name: 'Co-op', customer_type: 'Distributor' },
+      { rule_id: 'F1', deduction_type: 'other_allowance', name: 'freight' },
+      { rule_id: 'C2', deduction_type: 'other_allowance', name: 'co-op', customer_id: 'C1' },
+    ]);
+    expect(groups.find((g) => g.type === 'other_allowance').rules.map((r) => r.rule_id)).toEqual(['C1', 'C2', 'F1', 'F2']);
+  });
+
+  it('reads every program the simulation applied', () => {
+    const sim = normalizeSimulation({
+      data: {
+        gross_sales: 10000,
+        lines: [{
+          deduction_type: 'other_allowance',
+          amount: 80,
+          rule: { rule_id: 'C', name: 'Co-op', method: 'percent_of_gross', rate: 0.005 },
+          rules: [
+            { rule_id: 'C', name: 'Co-op', method: 'percent_of_gross', rate: 0.005, amount: 50 },
+            { rule_id: 'F', name: 'Freight', method: 'per_unit', amount_per_unit: 3, amount: 30 },
+          ],
+          overridden_rules: [],
+        }],
+        total_sales_deductions: 80,
+        net_sales: 9920,
+      },
+    });
+    const other = sim.lines.find((l) => l.type === 'other_allowance');
+    expect(other.amount).toBe(80);
+    expect(other.rules.map((r) => [r.rule_id, r.amount])).toEqual([['C', 50], ['F', 30]]);
+    // an older response without "rules" still gives the one rule
+    const old = normalizeSimulation({ data: { lines: [{ deduction_type: 'terms_allowance', amount: 20, rule: { rule_id: 'T' } }] } });
+    expect(old.lines.find((l) => l.type === 'terms_allowance').rules).toEqual([{ rule_id: 'T', amount: 20 }]);
+  });
+});
+
+describe('product-type prices', () => {
+  const rules = [
+    { price_id: 'P-ALL', customer_type: 'Distributor', method: 'discount_from_base', discount_pct: 0.3 },
+    { price_id: 'P-ACC', customer_type: 'Distributor', unit_type: 'Accessory', method: 'discount_from_base', discount_pct: 0.4 },
+    { price_id: 'P-MAG', customer_type: 'Distributor', unit_id: 'MAG', method: 'fixed', unit_price: 20 },
+    { price_id: 'P-PST', unit_type: 'Pistol', method: 'discount_from_base', discount_pct: 0.1 },
+  ];
+
+  it('scores and names sources like the engine', () => {
+    expect(priceSpecificity({ customer_id: 'C', unit_id: 'U' })).toBe(10);
+    expect(priceSpecificity({ customer_type: 'T', unit_type: 'Accessory' })).toBe(5);
+    expect(priceSource({ customer_type: 'T', unit_type: 'X' })).toBe('type_product_type');
+    expect(priceSource({ customer_id: 'C', unit_type: 'X' })).toBe('customer_product_type');
+    expect(priceSource({ unit_type: 'X' })).toBe('product_type');
+    expect(priceSource({ customer_type: 'T', unit_id: 'U', unit_type: 'X' })).toBe('type_product');
+  });
+
+  it('resolves cells with the product type', () => {
+    const dist = { customerType: 'Distributor', forecastId: null };
+    expect(resolveCellPrice(rules, { ...dist, unitId: 'ACC', unitType: 'accessory', basePrice: 50 })).toMatchObject({ price: 30, source: 'type_product_type' });
+    expect(resolveCellPrice(rules, { ...dist, unitId: 'MAG', unitType: 'Accessory', basePrice: 40 })).toMatchObject({ price: 20, source: 'type_product' });
+    expect(resolveCellPrice(rules, { ...dist, unitId: 'RIF', unitType: 'Rifle', basePrice: 1500 })).toMatchObject({ price: 1050, source: 'type_all' });
+    expect(resolveCellPrice(rules, { unitId: 'PST', unitType: 'Pistol', basePrice: 800, customerType: 'Retail' })).toMatchObject({ price: 720, source: 'product_type' });
+    expect(resolveCellPrice(rules, { ...dist, unitId: 'PST', unitType: 'Pistol', basePrice: 800 })).toMatchObject({ price: 560, source: 'type_all' });
+  });
+
+  it('breaks ties like the engine: bounded window, then newer, then id', () => {
+    const tie = [
+      { price_id: 'P-Z', unit_id: 'R', method: 'fixed', unit_price: 900, start_period: '2027-01', created_at: '2026-10-12 09:00:00' },
+      { price_id: 'P-A', unit_id: 'R', method: 'fixed', unit_price: 950, start_period: '2027-01', end_period: '2027-06', created_at: '2026-01-01 09:00:00' },
+    ];
+    expect(resolveCellPrice(tie, { unitId: 'R', basePrice: 1000 }).rule.price_id).toBe('P-A');
+    const newer = [
+      { price_id: 'P-Z', unit_id: 'R', method: 'fixed', unit_price: 900, created_at: '2026-01-01 09:00:00' },
+      { price_id: 'P-A', unit_id: 'R', method: 'fixed', unit_price: 950, created_at: '2026-06-01T09:00:00' },
+    ];
+    expect(resolveCellPrice(newer, { unitId: 'R', basePrice: 1000 }).price).toBe(950);
+  });
+
+  it('lists product-type rules with the every-product ones', () => {
+    expect(partitionPriceRules(rules).allProducts.map((r) => r.price_id)).toEqual(['P-ALL', 'P-ACC', 'P-PST']);
+  });
+
+  it('round-trips the product type through the form', () => {
+    const form = priceToForm(rules[1]);
+    expect(form.unit_type).toBe('Accessory');
+    expect(formToPrice(form, null)).toMatchObject({ unit_id: null, unit_type: 'Accessory', discount_pct: 0.4, customer_type: 'Distributor' });
+    expect(formToPrice({ ...form, unit_id: 'ACC' }, null).unit_type).toBeNull();     // a product beats its type
+    expect(validatePriceForm({ method: 'fixed', unit_id: '', unit_type: 'Accessory', unit_price: '35' })).toEqual({});
+    expect(validatePriceForm({ method: 'fixed', unit_id: '', unit_type: '', unit_price: '35' }).unit_id).toBeTruthy();
   });
 });

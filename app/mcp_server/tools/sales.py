@@ -11,7 +11,7 @@ from services.model_adjustments import AdjustmentError, adjust_sales
 from services.workbook_export import sales_detail_totals
 from utils.period_normalizer import month_from_name, normalize_month
 from mcp_server.core import (
-    DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, check_row_keys, error_list, format_row_errors, mcp, page,
+    DESTRUCTIVE, READ, UPSERT, as_table, call, check_row_keys, error_list, format_row_errors, mcp, page,
     require,
 )
 
@@ -171,7 +171,7 @@ def _number(value: Any, label: str) -> Optional[float]:
 UPSERT_ROW_FIELDS = ("customer_id", "unit_id", "period", "quantity", "unit_price")
 
 
-@mcp.tool(name="forecast_upsert_sales", annotations=UPSERT)
+@mcp.tool(name="forecast_upsert_sales", annotations=DESTRUCTIVE)
 async def upsert_sales(
     forecast_id: Annotated[str, Field(description="Scenario the rows belong to")],
     rows: Annotated[List[Dict[str, Any]], Field(
@@ -330,7 +330,7 @@ def _negative_quantity_errors(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return errors
 
 
-@mcp.tool(name="forecast_import_sales", annotations=WRITE)
+@mcp.tool(name="forecast_import_sales", annotations=UPSERT)
 async def import_sales(
     forecast_id: Annotated[str, Field(description="Scenario to import into (must exist)")],
     rows: Annotated[Optional[List[Dict[str, Any]]], Field(
@@ -429,10 +429,17 @@ async def import_sales(
     return out
 
 
+#: forecast_revenue_summary group_by spellings the API names differently.
+REVENUE_GROUP_ALIASES = {"product": "unit", "unit_type": "product_type"}
+
+
 @mcp.tool(name="forecast_revenue_summary", annotations=READ)
 async def revenue_summary(
     forecast_id: Annotated[str, Field(description="Scenario id")],
-    group_by: Annotated[str, Field(description="period, customer, unit (product), customer_unit, customer_type or unit_type")] = "period",
+    group_by: Annotated[Literal["period", "customer", "unit", "product", "customer_unit", "customer_type", "product_type",
+                                "unit_type"], Field(
+        description="period, customer, unit (= product), customer_unit, customer_type or product_type (= unit_type)")
+    ] = "period",
     start_period: Annotated[Optional[str], Field(description="YYYY-MM; defaults to the scenario's first sales month")] = None,
     end_period: Annotated[Optional[str], Field(description="YYYY-MM; defaults to the scenario's last sales month")] = None,
     limit: Annotated[int, Field(description="Max groups returned (largest first, except group_by=period); totals cover all", ge=1, le=1000)] = 100,
@@ -443,8 +450,9 @@ async def revenue_summary(
     (quantity x price), sales deductions, net sales, product COGS and gross
     margin %, with avg_unit_price = gross sales / quantity. `totals` cover
     every group. For a monthly P&L use forecast_financial_statements."""
+    api_group = REVENUE_GROUP_ALIASES.get(group_by, group_by)
     body = await call("GET", "/source-data/revenue-summary", params={
-        "forecast_id": require(forecast_id, "forecast_id"), "group_by": group_by,
+        "forecast_id": require(forecast_id, "forecast_id"), "group_by": api_group,
         "start_period": start_period, "end_period": end_period,
     })
     groups = body.get("revenue_summary")
@@ -458,7 +466,7 @@ async def revenue_summary(
     return out
 
 
-@mcp.tool(name="forecast_adjust_sales", annotations=WRITE)
+@mcp.tool(name="forecast_adjust_sales", annotations=DESTRUCTIVE)
 async def adjust_sales_tool(
     forecast_id: Annotated[str, Field(description="Scenario whose sales rows are adjusted")],
     periods: Annotated[Optional[List[str]], Field(description="Explicit months, e.g. ['2026-06', '2026-08', '2026-09']")] = None,

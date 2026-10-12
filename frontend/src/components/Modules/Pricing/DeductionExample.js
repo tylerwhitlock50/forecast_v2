@@ -152,7 +152,16 @@ const DeductionExample = ({ customers, products, customerTypes, productTypes, sc
                   <td className="px-3 py-1.5">
                     <div className="text-gray-800">− {line.label}</div>
                     <div className="text-[11px] text-gray-500">
-                      {line.rule ? ruleLabel(line.rule) : 'No rule applies'}
+                      {line.rules?.length > 1 ? (
+                        <ul data-testid={`programs-${line.type}`}>
+                          {line.rules.map((r) => (
+                            <li key={r.rule_id} className="flex justify-between gap-2">
+                              <span>+ {ruleLabel(r)}</span>
+                              <span className="tabular-nums">{formatMoney(r.amount)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : line.rule ? ruleLabel(line.rule) : 'No rule applies'}
                       {line.overridden?.length > 0 && <span title={`Also matched: ${line.overridden.join(', ')}`}> · beats {line.overridden.length} broader rule{line.overridden.length === 1 ? '' : 's'}</span>}
                     </div>
                   </td>

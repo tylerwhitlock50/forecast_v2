@@ -82,6 +82,28 @@ def month_from_name(value: Any) -> Optional[int]:
     return _month_from_name(text)
 
 
+def month_number(value: Any) -> Optional[int]:
+    """
+    1 .. 12 for a bare month number (1, '01', 3.0, '3.0'), else None.
+
+    A Month column of plain numbers next to a Year column; combine with
+    ``month_in_year``. Excel serial dates and YYYY-MM text are not month
+    numbers (use ``normalize_month`` for those).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value != value or not float(value).is_integer():  # NaN or 1.5
+            return None
+        number = int(value)
+    else:
+        text = str(value).strip()
+        if not re.match(r"^\d{1,2}(\.0+)?$", text):
+            return None
+        number = int(float(text))
+    return number if 1 <= number <= 12 else None
+
+
 def month_in_year(month: int, year: Any) -> Optional[str]:
     """'YYYY-MM' for a month number and a year (2027, '2027', 2027.0, '27'); None when the year is unusable."""
     if year is None or isinstance(year, bool):

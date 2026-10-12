@@ -3,6 +3,7 @@ routers, machines, labor rates) plus a read-only SQL escape hatch."""
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import Field
@@ -10,7 +11,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 import db.database as dbmod
 from mcp_server.core import (
-    DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, check_row_keys, error_list, format_row_errors, mcp, require,
+    DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, check_row_keys, error_list, fit_rows, format_row_errors, mcp,
+    require,
 )
 
 Layout = Annotated[Literal["table", "records"], Field(description=(
@@ -236,16 +238,25 @@ async def list_tables() -> Dict[str, Any]:
 async def query_table(
     table: Table,
     forecast_id: Annotated[Optional[str], Field(description="Scenario scope: sales rows of this scenario; other tables include company-wide (NULL) rows too")] = None,
-    filters: Annotated[Optional[Dict[str, Any]], Field(description="Equality filters, e.g. {\"customer_id\": \"C001\"}")] = None,
+    filters: Annotated[Optional[Dict[str, Any]], Field(description=(
+        "Equality filters, one value per column, e.g. {\"customer_id\": \"C001\"}. For several values of a "
+        "column use forecast_sql_query with IN (...)"))] = None,
     limit: Annotated[int, Field(ge=1, le=2000)] = 100,
     offset: Annotated[int, Field(ge=0)] = 0,
     layout: Layout = "table",
 ) -> Dict[str, Any]:
     """Read rows from any model table with optional scenario scope and equality
-    filters. For ranges, joins or aggregates use forecast_sql_query."""
+    filters (one value per column). For ranges, IN lists, joins or
+    aggregates use forecast_sql_query. A page larger than the response
+    budget is cut (has_more / next_offset continue it)."""
     table = _check_table(table)
     if filters:
         _unknown_columns(table, filters)
+        several = [k for k, v in filters.items() if isinstance(v, (list, tuple, set, dict))]
+        if several:
+            raise ToolError(f"filters take one value per column ({', '.join(several)} got several). For a list "
+                            f"of values use forecast_sql_query, e.g. SELECT * FROM {table} WHERE {several[0]} "
+                            f"IN ('A', 'B'). Nothing was read.")
     params: Dict[str, Any] = {"forecast_id": forecast_id, "limit": limit, "offset": offset}
     for key, value in (filters or {}).items():
         if value is not None:
@@ -254,15 +265,24 @@ async def query_table(
     rows = body.get("items") if "items" in body else body.get("data", [])
     rows = rows or []
     columns = body.get("columns") or (list(rows[0]) if rows else _columns(table))
+    full_page = len(rows) == limit
+    shaped = as_table(rows, columns)["rows"] if layout == "table" else rows
+    fitting = fit_rows(shaped)
+    cut = fitting < len(rows)
+    if cut:
+        rows, shaped = rows[:fitting], shaped[:fitting]
+    more = full_page or cut
     out = {
         "table": table,
         "columns": columns,
-        "rows": as_table(rows, columns)["rows"] if layout == "table" else rows,
+        "rows": shaped,
         "returned": len(rows),
         "offset": offset,
-        "has_more": len(rows) == limit,
-        "next_offset": offset + limit if len(rows) == limit else None,
+        "has_more": more,
+        "next_offset": offset + len(rows) if more else None,
     }
+    if cut:
+        out["note"] = f"Only {len(rows)} rows fit the response budget; continue with offset={offset + len(rows)}"
     if layout != "table":
         out.pop("columns")
     return out
@@ -406,7 +426,7 @@ async def _import_records(table: str, rows: List[Dict[str, Any]], merge_strategy
     return out
 
 
-@mcp.tool(name="forecast_import_customers", annotations=WRITE)
+@mcp.tool(name="forecast_import_customers", annotations=UPSERT)
 async def import_customers(
     customers: Annotated[List[Dict[str, Any]], Field(description=(
         "Rows of {customer_id?, customer_name, customer_type?, region?}. customer_type (e.g. Dealer, Distributor, "
@@ -417,14 +437,18 @@ async def import_customers(
     dry_run: Annotated[bool, Field(description="Validate and report without writing")] = False,
     allow_partial: Annotated[bool, Field(description="Write the valid rows even when some rows fail (default: all-or-nothing)")] = False,
 ) -> Dict[str, Any]:
-    """Bulk create or update customers. All-or-nothing by default: a row
-    error (e.g. no name for a new customer) means nothing is written.
-    Returns created / updated / skipped counts, the new ids and, for
-    updates, which fields changed."""
+    """Create or update a few customers given as JSON objects with the exact
+    field names (customer_id, customer_name, customer_type, region),
+    all-or-nothing by default: a row error (e.g. no name for a new
+    customer) means nothing is written. To load the user's customer FILE
+    (any header spelling, file_path) use forecast_import_records(table=
+    'customers') instead; both write the same records. Returns created /
+    updated / skipped counts, the new ids and, for updates, which fields
+    changed."""
     return await _import_records("customers", customers, merge_strategy, dry_run, allow_partial)
 
 
-@mcp.tool(name="forecast_import_products", annotations=WRITE)
+@mcp.tool(name="forecast_import_products", annotations=UPSERT)
 async def import_products(
     products: Annotated[List[Dict[str, Any]], Field(description=(
         "Rows of {unit_id?, unit_name, unit_description?, base_price? (list price / MSRP), unit_type?, bom_id?, "
@@ -436,14 +460,36 @@ async def import_products(
     dry_run: Annotated[bool, Field(description="Validate and report without writing")] = False,
     allow_partial: Annotated[bool, Field(description="Write the valid rows even when some rows fail (default: all-or-nothing)")] = False,
 ) -> Dict[str, Any]:
-    """Bulk create or update products (units) with their BOM and routing
-    links. All-or-nothing by default. Warnings name products whose BOM or
-    routing has no lines yet (load them next, then check costs with
+    """Create or update a few products (units) given as JSON objects with
+    the exact field names, with their BOM and routing links; all-or-nothing
+    by default. To load the user's product FILE (any header spelling,
+    file_path) use forecast_import_records(table='units') instead; both
+    write the same records. Warnings name products whose BOM or routing has
+    no lines yet (load them next, then check costs with
     forecast_unit_cost_preview)."""
     return await _import_records("units", products, merge_strategy, dry_run, allow_partial)
 
 
-_FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|pragma|vacuum|reindex)\b", re.I)
+#: SQL text, string literals, quoted identifiers and comments of a statement, matched in one pass.
+_SQL_TOKENS = re.compile(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|/\*.*?(?:\*/|$)""", re.S)
+#: Read-only pragmas a SELECT may use as table-valued functions (pragma_table_info('bom'), ...).
+_READ_PRAGMAS = {"table_info", "table_xinfo", "table_list", "index_list", "index_info", "index_xinfo",
+                 "foreign_key_list", "database_list", "collation_list", "function_list", "pragma_list"}
+
+
+def _sql_code(statement: str) -> str:
+    """The statement with string literals, quoted identifiers and comments blanked out, so a keyword or ';'
+    inside a value ("LIKE '%insert%'", a column "update") is not mistaken for SQL."""
+    return _SQL_TOKENS.sub(lambda m: " " if m.group(0).startswith(("--", "/*")) else "''", statement)
+
+
+def _read_only_authorizer(action: int, arg1: Any, _arg2: Any, _db: Any, _trigger: Any) -> int:
+    """SQLite authorizer for forecast_sql_query: reading tables, functions and CTEs only."""
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA and str(arg1 or "").lower() in _READ_PRAGMAS:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
 
 
 @mcp.tool(name="forecast_sql_query", annotations=READ)
@@ -454,23 +500,31 @@ async def sql_query(
 ) -> Dict[str, Any]:
     """Run a read-only SQL query against the model database (SQLite). Use it
     for joins, ranges and aggregates the typed tools do not offer. Prefer
-    GROUP BY aggregates over raw rows to keep the result small. Writes are
-    rejected; use the write tools."""
-    statement = require(sql, "sql").strip().rstrip(";").strip()
-    if ";" in statement:
+    GROUP BY aggregates over raw rows to keep the result small; rows past
+    the response budget are cut (truncated=true). Only one SELECT / WITH
+    statement; anything that would change the database is refused by the
+    database itself (read-only connection), so keywords inside values or
+    names (LIKE '%insert%', replace(...), updated_at) are fine."""
+    statement = require(sql, "sql").strip()
+    code = _sql_code(statement).strip().rstrip(";").strip()
+    if ";" in code:
         raise ToolError("Only one statement is allowed")
-    head = statement.lower()
+    head = code.lower()
     if not (head.startswith("select") or head.startswith("with")):
         raise ToolError("Only SELECT queries are allowed; use the write tools to change data")
-    if _FORBIDDEN.search(statement):
-        raise ToolError("Query contains a write keyword; only SELECT queries are allowed")
+    statement = statement.rstrip().rstrip(";")
     conn = dbmod.db_manager.get_connection()
     try:
         conn.execute("PRAGMA query_only = 1")
+        conn.set_authorizer(_read_only_authorizer)
         cursor = conn.cursor()
         try:
             cursor.execute(statement)
-        except Exception as exc:  # sqlite3.Error, surfaced with the SQL error text
+        except sqlite3.DatabaseError as exc:
+            if "not authorized" in str(exc) or "readonly" in str(exc).lower():
+                raise ToolError("Only read-only SELECT queries are allowed; use the write tools to change data")
+            raise ToolError(f"SQL error: {exc}")
+        except Exception as exc:  # sqlite3.Error / ProgrammingError, surfaced with the SQL error text
             raise ToolError(f"SQL error: {exc}")
         columns = [d[0] for d in cursor.description] if cursor.description else []
         rows = cursor.fetchmany(limit + 1)
@@ -478,9 +532,17 @@ async def sql_query(
         dbmod.db_manager.close_connection(conn)  # a fresh connection per call, so query_only ends here
     truncated = len(rows) > limit
     rows = rows[:limit]
+    fitting = fit_rows([list(row) for row in rows])
+    out: Dict[str, Any] = {}
+    if fitting < len(rows):
+        rows = rows[:fitting]
+        truncated = True
+        out["note"] = (f"Only the first {fitting} rows fit the response budget; select fewer columns, add "
+                       f"LIMIT / OFFSET, or aggregate with GROUP BY")
     return {
         "columns": columns,
         "rows": [list(row) for row in rows] if layout == "table" else [dict(zip(columns, row)) for row in rows],
         "returned": len(rows),
         "truncated": truncated,
+        **out,
     }

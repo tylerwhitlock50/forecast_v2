@@ -6,7 +6,8 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, mcp, require, strip_none
+from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, mcp, require, strip_none, to_json_text
+from mcp_server.tools._common import scenario_window
 
 SECTIONS = ("income_statement", "cash_flow", "balance_sheet", "detail", "assumptions", "carry_forward", "warnings")
 DETAIL_KEYS = (
@@ -28,8 +29,14 @@ CAPEX_FIELDS = (
 )
 #: Windows longer than this many months default to the compact statement view.
 COMPACT_AFTER_MONTHS = 12
+#: In the default (no sections) view a detail table with more entries than this (one per product, customer,
+#: employee, ...) is left out and listed in detail_omitted, so the default stays small on a real catalog.
+DEFAULT_DETAIL_MAX_ENTRIES = 15
+#: A default view longer than this (characters) falls back to the compact view.
+DEFAULT_VIEW_MAX_CHARS = 40_000
 
 Window = Annotated[str, Field(description="YYYY-MM")]
+OptionalWindow = Annotated[Optional[str], Field(description="YYYY-MM; default: the scenarios' sales window")]
 
 
 def _months(start: str, end: str) -> int:
@@ -63,15 +70,21 @@ def _headline(body: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _entries(table: Any) -> int:
+    return len(table) if isinstance(table, (list, dict)) else 0
+
+
 @mcp.tool(name="forecast_financial_statements", annotations=READ)
 async def financial_statements(
     forecast_ids: Annotated[List[str], Field(description="Scenario ids to include (usually one); an unknown id is an error", min_length=1)],
-    start_period: Window,
-    end_period: Window,
+    start_period: OptionalWindow = None,
+    end_period: OptionalWindow = None,
     include_raises: Annotated[bool, Field(description="Apply scheduled payroll raises")] = True,
     sections: Annotated[Optional[List[str]], Field(description=(
         f"Subset of {', '.join(SECTIONS)}, or one detail table as 'detail.<name>' ({', '.join(DETAIL_KEYS)}). "
-        f"Omit for everything when the window is {COMPACT_AFTER_MONTHS} months or less, or for the compact view "
+        f"Omit for the statements plus the detail tables when the window is {COMPACT_AFTER_MONTHS} months or less "
+        f"(a detail table with more than {DEFAULT_DETAIL_MAX_ENTRIES} entries, e.g. revenue_by_product on a real "
+        f"catalog, is named in detail_omitted instead: ask for it as 'detail.<name>'), or for the compact view "
         f"(income statement by month + cash-flow totals + closing balance sheet + warnings) on longer windows. "
         f"Headline totals and warnings are always included."))] = None,
     layout: Annotated[Literal["table", "records"], Field(description=(
@@ -86,7 +99,10 @@ async def financial_statements(
     type, deductions, expenses by category, payroll by department, loans and
     capex. Use sections to keep the response small, e.g. ['income_statement']
     or ['detail.revenue_by_product']; a multi-year window defaults to the
-    compact view."""
+    compact view. start_period / end_period default to the scenarios' sales
+    window."""
+    if not (start_period and end_period):
+        start_period, end_period, _sales_window = await scenario_window(forecast_ids, start_period, end_period)
     body = await call("GET", "/reporting/statements", params={
         "forecast_ids": forecast_ids, "start_period": start_period, "end_period": end_period,
         "include_raises": include_raises,
@@ -105,7 +121,19 @@ async def financial_statements(
     months = len(body.get("periods") or []) or _months(start_period, end_period)
     compact_default = not requested and months > COMPACT_AFTER_MONTHS
     if not requested and not compact_default:
-        return _apply_layout(body, layout)
+        full = dict(body)
+        omitted = {name: _entries(table) for name, table in detail_body.items()
+                   if _entries(table) > DEFAULT_DETAIL_MAX_ENTRIES}
+        if omitted:
+            full["detail"] = {name: table for name, table in detail_body.items() if name not in omitted}
+            full["detail_omitted"] = omitted
+            full["note"] = (f"Detail tables with more than {DEFAULT_DETAIL_MAX_ENTRIES} entries are left out of the "
+                            f"default view: ask for one with sections=['detail.<name>'] "
+                            f"(e.g. {', '.join(repr('detail.' + n) for n in omitted)}).")
+        full = _apply_layout(full, layout)
+        if len(to_json_text(full)) <= DEFAULT_VIEW_MAX_CHARS:
+            return full
+        compact_default = True   # still too large (many departments, loans, ...): the compact view
     if compact_default:
         top = ["income_statement", "warnings"]
     keep = {"forecast_ids", "start_period", "end_period", "message", "warnings", *top}
@@ -118,7 +146,9 @@ async def financial_statements(
         if stmt not in top:
             out[key] = value
     if compact_default:
-        out["note"] = (f"{months}-month window: returned the income statement by month plus headline totals. "
+        reason = (f"{months}-month window" if months > COMPACT_AFTER_MONTHS
+                  else "The full statements would be too large for one response")
+        out["note"] = (f"{reason}: returned the income statement by month plus headline totals. "
                        f"Pass sections=[...] (e.g. ['cash_flow'], ['balance_sheet'], ['detail.revenue_by_product']) "
                        f"for the rest.")
     return _apply_layout(out, layout)
@@ -129,12 +159,36 @@ async def variance(
     forecast_ids: Annotated[List[str], Field(min_length=1)],
     start_period: Window,
     end_period: Window,
+    layout: Annotated[Literal["table", "records"], Field(description=(
+        "table: each line's by_period is {columns, rows} with one array per month (default, about half the "
+        "size); records: one object per month"))] = "table",
 ) -> Dict[str, Any]:
     """Budget vs actual by statement line and period: forecast, actual,
-    variance and variance %, for periods that have actuals recorded."""
-    return await call("GET", "/reporting/variance", params={
+    variance and variance %, for periods that have actuals recorded. Each
+    line has totals (to date: only the months that line has actuals for),
+    coverage and missing months. On a long window the month-by-month rows of
+    lines without any actuals are left out (lines_by_period_omitted)."""
+    body = await call("GET", "/reporting/variance", params={
         "forecast_ids": forecast_ids, "start_period": start_period, "end_period": end_period,
     })
+    lines = body.get("line_items")
+    if not isinstance(lines, list):
+        return body
+    if layout == "table":
+        body["line_items"] = [{**line, "by_period": as_table(line["by_period"])}
+                              if isinstance(line, dict) and isinstance(line.get("by_period"), list) else line
+                              for line in lines]
+    if len(to_json_text(body)) > DEFAULT_VIEW_MAX_CHARS:
+        omitted = [line.get("line_item") for line in body["line_items"]
+                   if isinstance(line, dict) and not line.get("has_actuals") and "by_period" in line]
+        body["line_items"] = [{k: v for k, v in line.items() if k != "by_period"}
+                              if isinstance(line, dict) and line.get("line_item") in omitted else line
+                              for line in body["line_items"]]
+        if omitted:
+            body["lines_by_period_omitted"] = omitted
+            body["note"] = ("Month-by-month rows are left out for lines with no actuals (their budget by month is "
+                            "in forecast_financial_statements); narrow the window to see them here.")
+    return body
 
 
 @mcp.tool(name="forecast_actual_line_items", annotations=READ)

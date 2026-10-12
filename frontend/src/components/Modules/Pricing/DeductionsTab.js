@@ -12,6 +12,7 @@ import DeductionExample from './DeductionExample';
 import { HelpTip, ScopeChips, Toggle } from './PricingBits';
 import {
   DEDUCTION_TYPES,
+  PRECEDENCE_TEXT,
   describeRate,
   extractList,
   formatMoney,
@@ -26,8 +27,6 @@ const compactMoney = (value) => {
   const n = Number(value) || 0;
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 };
-
-const PRECEDENCE = 'When several rules of the same kind match a sale, only the most specific one applies: customer, then customer type, then product, then product type. Different kinds add up. A 0% rule is an exemption (for example Government customers and excise tax).';
 
 /** Gross → deductions → net for the active scenario's forecast. */
 const TotalsStrip = ({ preview, scenario, loading }) => {
@@ -91,6 +90,12 @@ const RuleGroup = ({ group, customers, products, scenarios, usage, hasSales, onA
           </span>
         </div>
         <p className="mt-0.5 text-xs text-gray-500">{group.description}</p>
+        {group.stacks && (
+          <p className="mt-1 text-xs text-gray-600" data-testid="programs-note">
+            Each name is a separate program, so co-op, freight and a volume rebate all come off the same sale.
+            To change a program for one customer, add a rule with the <span className="font-medium">same name</span> for that customer: it replaces the broader rule of that name.
+          </p>
+        )}
       </div>
       <Button variant="outline" size="sm" onClick={() => onAdd(group.type)}>
         <Plus className="mr-1 h-3.5 w-3.5" /> Add
@@ -106,7 +111,7 @@ const RuleGroup = ({ group, customers, products, scenarios, usage, hasSales, onA
               <th className="px-5 py-2">Rule · applies to</th>
               <th className="w-28 whitespace-nowrap px-3 py-2 text-right">Rate</th>
               <th className="w-36 whitespace-nowrap px-3 py-2 text-right">
-                <span className="inline-flex items-center gap-1">In this forecast <HelpTip text="Sales rows this rule is applied to in the active scenario, and the amount. A rule can match nothing if a more specific rule wins." /></span>
+                <span className="inline-flex items-center gap-1">In this forecast <HelpTip text="Sales rows this rule is applied to in the active scenario, and the amount. A rule can match nothing if a more specific rule of the same kind (other allowances: of the same program name) wins." /></span>
               </th>
               <th className="w-16 px-3 py-2 text-center">Active</th>
               <th className="w-24 px-3 py-2"><span className="sr-only">Actions</span></th>
@@ -119,7 +124,10 @@ const RuleGroup = ({ group, customers, products, scenarios, usage, hasSales, onA
               return (
                 <tr key={rule.rule_id} className={active ? 'hover:bg-gray-50' : 'bg-gray-50/50 text-gray-400'}>
                   <td className="px-5 py-2.5 align-top">
-                    <div className={`font-medium ${active ? 'text-gray-900' : 'text-gray-500 line-through'}`}>{rule.name || rule.rule_id}</div>
+                    <div className={`font-medium ${active ? 'text-gray-900' : 'text-gray-500 line-through'}`}>
+                      {rule.name || rule.rule_id}
+                      {group.stacks && <span className="ml-1.5 align-middle text-[10px] font-normal uppercase tracking-wide text-gray-400">program</span>}
+                    </div>
                     <div className="mt-1"><ScopeChips rule={rule} customers={customers} products={products} scenarios={scenarios} showLimits /></div>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right align-top font-medium tabular-nums text-gray-900">{describeRate(rule)}</td>
@@ -130,7 +138,7 @@ const RuleGroup = ({ group, customers, products, scenarios, usage, hasSales, onA
                           <div className="text-gray-900">{compactMoney(used.amount)}</div>
                           <div className="text-[11px] text-gray-500">{used.rows.toLocaleString('en-US')} rows</div>
                         </>
-                      ) : <span className="text-xs text-amber-700" title="No sales row uses this rule: its scope matches nothing, it is switched off, or a more specific rule wins.">Not used</span>}
+                      ) : <span className="text-xs text-amber-700" title="No sales row uses this rule: its scope matches nothing, it is switched off, or a more specific rule of the same kind (other allowances: the same program name) wins.">Not used</span>}
                   </td>
                   <td className="px-3 py-2.5 text-center align-top">
                     <Toggle checked={active} disabled={busyId === rule.rule_id} onChange={(v) => onToggle(rule, v)} label={active ? 'Switch off' : 'Switch on'} />
@@ -274,8 +282,11 @@ const DeductionsTab = ({ customers, products, customerTypes, productTypes, scena
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="flex items-center gap-1.5 text-lg font-semibold text-gray-900">Rules <HelpTip text={PRECEDENCE} /></h2>
-              <p className="text-sm text-gray-600">One rule of each kind applies per sale (the most specific match wins) and kinds add up. Rules apply in every scenario unless tagged with one.</p>
+              <h2 className="flex items-center gap-1.5 text-lg font-semibold text-gray-900">Rules <HelpTip text={PRECEDENCE_TEXT} /></h2>
+              <p className="text-sm text-gray-600">
+                One rule of each kind applies per sale (the most specific match wins) and kinds add up. Other allowances are
+                separate programs: every named program that matches applies, and they add up. Rules apply in every scenario unless tagged with one.
+              </p>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => setStandardOpen(true)}>

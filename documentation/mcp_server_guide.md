@@ -115,9 +115,17 @@ There is no authentication, same as the rest of the API: run it on a trusted net
 * Every tool returns one compact JSON block. Tables (`forecast_list_sales`,
   `forecast_query_table`, `forecast_sql_query`, statement months) come as
   `{columns, rows}`; pass `layout="records"` for one object per row.
-* A result larger than `MCP_MAX_RESPONSE_CHARS` (default 60,000 characters) is returned as an
-  error that says how to narrow the request (a shorter window, `group_by`, `limit`, fewer
-  sections) instead of flooding the conversation.
+* A **read-only** tool's result larger than `MCP_MAX_RESPONSE_CHARS` (default 60,000
+  characters) is returned as an error that says how to narrow the request (a shorter window,
+  `group_by`, `top_n`, `limit`, fewer sections) instead of flooding the conversation; nothing
+  happened, so asking again is safe. Every read tool fits with its default arguments on an
+  owner-sized model (20 customers x 20 products x 12 months, 500 BOM lines, 120 routing
+  operations, 100 price rules, 40 employees, a 360-payment mortgage): see the table below.
+* A **write** tool's result is never turned into an error, because the write has already
+  happened and an error would invite a retry that writes the same data again. An oversized
+  write result is cut instead: counts and flags are kept, long lists are shortened, and
+  `result_truncated.note` says the write WAS applied (or, for `dry_run=true`, that nothing
+  was written).
 * Unknown or misspelled arguments are rejected with the list of valid ones, so a guessed
   filter can never silently widen a change. `forecast_adjust_sales` refuses to run without a
   filter unless `all_rows=true`.
@@ -138,10 +146,15 @@ The import tools can read a CSV / XLSX file themselves (`file_path`), and
 
 * Put input files in `./data` (for example `./data/imports/boms_2027.xlsx`) and refer to them
   relative to the data folder: `file_path="imports/boms_2027.xlsx"` (a leading `data/` or
-  `./data/` is accepted too). A relative path may not leave the data folder.
-* An absolute path (`/home/me/Downloads/boms.xlsx`) works only when the API process can read
-  it, i.e. a local, non-Docker run. Inside Docker the container cannot see your Downloads
-  folder: copy the file into `./data` first.
+  `./data/` is accepted too). This always works. No path may leave the data folder (`../`,
+  symlinks pointing outside): there is no authentication, so an MCP caller (or a
+  prompt-injected assistant) must not be able to list or read the rest of the machine.
+* Absolute paths inside the data folder (`/data/imports/boms.xlsx`) are fine. Absolute paths
+  elsewhere (`/home/me/Downloads/boms.xlsx`) and `~` paths are refused by default. For a
+  local, single-user run you can allow them by starting the API with
+  `FORECAST_ALLOW_ABSOLUTE_PATHS=1` (for example
+  `FORECAST_ALLOW_ABSOLUTE_PATHS=1 python scripts/run_local.py`). Inside Docker the container
+  cannot see your Downloads folder anyway: copy the file into `./data`.
 * Exports land in `<data folder>/exports/`. In Docker the tool result carries
   `host_path_hint: "./data/exports/<file>.xlsx"`, which is where you open it on the host.
 * Supported: `.csv` / `.tsv` / `.txt` (delimiter sniffed, UTF-8 or Windows-1252) and
@@ -172,8 +185,14 @@ The server's instructions (sent on connect, under 4,000 characters) tell the ass
    Database screen, where you can restore them, and `forecast_revert_to_last_save` undoes to
    the latest autosave.
 
-Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`), so clients that ask
-before destructive calls will prompt for deletes, `replace`-mode imports and snapshot restores.
+Every tool carries MCP annotations. `readOnlyHint` marks the reads. `destructiveHint` is true
+for every tool that overwrites or deletes stored data (per the MCP spec, false means "only
+adds new records"): deletes, imports (they update existing ids, and `replace` modes delete),
+`forecast_import_sales`, `forecast_apply_price_list`, the two bulk adjusters, the upserts and
+the update tools, snapshot restores. Clients that ask before destructive calls prompt for
+those; creating a scenario, an employee or a snapshot does not. `idempotentHint` is true when
+the same call twice leaves the same state (an upsert, re-pricing from the price list), false
+for relative changes (`forecast_adjust_sales`, `forecast_upsert_sales` with `add`).
 
 Responses are kept small for the assistant's context: one compact JSON text block per call,
 summaries by default and detail behind flags (`group_by`, `include_periods`, `top_n`, `limit`,
@@ -201,7 +220,7 @@ Tomorrow's workflow, one prompt per step. Put the files in `./data/imports/` fir
 | 10 | "Anything missing?" | warnings from the steps above, `forecast_data_quality`, `forecast_cogs_forecast(group_by="unit_costs")` (missing BOM / routing / rate = understated COGS), `forecast_deduction_preview` (rules that apply to nothing) |
 | 11 | "Show me gross to net to gross margin by month, then by customer type." | `forecast_cogs_forecast` (summary), `forecast_cogs_forecast(group_by="customer_type")` |
 | 12 | "Labor hours and FTEs by labor type by month; are machines over capacity?" | `forecast_labor_forecast` |
-| 13 | "Show the 2027 income statement and cash." | `forecast_financial_statements(sections=["income_statement", "cash_flow"])` |
+| 13 | "Show the 2027 income statement and cash." | `forecast_financial_statements(forecast_ids=["F001"], sections=["income_statement", "cash_flow"])` (the window defaults to the scenario's sales window; or give `start_period="2027-01", end_period="2027-12"`) |
 | 14 | "Export it to Excel." | `forecast_export_workbook` → `./data/exports/forecast_F001_2027-01_2027-12.xlsx` |
 
 Column names are matched ignoring case, spaces and punctuation, plus aliases ("Qty Per",
@@ -211,14 +230,23 @@ row; a BOM or routing with any bad row is skipped as a whole so it is never half
 
 Sales periods: `2027-01`, `2027-1`, `2027/01`, `1/2027`, `1/15/2027`, `Jan-27`, `Jan 2027`,
 `January 2027`, Excel dates, or one column per month. Quarters and weeks are rejected (the
-model is monthly).
+model is monthly). `forecast_preview_file` recognises a one-column-per-month file and points
+to `forecast_import_sales`.
+
+Two tools load customers and products: `forecast_import_records(table="customers" | "units",
+rows | file_path)` is the one for the user's files (any header spelling, per-row errors);
+`forecast_import_customers` / `forecast_import_products` take a few JSON objects with the exact
+field names, all-or-nothing. Both write the same records. `forecast_import_records` returns
+`created` / `updated` / `skipped` counts, the ids by action and, in `updated_records`, the
+fields each update changed.
 
 ### Gross to net: prices and deductions
 
 * **Price of a sales row**: the row's own price, else the most specific price-list rule:
-  customer + product > customer (all products) > customer type + product > customer type (all
-  products) > product (all customers) > the product's `base_price`. Discount rules take a
-  fraction off `base_price` (`discount_pct=0.20` = 20% off).
+  customer + product > customer + product type > customer (all products) > customer type +
+  product > customer type + product type > customer type (all products) > product (all
+  customers) > product type > every product > the product's `base_price`. Discount rules take
+  a fraction off `base_price` (`discount_pct=0.20` = 20% off).
 * **Net sales** = gross sales (quantity x price) - terms allowance - chargebacks - other
   allowances - excise tax. The income statement's `revenue` is net sales; commissions are a
   selling expense below gross profit.
@@ -227,10 +255,25 @@ model is monthly).
   tax included in the price at 11% is `deduction_type="excise_tax", method="embedded_tax",
   rate=0.11` and a $1,110 invoice carries $110 of FET; `percent_of_net` (after the
   contra-revenue deductions, e.g. commission on net); `per_unit` (`amount_per_unit`).
-* **Precedence**: exactly one rule per deduction type applies to a sale, the most specific
-  match (customer 8 + customer type 4 + product 2 + product type 1; ties: scenario-specific
-  beats company-wide, then the later start). Types stack. A rule with rate 0 is an exemption
-  ("Government exempt from FET" overrides "FET 11%" and "FET 10% pistols").
+* **Precedence: specificity first.** The most specific matching rule wins (customer 8 +
+  customer type 4 + product 2 + product type 1). Only on equal specificity does a
+  scenario-specific rule beat a company-wide one (then the later start, the earlier end, the
+  newer rule). So a downside scenario's "terms 5% for every customer" does NOT override the
+  company-wide "Dealer terms 2%" for dealers: give the scenario rule the same scope
+  (`customer_type="Dealer"`). A rule with rate 0 is an exemption ("Government exempt from FET"
+  overrides "FET 11%" and "FET 10% pistols").
+* **One rule per type, except other allowances.** One terms / chargebacks / excise /
+  commission rule applies to a sale. `other_allowance` rules are programs named by the rule
+  name ("Co-op advertising", "Freight allowance"): every matching program applies and they
+  add up, the most specific rule within each program. Types stack.
+* **Upserts never stack duplicates.** `forecast_upsert_prices` / `forecast_upsert_deduction_rules`
+  given an item without an id first look for an ACTIVE rule with the same type, scenario,
+  scope and months (and, for `other_allowance`, the same name, compared trimmed and
+  case-insensitively) and update it instead (only the fields sent change; the method switches
+  when you send a `rate` for a per-unit rule or a `unit_price` for a discount). The API also
+  refuses a duplicate with HTTP 409; the tools turn that into the same update. The result
+  lists such items in `matched_existing`, so sending "dealer terms are now 3%" twice is safe.
+  Two items for the same slot in one call are an error (nothing written).
 * `forecast_simulate_deductions` shows the winning rule per type, the overridden ones and the
   arithmetic for one invoice; `forecast_deduction_preview` shows what the rules do to a whole
   scenario (by type, by customer type, by month, per rule, unused rules).
@@ -242,17 +285,17 @@ return the API's confirmation.
 
 | Area | Tools |
 |------|-------|
-| Orientation | `get_overview`, `list_tables`, `query_table`, `sql_query` (read-only SELECT) |
+| Orientation | `get_overview`, `list_tables`, `query_table` (one value per filter column), `sql_query` (one read-only SELECT / WITH; the database connection refuses writes, so keywords inside values or names such as `LIKE '%insert%'` or `replace(...)` are fine) |
 | Build / import | `list_import_templates` (columns, aliases, example CSV), `preview_file` (a file's sheets, header, first rows, matching template; or a folder listing), `import_records` (customers, units / products, machines, labor_rates), `import_routings`, `import_boms`, `import_prices`, `import_deductions` (rows or `file_path`, `dry_run`, `mode`) |
-| Prices & deductions | `list_prices`, `upsert_prices`, `delete_price`, `resolve_price`, **`apply_price_list`** (re-price a scenario's sales rows, `dry_run`), `list_deduction_rules`, `upsert_deduction_rules` (create without `rule_id`, partial update with it), `delete_deduction_rule`, `simulate_deductions`, `deduction_preview` |
+| Prices & deductions | `list_prices` (paged, 100 rules), `upsert_prices`, `delete_price`, `resolve_price`, **`apply_price_list`** (re-price a scenario's sales rows, `dry_run`), `list_deduction_rules`, `upsert_deduction_rules` (create without `rule_id`, or update the active rule with the same scope; partial update with `rule_id`), `delete_deduction_rule`, `simulate_deductions`, `deduction_preview` |
 | Operating forecasts | **`cogs_forecast`** (`group_by` summary / product / customer / customer_type / product_type / unit_costs, `include_periods`, `top_n`), **`labor_forecast`** (hours / cost / FTE by labor type by month, machine hours vs capacity, `hours_per_fte`, `include_machines`, `include_products`), `sales_detail` (every line, paged, `columns`, filters), **`export_workbook`** (Excel into `<data folder>/exports/`) |
-| Scenarios | `list_scenarios`, `get_scenario`, `create_scenario`, `update_scenario` (rename, notes, mark base), `branch_scenario` (copy with multipliers / period extension), `delete_scenario`, `compare_scenarios` |
-| Sales forecast | `list_sales`, `upsert_sales`, `delete_sale`, `import_sales` (price optional: resolved from the price list; `dry_run`, `year`), `revenue_summary`, **`adjust_sales`** (bulk price / volume change by months, customers, products) |
+| Scenarios | `list_scenarios`, `get_scenario`, `create_scenario`, `update_scenario` (rename, notes, mark base), `branch_scenario` (copies sales, the scenario's own expenses / payroll / capex / price rules / deduction rules and assumptions, with multipliers / period extension), `delete_scenario` (cascades the same tables; `deleted` counts each), `compare_scenarios` (an unknown id is an error) |
+| Sales forecast | `list_sales`, `upsert_sales`, `delete_sale`, `import_sales` (price optional: resolved from the price list; `dry_run`, `year`, `mode`), `revenue_summary` (`group_by` period / customer / unit / customer_unit / customer_type / product_type; `product` and `unit_type` are accepted aliases), **`adjust_sales`** (bulk price / volume change by months, customers, products) |
 | Master data | `create_record`, `update_record`, `delete_record` (customers, units, bom, bom_definitions, router_definitions, router_operations, machines, labor_rates, expense_categories, ...), `import_customers`, `import_products` |
-| Costing | `product_cost_summary`, `unit_cost_preview`, `cost_breakdown`, `materials_usage`, `machine_utilization`, `labor_utilization`, `list_bom`, **`adjust_material_costs`** (bulk BOM repricing by material name) |
-| Payroll | `list_employees`, `get_employee`, `create_employee`, `update_employee`, `delete_employee`, `get_payroll_config`, `update_payroll_config`, `payroll_forecast`, `payroll_summary` |
-| Expenses | `list_expense_categories`, `create_expense_category`, `list_expenses`, `create_expense`, `update_expense`, `delete_expense`, `expense_forecast`, `expense_summary` |
-| Loans | `list_loans`, `create_loan`, `update_loan`, `delete_loan`, `loan_schedule`, `loan_summary`, `loan_cash_flow` |
+| Costing | `product_cost_summary` (`top_n` 50 by net sales, `unit_id`), `unit_cost_preview`, `cost_breakdown` (`top_n` 50), `materials_usage` (`top_n` 50 by spend, `material_contains`, `bom_id`, `include_products`), `machine_utilization`, `labor_utilization`, `list_bom` (100 lines), **`adjust_material_costs`** (bulk BOM repricing by material name) |
+| Payroll | `list_employees` (paged, 50), `get_employee`, `create_employee`, `update_employee`, `delete_employee`, `get_payroll_config`, `update_payroll_config`, `payroll_forecast`, `payroll_summary` |
+| Expenses | `list_expense_categories`, `create_expense_category`, `list_expenses` (paged, 50), `create_expense`, `update_expense`, `delete_expense`, `expense_forecast`, `expense_summary` |
+| Loans | `list_loans`, `create_loan`, `update_loan`, `delete_loan`, `loan_schedule` (paged, 120 payments, `start_period` / `end_period`), `loan_summary`, `loan_cash_flow` |
 | Reporting | `financial_statements`, `variance`, `actual_line_items`, `list_actuals`, `upsert_actuals`, `delete_actuals`, `get_assumptions`, `update_assumptions`, `list_capex`, `create_capex`, `update_capex`, `delete_capex` |
 | Safety | `save_database`, `list_saved_databases`, `load_database`, `revert_to_last_save`, `data_quality` |
 
@@ -275,9 +318,22 @@ return the API's confirmation.
   Deduction Rules, Price List, Cash Flow, Balance Sheet. The web UI's "Export Excel workbook"
   button produces the same file (`GET /reporting/workbook`).
 
-Measured on a 12-month, 500-row forecast (7 customers x 6 products): COGS summary 3 KB, by
-customer 2 KB (7 KB with monthly arrays), labor forecast 4 KB, a 50-row sales-detail page
-4 KB, deduction preview 2.5 KB, all import results under 2 KB.
+* `forecast_financial_statements(forecast_ids, start_period?, end_period?)`: the window
+  defaults to the scenarios' sales window. Without `sections`, a window of 12 months or less
+  returns the statements plus the detail tables, except that a detail table with more than 15
+  entries (revenue by product / customer, payroll by employee on a real model) is named in
+  `detail_omitted`: ask for it with `sections=["detail.revenue_by_product"]`. Longer windows
+  (or a default view that would still be too large) return the compact view.
+
+Response sizes with default arguments on an owner-sized model (20 customers x 20 products x
+12 months = 4,800 sales lines, 500 BOM lines, 120 routing operations, 100 price rules, 7
+deduction rules, 40 employees, 20 expenses, 2 loans, 5 capex items), measured by
+`tests/test_fix_mcp_sizes.py` (run with `-s` to print them): list_prices 30 KB, list_bom
+28 KB, variance 21 KB, financial_statements 20 KB, materials_usage 18 KB, list_employees
+18 KB, list_import_templates 15 KB, list_expenses 14 KB, loan_schedule 14 KB, sql_query
+`SELECT * FROM sales` 13 KB, product_cost_summary 13 KB, query_table 13 KB, cost_breakdown
+11 KB, every other read tool under 8 KB (COGS forecast 3 KB, labor forecast 7 KB, a 50-row
+sales-detail page 4 KB, deduction preview 3 KB). The guard is 60 KB.
 
 ### The two bulk adjusters
 
@@ -300,7 +356,8 @@ BOMs, products, routings and machines are master data shared by every scenario: 
 one `unit_price`, used for every scenario and every period. Two consequences for the assistant:
 
 * **Branching does not isolate a material change.** `forecast_branch_scenario` copies sales,
-  scenario-specific expenses / payroll / capex and assumptions, not BOMs. A
+  scenario-specific expenses / payroll / capex / price rules / deduction rules and
+  assumptions, not BOMs. A
   `forecast_adjust_material_costs` call changes the base scenario and every branch at once, so
   comparing scenarios cannot show its effect. To see the effect, run the statements before and
   after (the tool also reports the per-unit material cost change per product). To be able to
@@ -339,4 +396,8 @@ cases a one-step change; it is a contained follow-up in `app/services/financial_
   deduction rules, the 2027 sales forecast) and checks that the COGS forecast, labor forecast
   and statements agree, the 11% embedded FET and precedence maths, that dry runs write
   nothing, that unknown arguments are rejected and that the workbook lands in
-  `<data folder>/exports/`.
+  `<data folder>/exports/`. `pytest tests/test_fix_mcp_tools.py -v` covers the review fixes
+  (scope-matched upserts and the 409 path, write results cut instead of failed, file-path
+  guard, SQL guard, list filters, unknown scenarios / periods, instruction text), and
+  `tests/test_fix_mcp_sizes.py` calls every read tool with default arguments on the
+  owner-sized model above.

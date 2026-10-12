@@ -22,7 +22,8 @@ export const DEDUCTION_TYPES = [
     label: 'Other discounts & allowances',
     short: 'Other allowances',
     treatment: 'contra_revenue',
-    description: 'Volume rebates, co-op advertising, freight or returns allowances.',
+    stacks: true,
+    description: 'Volume rebates, co-op advertising, freight or returns allowances. Each named program applies on its own and they add up.',
   },
   {
     type: 'excise_tax',
@@ -41,6 +42,18 @@ export const DEDUCTION_TYPES = [
 ];
 
 export const DEDUCTION_TYPE_MAP = DEDUCTION_TYPES.reduce((acc, t) => ({ ...acc, [t.type]: t }), {});
+
+/** Deduction types whose rules are separate programs that add up (keyed by the rule name). */
+export const STACKING_TYPES = DEDUCTION_TYPES.filter((t) => t.stacks).map((t) => t.type);
+
+/** How rules combine, mirroring app/services/pricing.py. */
+export const PRECEDENCE_TEXT = 'Terms, chargebacks, excise tax and commissions: when several rules of the same kind match a sale, only the most specific applies (customer, then customer type, then product, then product type). Other allowances are separate programs named by the rule name (co-op, freight, volume rebate): every program that matches applies and they add up; within one program name the most specific rule wins. Different kinds add up. A 0% rule is an exemption (for example Government customers and excise tax).';
+
+/** Program key of an other-allowance rule name: trimmed, lower case, single spaces. */
+export const programKey = (name) => {
+  if (name === null || name === undefined) return '';
+  return String(name).trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+};
 
 export const METHODS = [
   {
@@ -178,11 +191,43 @@ export const deductionSpecificity = (rule) => (
   + 1 * (clean(rule?.unit_type) ? 1 : 0)
 );
 
+/** Same score as the engine: customer 8, customer type 4, product 2, product type 1. */
 export const priceSpecificity = (rule) => (
-  4 * (clean(rule?.customer_id) ? 1 : 0)
-  + 2 * (clean(rule?.customer_type) ? 1 : 0)
-  + 1 * (clean(rule?.unit_id) ? 1 : 0)
+  8 * (clean(rule?.customer_id) ? 1 : 0)
+  + 4 * (clean(rule?.customer_type) ? 1 : 0)
+  + 2 * (clean(rule?.unit_id) ? 1 : 0)
+  + 1 * (clean(rule?.unit_type) ? 1 : 0)
 );
+
+const monthNumber = (p) => {
+  const m = /^(\d{4})-(\d{2})/.exec(String(p || ''));
+  return m ? Number(m[1]) * 100 + Number(m[2]) : null;
+};
+
+/**
+ * Precedence key, higher wins, compared element by element: specificity,
+ * scenario-specific, later start month, earlier end month (bounded beats
+ * open), newer created_at, higher id. Mirrors services.pricing._sort_key.
+ */
+export const precedenceKey = (rule, score) => {
+  const end = monthNumber(rule?.end_period);
+  return [
+    score,
+    clean(rule?.forecast_id) ? 1 : 0,
+    clean(rule?.start_period) || '',
+    end === null ? -999999 : -end,
+    (clean(rule?.created_at) || '').replace('T', ' '),
+    String(rule?.rule_id || rule?.price_id || ''),
+  ];
+};
+
+export const comparePrecedence = (a, b) => {
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] > b[i]) return -1;
+    if (a[i] < b[i]) return 1;
+  }
+  return 0;
+};
 
 const isActive = (rule) => {
   const flag = rule?.is_active;
@@ -207,7 +252,9 @@ export const groupRulesByType = (rules) => {
   });
   groups.forEach((g) => {
     g.rules.sort((a, b) => (
-      deductionSpecificity(a) - deductionSpecificity(b)
+      // other allowances: keep each program's rules together
+      (g.stacks ? programKey(a.name).localeCompare(programKey(b.name)) : 0)
+      || deductionSpecificity(a) - deductionSpecificity(b)
       || String(a.name || '').localeCompare(String(b.name || ''))
       || String(a.rule_id || '').localeCompare(String(b.rule_id || ''))
     ));
@@ -376,13 +423,27 @@ export const standardRules = (productTypes = []) => {
 
 export const PRICE_SOURCE_LABELS = {
   customer_product: 'Customer price',
+  customer_product_type: 'Customer price (product type)',
   customer_all: 'Customer discount (all products)',
   type_product: 'Customer-type price',
+  type_product_type: 'Customer-type price (product type)',
   type_all: 'Customer-type discount (all products)',
   product: 'Price for all customers',
+  product_type: 'Product-type price for all customers',
   all: 'All customers, all products',
   base_price: 'List price',
   none: 'No price',
+};
+
+/** The engine's source name for a price rule (see services.pricing.price_source). */
+export const priceSource = (rule) => {
+  if (!rule) return 'none';
+  let products = null;
+  if (clean(rule.unit_id)) products = 'product';
+  else if (clean(rule.unit_type)) products = 'product_type';
+  if (clean(rule.customer_id)) return products ? `customer_${products}` : 'customer_all';
+  if (clean(rule.customer_type)) return products ? `type_${products}` : 'type_all';
+  return products || 'all';
 };
 
 /** The price a rule gives for a product with this list price, or null when it cannot price it. */
@@ -397,38 +458,31 @@ export const rulePrice = (rule, basePrice) => {
   return Number(rule.unit_price);
 };
 
-const priceRuleMatches = (rule, { unitId, customerId, customerType, forecastId }) => {
+const priceRuleMatches = (rule, { unitId, unitType, customerId, customerType, forecastId }) => {
   if (!isActive(rule)) return false;
   if (clean(rule.forecast_id) && clean(rule.forecast_id) !== clean(forecastId)) return false;
   if (clean(rule.unit_id) && clean(rule.unit_id) !== clean(unitId)) return false;
   if (clean(rule.customer_id) && clean(rule.customer_id) !== clean(customerId)) return false;
   if (clean(rule.customer_type) && !sameCi(rule.customer_type, customerType)) return false;
+  if (clean(rule.unit_type) && !sameCi(rule.unit_type, unitType)) return false;
   return true;
 };
 
 /**
  * The price a product would get for a customer type (no specific customer),
  * ignoring date ranges: {price, source, rule}. Mirrors the engine's order:
- * type+product > type+all products > all customers+product > list price.
+ * type+product > type+product type > type+all products > all customers+product
+ * > all customers+product type > list price.
  */
-export const resolveCellPrice = (rules, { unitId, basePrice, customerType = null, forecastId = null }) => {
+export const resolveCellPrice = (rules, { unitId, unitType = null, basePrice, customerType = null, forecastId = null }) => {
   const candidates = (rules || [])
     .filter((r) => !clean(r.customer_id))
-    .filter((r) => priceRuleMatches(r, { unitId, customerType, forecastId }))
-    .map((r) => ({ r, key: [priceSpecificity(r), clean(r.forecast_id) ? 1 : 0, clean(r.start_period) || '', String(r.price_id || '')] }))
-    .sort((a, b) => {
-      for (let i = 0; i < a.key.length; i += 1) {
-        if (a.key[i] > b.key[i]) return -1;
-        if (a.key[i] < b.key[i]) return 1;
-      }
-      return 0;
-    });
+    .filter((r) => priceRuleMatches(r, { unitId, unitType, customerType, forecastId }))
+    .map((r) => ({ r, key: precedenceKey(r, priceSpecificity(r)) }))
+    .sort((a, b) => comparePrecedence(a.key, b.key));
   for (const { r } of candidates) {
     const price = rulePrice(r, basePrice);
-    if (price !== null) {
-      const source = clean(r.customer_type) ? (clean(r.unit_id) ? 'type_product' : 'type_all') : (clean(r.unit_id) ? 'product' : 'all');
-      return { price, source, rule: r };
-    }
+    if (price !== null) return { price, source: priceSource(r), rule: r };
   }
   if (Number(basePrice) > 0) return { price: Number(basePrice), source: 'base_price', rule: null };
   return { price: null, source: 'none', rule: null };
@@ -464,6 +518,7 @@ export const partitionPriceRules = (rules) => {
 export const emptyPriceForm = (overrides = {}) => ({
   price_id: null,
   unit_id: '',
+  unit_type: '',
   customer_id: '',
   customer_type: '',
   method: 'fixed',
@@ -480,6 +535,7 @@ export const emptyPriceForm = (overrides = {}) => ({
 export const priceToForm = (rule) => emptyPriceForm({
   price_id: rule.price_id || null,
   unit_id: rule.unit_id || '',
+  unit_type: rule.unit_type || '',
   customer_id: rule.customer_id || '',
   customer_type: rule.customer_type || '',
   method: rule.method || 'fixed',
@@ -495,7 +551,7 @@ export const priceToForm = (rule) => emptyPriceForm({
 export const validatePriceForm = (form) => {
   const errors = {};
   if (form.method === 'fixed') {
-    if (!clean(form.unit_id)) errors.unit_id = 'A fixed price needs a product.';
+    if (!clean(form.unit_id) && !clean(form.unit_type)) errors.unit_id = 'A fixed price needs a product or a product type.';
     const price = Number(form.unit_price);
     if (String(form.unit_price).trim() === '' || !Number.isFinite(price) || price < 0) errors.unit_price = 'Enter a price (0 or more).';
   } else {
@@ -515,6 +571,8 @@ export const formToPrice = (form, activeScenarioId) => {
   const fixed = form.method === 'fixed';
   return {
     unit_id: clean(form.unit_id),
+    // a product beats a product type, so only send the type when no product is chosen
+    unit_type: clean(form.unit_id) ? null : clean(form.unit_type),
     customer_id: clean(form.customer_id),
     customer_type: clean(form.customer_type),
     method: form.method,
@@ -621,7 +679,12 @@ export const normalizeSimulation = (payload, rules = []) => {
     }
     const overridden = fromDeductions && typeof fromDeductions === 'object' && Array.isArray(fromDeductions.overridden_rules)
       ? fromDeductions.overridden_rules : [];
-    return { type: t.type, label: t.label, treatment: t.treatment, amount: amount || 0, rule, overridden };
+    // Every rule applied (other allowances: one per program, each with its amount).
+    let applied = fromDeductions && typeof fromDeductions === 'object' && Array.isArray(fromDeductions.rules)
+      ? fromDeductions.rules.map((r) => ({ ...(ruleById(r.rule_id) || {}), ...r, amount: numOrNull(r.amount) }))
+      : [];
+    if (applied.length === 0 && rule) applied = [{ ...rule, amount: amount || 0 }];
+    return { type: t.type, label: t.label, treatment: t.treatment, amount: amount || 0, rule, rules: applied, overridden };
   });
   const gross = firstNum(result.gross, result.gross_sales, data.gross);
   const totalDeductions = firstNum(result.total_sales_deductions, result.total_deductions)

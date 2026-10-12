@@ -69,12 +69,22 @@ async def list_employees(
     department: Optional[str] = None,
     status: Annotated[Optional[str], Field(description="active or inactive")] = None,
     business_unit: Annotated[Optional[str], Field(description="Filter by business-unit allocation key")] = None,
+    limit: Annotated[int, Field(description="Employees per page", ge=1, le=2000)] = 50,
+    offset: Annotated[int, Field(ge=0)] = 0,
 ) -> Dict[str, Any]:
     """List employees with pay, dates, raises and business-unit allocations
-    (percent)."""
-    return await call("GET", "/payroll/employees", params={
+    (percent). Paged: total_count covers every matching employee; filter by
+    department / status / business_unit or page with offset."""
+    body = await call("GET", "/payroll/employees", params={
         "forecast_id": forecast_id, "department": department, "status": status, "business_unit": business_unit,
     })
+    employees = body.get("employees")
+    if isinstance(employees, list):
+        body["employees"] = employees[offset:offset + limit]
+        body["total_count"] = len(employees)
+        more = offset + len(body["employees"]) < len(employees)
+        body["next_offset"] = offset + len(body["employees"]) if more else None
+    return body
 
 
 @mcp.tool(name="forecast_get_employee", annotations=READ)
