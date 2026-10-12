@@ -75,6 +75,23 @@ Routes are grouped by domain. See http://localhost:8000/docs for the full intera
 | `/reporting`    | `api/reporting_routes.py`       | Financial statements, CSV export, budget vs actual, assumptions, capex, actuals |
 | `/source-data`  | `api/source_data_routes.py`     | Sales / cost / revenue source data       |
 | `/database`     | `api/database_routes.py`, `api/database_management_routes.py` | DB load/save/snapshot/reset |
+| `/mcp`          | `mcp_server/`                   | MCP server for AI assistants (Claude Code, Codex) |
+
+## MCP Server (AI assistants)
+
+The backend serves a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at
+`http://localhost:8000/mcp`. Connect Claude Code or Codex to it and ask for model changes in
+plain language ("cut the ASP 35% in June, August and September", "steel goes up 12%"); the
+assistant reads and updates the model through the same API the UI uses, and you refresh the
+page to see the result.
+
+```bash
+claude mcp add --transport http forecast http://localhost:8000/mcp   # Claude Code
+codex mcp add forecast --url http://localhost:8000/mcp               # Codex
+```
+
+Opening this repository in Claude Code picks the server up from `.mcp.json` automatically.
+Setup, the tool catalog and the planning workflow are in `documentation/mcp_server_guide.md`.
 
 ## Frontend Modules
 

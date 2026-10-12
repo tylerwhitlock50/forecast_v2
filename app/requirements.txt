@@ -32,3 +32,6 @@ typing_extensions==4.14.1
 tzdata==2025.2
 urllib3==2.5.0
 uvicorn==0.35.0
+
+# MCP server (app/mcp_server) for Claude Code / Codex integration
+mcp==1.30.0
