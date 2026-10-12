@@ -117,8 +117,9 @@ async def update_loan(
     payment_frequency, balloon_payment, balloon_date), and never touches
     history: paid / skipped installments and any with an actual date,
     actual amount or note are kept exactly; only the installments after
-    the last of them are replaced (re-amortised from its remaining balance
-    over the months left to maturity, on calendar months). After recorded
+    the last of them are replaced (re-amortised from the principal less
+    what the kept installments repaid, over the months left to maturity, on
+    calendar months). After recorded
     payments: a payment_frequency change continues one new period after the
     last kept payment; a principal_amount change adds the difference to the
     balance still owed (refused if the new principal is less than what is
@@ -163,8 +164,9 @@ async def repair_loan_schedule(
     """Put one loan's legacy schedule back on calendar months. Paid /
     recorded installments are kept exactly. The unpaid installments after
     them are re-dated (amounts unchanged) when only dates are off, or rebuilt
-    from the last kept balance when the schedule is incomplete or
-    inconsistent. Returns action ('none' | 'redate' | 'regenerate'),
+    from the principal less what the kept installments repaid when the
+    schedule is incomplete or inconsistent (also when it repays a different
+    amount than the principal leaves owed). Returns action ('none' | 'redate' | 'regenerate'),
     schedule counts, redated_rows [{payment_number, from_date, to_date}],
     before / after totals and payoff date. Run with dry_run=true first."""
     body = await call("POST", f"/loans/{quote(require(loan_id, 'loan_id'), safe='')}/repair-schedule",
