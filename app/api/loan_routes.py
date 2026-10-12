@@ -501,7 +501,83 @@ def _last_kept_date(kept: List[Dict[str, Any]]) -> Optional[date]:
     return max(dates) if dates else None
 
 
-def _history_anchor(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _owed_after_history(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    What the installments after the kept history repay (`opening`): the
+    loan's principal less the principal of the kept installments, so every
+    rebuild and repair repays the loan's CURRENT principal_amount. The last
+    kept row's remaining_balance (`stored`) is history, stated on the
+    principal of its time; it stops matching once the principal is changed
+    after payments were recorded, and the difference must not be lost on a
+    later rebuild.
+
+    `adjusted` when the two differ by more than the kept rows' rounding
+    (`tolerance`: BALANCE_TOLERANCE plus half a cent per row, the most that
+    rounding each row's principal and balance to cents can add up to).
+    Also returns stored and repaid (the principal of the kept rows).
+    """
+    repaid = round(sum(float(r.get('principal_payment') or 0) for r in kept), 2)
+    opening = round(terms['principal'] - repaid, 2)
+    stored = round(float(kept[-1].get('remaining_balance') or 0), 2) if kept else opening
+    tolerance = BALANCE_TOLERANCE + 0.005 * len(kept)
+    return {'opening': opening, 'stored': stored, 'repaid': repaid,
+            'adjusted': bool(kept) and abs(opening - stored) > tolerance, 'tolerance': tolerance}
+
+
+def _principal_note(terms: Dict[str, Any], kept: List[Dict[str, Any]], owed: Dict[str, Any], number: int) -> str:
+    """Why the installments after the history repay more (or less) than the
+    last kept row's remaining balance shows."""
+    difference = owed['opening'] - owed['stored']
+    return (f"The loan's principal ({terms['principal']:,.2f}) less the {owed['repaid']:,.2f} of principal in the "
+            f"{_plural(len(kept), 'installment')} kept as recorded leaves {owed['opening']:,.2f} owed, "
+            f"{abs(difference):,.2f} {'more' if difference > 0 else 'less'} than the {owed['stored']:,.2f} the last of "
+            f"them (installment {number}) shows, as after a principal change once payments were recorded: the "
+            f"installments after it repay {owed['opening']:,.2f}, so the schedule repays the principal in full.")
+
+
+def _follows_frequency(terms: Dict[str, Any], kept: List[Dict[str, Any]], rest: Optional[List[Dict[str, Any]]],
+                       per: int, previous: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    True when the kept history really follows payment frequency `per` (not
+    the loan's own one), i.e. it was kept from before a frequency change:
+    every dated kept row is within ON_CALENDAR_DAYS of its numbered date on
+    that frequency's calendar from the start date, and
+
+    * this edit (`previous`, the stored terms) changes the frequency from
+      `per`, with the start date unchanged; or
+    * the saved installments after the history (`rest`) already continue
+      from that frequency's position, as the frequency change saved them
+      (the start date unchanged by this edit).
+
+    Dates alone do not decide it: a history on the loan's own calendar that
+    was paid late, or one dated on an earlier start date's calendar, can
+    fall on another frequency's positions by chance.
+    """
+    start, term = terms['start'], terms['term']
+    dated = [(int(r.get('payment_number') or 0), _parse_day(r.get('payment_date'))) for r in kept]
+    dated = [(n, d) for n, d in dated if d is not None]
+    if not dated or any(abs((d - add_months(start, _installment_months(n, per, term))).days) > ON_CALENDAR_DAYS
+                        for n, d in dated):
+        return False
+    saved = terms
+    if previous is not None:
+        if previous['start'] != start:
+            return False
+        if previous['freq_months'] == per:
+            return True
+        saved = previous
+    following = _parse_day(rest[0].get('payment_date')) if rest else None
+    if following is None:
+        return False
+    number = int(kept[-1].get('payment_number') or len(kept))
+    position = _installment_months(number, per, saved['term'])
+    expected = add_months(start, _tail_months(position, saved['freq_months'], saved['term'], 1)[0])
+    return abs((following - expected).days) <= ON_CALENDAR_DAYS
+
+
+def _history_anchor(terms: Dict[str, Any], kept: List[Dict[str, Any]],
+                    rest: Optional[List[Dict[str, Any]]] = None,
+                    previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Where the kept history ends on the loan's calendar, as months after the
     start date (`months`); the installments after it continue a payment
@@ -512,14 +588,17 @@ def _history_anchor(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Dict[s
       calendar date (n0 periods after the start; schedules saved with
       30.44-day steps drift a few days either side): that position, so the
       next installment is due on its own calendar date and rows already on
-      their dates never move. The numbering of another payment frequency
-      counts too: history kept from before a frequency change.
-    * Otherwise (the start date changed, a frequency changed earlier, or the
-      history is far from its dates): the last calendar position on or
-      before the last kept date, so the next installment is the first one
-      a period after it and no period after it is left without a payment.
-      `pushed` when that is later than installment n0 + 1's own calendar date
-      (which falls on or before the last kept payment).
+      their dates never move.
+    * History kept from before a frequency change (`_follows_frequency`, given
+      the rows after the history `rest` and the stored terms `previous` of an
+      edit): installment n0's position on that frequency's calendar.
+    * Otherwise (the start date changed, the history is far from its dates,
+      or it is on another frequency's positions only by chance): the last
+      calendar position on or before the last kept date, so the next
+      installment is the first one a period after it and no period after it
+      is left without a payment. `pushed` when that is later than
+      installment n0 + 1's own calendar date (which falls on or before the
+      last kept payment): the tail is pushed off the loan's own calendar.
 
     Also returns last_date (the latest kept date), number (the last kept
     installment number) and numbered_date (its calendar date).
@@ -532,12 +611,11 @@ def _history_anchor(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Dict[s
     last = _last_kept_date(kept)
     numbered = _installment_months(number, freq, term)
     result.update(months=numbered, last_date=last, number=number, numbered_date=add_months(start, numbered))
-    if last is None:
+    if last is None or abs((last - add_months(start, numbered)).days) <= ON_CALENDAR_DAYS:
         return result
-    for per in [freq] + [m for m in sorted(set(FREQUENCY_MONTHS.values())) if m != freq]:
-        position = _installment_months(number, per, term)
-        if abs((last - add_months(start, position)).days) <= ON_CALENDAR_DAYS:
-            result['months'] = position
+    for per in sorted(set(FREQUENCY_MONTHS.values())):
+        if per != freq and _follows_frequency(terms, kept, rest, per, previous):
+            result['months'] = _installment_months(number, per, term)
             return result
     position = max(_month_index(last) - _month_index(start), 0)
     if position and add_months(start, position) > last:
@@ -554,7 +632,7 @@ def _expected_dates(terms: Dict[str, Any], kept: List[Dict[str, Any]], rest: Lis
     is off that calendar; the one that would pass maturity at maturity."""
     if not rest or terms['start'] is None:
         return []
-    anchor = _history_anchor(terms, kept)['months']
+    anchor = _history_anchor(terms, kept, rest)['months']
     return [add_months(terms['start'], m).isoformat()
             for m in _tail_months(anchor, terms['freq_months'], terms['term'], len(rest))]
 
@@ -595,7 +673,8 @@ def _push_warning(terms: Dict[str, Any], anchor: Dict[str, Any], rows: List[Dict
                   final_rows: List[Dict[str, Any]], first_date: Optional[str]) -> str:
     """Why the installments after the history are later than the start date's
     calendar puts them (`_history_anchor` pushed them past the last kept
-    payment), with the payoff dates before and after."""
+    payment), with the payoff dates before and after (or the one it stays
+    on)."""
     following = add_months(terms['start'], _installment_months(anchor['number'] + 1, terms['freq_months'], terms['term']))
     text = (f"The recorded payments do not follow the loan's calendar from its start date ({_nice_date(terms['start'])}): "
             f"installment {anchor['number'] + 1} would fall due on {_nice_date(following)}, on or before the last "
@@ -605,15 +684,22 @@ def _push_warning(terms: Dict[str, Any], anchor: Dict[str, Any], rows: List[Dict
     after = _summary(final_rows)['last_payment_date']
     if before and after and before != after:
         text += f"; the payoff moves from {_nice_date(before)} to {_nice_date(after)}"
+    elif after:
+        text += f"; the payoff stays on {_nice_date(after)}"
     return text + "."
 
 
 def _plan_regeneration(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]],
                        previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Keep the history rows exactly; rebuild every installment after the
-    last one from its remaining balance (the principal when there is no
-    history), numbered on from it, a payment period apart on the loan's
+    last one, numbered on from it, a payment period apart on the loan's
     calendar from where the history ends (`_history_anchor`) to maturity.
+    They repay the loan's current principal less the principal of the kept
+    rows (`_owed_after_history`; the principal when there is no history), so
+    a principal changed after recorded payments stays applied on every later
+    rebuild and repair (warning when it differs from the last kept row's
+    remaining balance; 422 when the kept rows already repay more than the
+    principal).
 
     `previous` is the stored loan before an edit (None for a repair):
 
@@ -628,26 +714,29 @@ def _plan_regeneration(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]],
         raise HTTPException(status_code=422, detail="The loan's start date is not a date (YYYY-MM-DD); fix it before rebuilding the schedule.")
     kept, rest = _split_history(rows)
     warnings: List[str] = []
-    anchor = _history_anchor(terms, kept)
-    recorded = sum(1 for r in kept if _is_recorded(r))
     old = _terms(previous) if previous is not None else None
+    anchor = _history_anchor(terms, kept, rest, old)
+    recorded = sum(1 for r in kept if _is_recorded(r))
     if kept:
-        opening = float(kept[-1].get('remaining_balance') or 0)
+        owed = _owed_after_history(terms, kept)
+        opening = owed['opening']
         first_number = anchor['number'] + 1
         delta = terms['principal'] - old['principal'] if old is not None else 0.0
+        if opening < -0.005:
+            raise HTTPException(status_code=422, detail=(
+                f"The {'new ' if abs(delta) > 0.005 else ''}principal ({terms['principal']:,.2f}) is less than the "
+                f"{owed['repaid']:,.2f} already repaid by the {_plural(len(kept), 'installment')} kept as recorded "
+                f"history, so the balance would be negative. Enter a principal of at least {owed['repaid']:,.2f}, or "
+                f"clear those payments' paid status first."))
         if abs(delta) > 0.005:
-            if opening + delta < -0.005:
-                repaid = old['principal'] - opening
-                raise HTTPException(status_code=422, detail=(
-                    f"The new principal ({terms['principal']:,.2f}) is less than the {repaid:,.2f} already repaid by the "
-                    f"{_plural(len(kept), 'installment')} kept as recorded history, so the balance would be negative. "
-                    f"Enter a principal of at least {repaid:,.2f}, or clear those payments' paid status first."))
             warnings.append(
                 f"Principal changed from {old['principal']:,.2f} to {terms['principal']:,.2f} after "
                 f"{_plural(recorded, 'recorded payment')}: those payments stay as recorded, and the difference of "
-                f"{abs(delta):,.2f} is {'added to' if delta > 0 else 'taken off'} the {opening:,.2f} owed after "
-                f"installment {anchor['number']}, so {opening + delta:,.2f} is repaid by the installments after it.")
-            opening = max(round(opening + delta, 2), 0.0)
+                f"{abs(delta):,.2f} is {'added to' if delta > 0 else 'taken off'} the {opening - delta:,.2f} owed after "
+                f"installment {anchor['number']}, so {opening:,.2f} is repaid by the installments after it.")
+        elif owed['adjusted']:
+            warnings.append(_principal_note(terms, kept, owed, anchor['number']))
+        opening = max(opening, 0.0)
     else:
         opening = terms['principal']
         first_number = 1
@@ -817,6 +906,20 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+def _chain_holds(starts: List[float], rows: List[Dict[str, Any]]) -> bool:
+    """True when each row's remaining balance is the balance before it less
+    its principal (within BALANCE_TOLERANCE), the first row starting from
+    one of the balances in `starts`."""
+    balances = list(starts)
+    for row in rows:
+        principal_paid = float(row.get('principal_payment') or 0)
+        remaining = float(row.get('remaining_balance') or 0)
+        if not any(abs(balance - principal_paid - remaining) <= BALANCE_TOLERANCE for balance in balances):
+            return False
+        balances = [remaining]
+    return True
+
+
 def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Problems with a loan's unpaid installments, or None when the schedule
     is on calendar months, complete and consistent."""
@@ -836,6 +939,7 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
         'issues': [], 'examples': [],
     }
     issues: List[str] = []
+    owed: Optional[Dict[str, Any]] = None
 
     # The statements only read active loans, so an inactive one's schedule
     # cannot put anything in the wrong month there until it is reactivated.
@@ -894,23 +998,33 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
         if entry['out_of_order']:
             issues.append('out_of_order')
 
-        # Balances: each row's remaining balance = previous balance - principal.
-        balance = float(kept[-1].get('remaining_balance') or 0) if kept else terms['principal']
-        for row in rest:
-            principal_paid = float(row.get('principal_payment') or 0)
-            remaining = float(row.get('remaining_balance') or 0)
-            if abs(balance - principal_paid - remaining) > BALANCE_TOLERANCE:
+        # Balances: the rows after the history start from what the principal
+        # leaves owed after it (`_owed_after_history`, the principal with no
+        # history; while the last kept row's remaining balance differs from
+        # that only by rounding, a tail saved from it is consistent too), and
+        # each row's remaining balance = previous balance - principal.
+        owed = _owed_after_history(terms, kept) if kept else None
+        if owed is not None and owed['opening'] < -0.005:
+            issues.append('balance_break')
+            entry['overpaid'] = round(-owed['opening'], 2)
+        elif owed is None:
+            if not _chain_holds([terms['principal']], rest):
                 issues.append('balance_break')
-                break
-            balance = remaining
+        elif not _chain_holds([owed['opening']] + ([] if owed['adjusted'] else [owed['stored']]), rest):
+            issues.append('balance_break')
+            if owed['adjusted'] and _chain_holds([owed['stored']], rest):
+                entry['principal_difference'] = round(owed['opening'] - owed['stored'], 2)
 
         # Completeness: the schedule stops before the end of the term with money
         # still owed, or ends without paying the loan off (old quarterly /
         # annual maths left a residue; old interest-only schedules without a
-        # balloon date never repaid the principal).
+        # balloon date never repaid the principal; a principal raised after
+        # the last installment was recorded).
         last = rows[-1]
         total_periods = _installments(terms['term'], terms['freq_months'])
         left = float(last.get('remaining_balance') or 0)
+        if not rest and owed is not None and owed['adjusted']:
+            left = max(owed['opening'], 0.0)
         stops_early = left > 0.01 and int(last.get('payment_number') or 0) < total_periods
         not_repaid = left > 1.0
         if stops_early or not_repaid:
@@ -938,7 +1052,17 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
         parts.append(f"{_plural(entry['out_of_order'], 'payment')} dated before the one before it")
     if 'numbering_gap' in issues:
         parts.append("payment numbers have gaps")
-    if 'balance_break' in issues:
+    last_kept = int(kept[-1].get('payment_number') or len(kept)) if kept else 0
+    if 'overpaid' in entry:
+        repaid = terms['principal'] + entry['overpaid']
+        parts.append(f"the {_plural(len(kept), 'installment')} kept as recorded repay ${repaid:,.2f} of principal, "
+                     f"more than the loan's principal of ${terms['principal']:,.2f}: enter a principal of at least "
+                     f"${repaid:,.2f}, or clear those payments' paid status, before the schedule can be rebuilt")
+    elif 'principal_difference' in entry:
+        parts.append(f"the installments after installment {last_kept} repay ${owed['stored']:,.2f}, but the principal "
+                     f"(${terms['principal']:,.2f}) less the recorded payments leaves ${owed['opening']:,.2f} owed "
+                     f"(the principal was changed after payments were recorded)")
+    elif 'balance_break' in issues:
         parts.append("remaining balances do not add up")
     if 'incomplete' in issues:
         parts.append(f"the schedule stops before the end of the term with ${entry['balance_left']:,.2f} still owed"
@@ -946,14 +1070,14 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
                      f"the last installment leaves ${entry['balance_left']:,.2f} unpaid")
     summary = "; ".join(parts)
     summary = summary[:1].upper() + summary[1:] + "."
-    if entry['paid_rows']:
+    if entry['paid_rows'] and 'overpaid' not in entry:
         summary += f" {_plural(entry['paid_rows'], 'paid payment')} will be kept as recorded."
     summary += inactive_note
 
     entry.update(
         issues=issues,
         needs_recompute=needs_recompute,
-        proposed_action='regenerate' if needs_recompute else 'redate',
+        proposed_action='fix_loan_terms' if 'overpaid' in entry else 'regenerate' if needs_recompute else 'redate',
         statement_impact=statement_impact,
         severity='warning' if statement_impact else 'info',
         summary=summary,
@@ -984,7 +1108,13 @@ def schedule_audit(cursor) -> List[Dict[str, Any]]:
     one) are not on the calendar-correct dates (installment n = start date +
     n payment periods, day clamped to month end), have missing or
     out-of-order dates, gaps in numbering, broken balances, stop before the
-    end of the term, or that has no schedule at all.
+    end of the term, or that has no schedule at all. The rows after the
+    history must repay the principal less the principal of the kept rows
+    (`_owed_after_history`): a schedule adjusted for a principal changed
+    after recorded payments is consistent; one that repays the old balance
+    is a balance_break with principal_difference (owed less what it
+    repays), and kept rows that repay more than the principal are a
+    balance_break with overpaid and proposed_action 'fix_loan_terms'.
 
     Each entry: loan_id, loan_name, lender, is_active, start_date,
     payment_frequency, payments, paid_rows, unpaid_rows, drifted,
@@ -1035,7 +1165,7 @@ def _plan_repair(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Di
             row = dict(row, payment_date=exp)
         final_rows.append(row)
     warnings = []
-    anchor = _history_anchor(terms, kept)
+    anchor = _history_anchor(terms, kept, rest)
     if redated and anchor['pushed']:
         warnings.append(_push_warning(terms, anchor, rows, final_rows, expected[0] if expected else None))
     return {
@@ -1714,14 +1844,15 @@ async def update_loan(
     * Rebuilding keeps every row up to and including the last HISTORY row
       (status 'paid' or 'skipped', or an actual_payment_date,
       actual_payment_amount or note) exactly as stored. Installments after it
-      are replaced: they start from that row's remaining_balance (the
-      principal when there is no history), are numbered on from its
-      payment_number, re-amortised over the months left to maturity and
-      dated on calendar months (installment n = start date + n payment
-      periods, day clamped to month end; when the history is off that
-      calendar, e.g. after a start date change, they continue on the
-      calendar after the last recorded payment, with a warning giving the
-      old and new payoff dates).
+      are replaced: they repay the loan's principal less the principal of
+      the kept rows (that row's remaining_balance unless the principal was
+      changed after it, with a warning; the principal when there is no
+      history), are numbered on from its payment_number, re-amortised over
+      the months left to maturity and dated on calendar months (installment
+      n = start date + n payment periods, day clamped to month end; when the
+      history is off that calendar, e.g. after a start date change, they
+      continue on the calendar after the last recorded payment, with a
+      warning giving the old and new payoff dates).
     * A payment_frequency change after recorded payments continues one new
       period after the last kept payment, to maturity; each installment's
       interest covers the months since the one before (warning).
@@ -1831,9 +1962,17 @@ async def repair_schedule(loan_id: str, request: Optional[RepairScheduleRequest]
     * re-dated onto the loan's calendar (installment n = start date + n
       payment periods) with amounts unchanged, when only their dates are off
       (drifted, wrong month, missing or out of order);
-    * rebuilt as in `PUT /loans/{id}` (from the last kept balance, numbered
-      on, rest of the term) when the schedule is incomplete, has numbering
-      gaps, broken balances, or no rows at all.
+    * rebuilt as in `PUT /loans/{id}` (repaying the principal less the
+      principal of the kept rows, so a principal changed after recorded
+      payments is kept; numbered on, rest of the term) when the schedule is
+      incomplete, has numbering gaps, broken balances (including installments
+      that repay a different amount than the principal leaves owed), or no
+      rows at all.
+    * 422 when the kept rows already repay more than the principal (the
+      audit proposes 'fix_loan_terms': correct the principal first).
+
+    A re-dated tail pushed off the loan's own calendar (the next calendar
+    date is on or before the last kept payment) warns with the payoff dates.
 
     Response data: the same before / after preview as the loan update
     (action 'none' | 'redate' | 'regenerate', schedule {regenerated,

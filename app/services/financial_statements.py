@@ -1107,13 +1107,20 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
         )
         schedule = cursor.fetchall()
 
-        # Opening balance = last scheduled remaining_balance before the window,
-        # or the full principal if the loan exists but hasn't been paid yet.
+        # Opening balance = the principal less the principal scheduled before
+        # the window (the debt a longer window shows at that month; a stored
+        # remaining_balance is stated on the principal of its time, so it
+        # misses a principal changed after payments were recorded), or the
+        # full principal if the loan exists but hasn't been paid yet.
         balance_before = None
-        for pay_date, _p, _i, _a, remaining in schedule:
+        repaid_before = 0.0
+        for pay_date, p_amt, _i, _a, remaining in schedule:
             d = _parse_date(pay_date)
             if d and d < first_day:
+                repaid_before += float(p_amt or 0)
                 balance_before = float(remaining or 0)
+        if balance_before is not None and principal_amount is not None:
+            balance_before = round(float(principal_amount) - repaid_before, 2)
         if balance_before is None:
             if originated and originated < first_day:
                 balance_before = float(principal_amount or 0)

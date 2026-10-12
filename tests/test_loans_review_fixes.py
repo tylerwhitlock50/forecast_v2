@@ -21,6 +21,18 @@ legacy-check wording). Each class reproduces one finding:
 * LN-12 GET /loans/cash-flow balances follow the schedule and tie to the
         balance sheet.
 * LEGACY-LOAN-WORDING  the legacy check names the real statement impact.
+
+From the v13 recheck:
+
+* LN3-R every rebuild, re-date and repair repays the loan's current
+        principal: the rows after the history repay the principal less the
+        kept rows' principal (a principal change is never lost on a later
+        edit or repair), the audit accepts such a schedule and flags one that
+        lost the difference, and the statements open a later window on the
+        same debt.
+* LN1-R another payment frequency's calendar is followed only for history
+        really kept from before a frequency change; a tail pushed off the
+        loan's own calendar always warns with the payoff dates.
 """
 import os
 import shutil
@@ -653,3 +665,221 @@ class TestLegacyCheckWording:
                                          (3, "2026-04-02", 100, 100, 0, 0, "scheduled")])
         issue = self._issue(db_path)
         assert "1 put interest and principal in the wrong month" in issue["detail"]
+
+
+# ---------------------------------------------------------------------------
+# LN3-R: a principal change stays applied on every later rebuild and repair
+# ---------------------------------------------------------------------------
+
+def _principal_changed_loan(client, db_path):
+    """100,000 at 6% for 12 months from Jan 15, 2027; #1-#2 paid, then the principal corrected to 120,000."""
+    loan_id = create(client, principal_amount=100000, interest_rate=6, loan_term_months=12, start_date="2027-01-15")
+    mark_paid(db_path, loan_id, 1, 2)
+    put(client, loan_id, {"principal_amount": 120000})
+    return loan_id
+
+
+def _total_principal(db_path, loan_id):
+    return sum(r["principal_payment"] for r in schedule(db_path, loan_id))
+
+
+def _current_balance(db_path, loan_id):
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute("SELECT current_balance FROM loans WHERE loan_id = ?", (loan_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _final_debt(db_path, start="2027-01", end="2028-06"):
+    return statements(db_path, start, end)["balance_sheet"]["by_period"][-1]["debt"]
+
+
+class TestPrincipalChangeIsKept:
+    def test_a_later_rate_change_keeps_the_difference(self, env):
+        client, db_path = env
+        loan_id = _principal_changed_loan(client, db_path)
+        assert loan_id not in audit(client)[1]                    # the adjusted schedule is consistent
+        preview = put(client, loan_id, {"interest_rate": 7}, preview="true")["data"]
+        assert preview["after"]["total_principal"] == pytest.approx(120000, abs=0.05)
+        assert preview["after"]["final_balance"] == 0
+        assert any("leaves 103,746.19 owed, 20,000.00 more than the 83,746.19" in w for w in preview["warnings"]), \
+            preview["warnings"]
+        put(client, loan_id, {"interest_rate": 7})
+        rows = schedule(db_path, loan_id)
+        assert rows[1]["remaining_balance"] == pytest.approx(83746.19, abs=0.01)     # history untouched
+        assert rows[2]["interest_payment"] == pytest.approx(103746.19 * 0.07 / 12, abs=0.01)
+        assert _total_principal(db_path, loan_id) == pytest.approx(120000, abs=0.05)
+        assert _current_balance(db_path, loan_id) == pytest.approx(103746.19, abs=0.01)
+        assert _final_debt(db_path) == pytest.approx(0, abs=0.05)
+        assert loan_id not in audit(client)[1]
+
+    def test_a_later_frequency_change_keeps_the_difference(self, env):
+        client, db_path = env
+        loan_id = _principal_changed_loan(client, db_path)
+        data = put(client, loan_id, {"payment_frequency": "quarterly"})["data"]
+        assert any("the 103,746.19 still owed is re-amortised" in w for w in data["warnings"]), data["warnings"]
+        assert data["after"]["total_principal"] == pytest.approx(120000, abs=0.05)
+        assert _final_debt(db_path) == pytest.approx(0, abs=0.05)
+
+    def test_the_audit_accepts_the_adjusted_schedule_and_the_repair_leaves_it(self, env):
+        client, db_path = env
+        loan_id = _principal_changed_loan(client, db_path)
+        before = schedule(db_path, loan_id)
+        data = client.post(f"/loans/{loan_id}/repair-schedule", json={"dry_run": False}).json()["data"]
+        assert data["action"] == "none" and data["audit"] is None
+        assert schedule(db_path, loan_id) == before
+
+    def test_a_schedule_that_lost_the_difference_is_flagged_and_the_repair_restores_it(self, env):
+        """The state a rebuild from the stale remaining balance left: principal 120,000, rows repaying 100,000."""
+        client, db_path = env
+        loan_id = create(client, principal_amount=100000, interest_rate=6, loan_term_months=12, start_date="2027-01-15")
+        mark_paid(db_path, loan_id, 1, 2)
+        execute(db_path, "UPDATE loans SET principal_amount = 120000 WHERE loan_id = ?", (loan_id,))
+        assert _final_debt(db_path) == pytest.approx(20000, abs=0.05)
+        entry = audit(client)[1][loan_id]
+        assert entry["issues"] == ["balance_break"] and entry["statement_impact"] is True
+        assert entry["principal_difference"] == pytest.approx(20000, abs=0.01)
+        assert "repay $83,746.19" in entry["summary"] and "leaves $103,746.19 owed" in entry["summary"]
+        dry = client.post(f"/loans/{loan_id}/repair-schedule", json={"dry_run": True}).json()["data"]
+        assert dry["action"] == "regenerate"
+        assert dry["after"]["total_principal"] == pytest.approx(120000, abs=0.05)
+        assert any("leaves 103,746.19 owed" in w for w in dry["warnings"]), dry["warnings"]
+        client.post(f"/loans/{loan_id}/repair-schedule", json={"dry_run": False})
+        assert _total_principal(db_path, loan_id) == pytest.approx(120000, abs=0.05)
+        assert _final_debt(db_path) == pytest.approx(0, abs=0.05)
+        assert loan_id not in audit(client)[1]
+
+    def test_a_broken_balance_after_a_principal_change_is_still_flagged(self, env):
+        client, db_path = env
+        loan_id = _principal_changed_loan(client, db_path)
+        execute(db_path, "UPDATE loan_payments SET remaining_balance = remaining_balance + 500 "
+                         "WHERE loan_id = ? AND payment_number = 6", (loan_id,))
+        entry = audit(client)[1][loan_id]
+        assert "balance_break" in entry["issues"] and "principal_difference" not in entry
+        assert "remaining balances do not add up" in entry["summary"].lower()
+
+    def test_rounding_in_a_long_history_is_not_a_principal_change(self, env):
+        """A 30-year 0% schedule's rounded rows drift from principal - repaid by more than a dollar; that is
+        rounding, so nothing is flagged or warned."""
+        client, db_path = env
+        loan_id = create(client, principal_amount=1158586.16, interest_rate=0, loan_term_months=360,
+                         start_date="2026-01-31")
+        execute(db_path, "UPDATE loan_payments SET payment_status = 'paid' WHERE loan_id = ? AND payment_number <= 300",
+                (loan_id,))
+        rows = schedule(db_path, loan_id)
+        drift = 1158586.16 - sum(r["principal_payment"] for r in rows[:300]) - rows[299]["remaining_balance"]
+        assert abs(drift) > 1
+        assert loan_id not in audit(client)[1]
+        data = put(client, loan_id, {"interest_rate": 1}, preview="true")["data"]
+        assert data["warnings"] == []
+        assert data["after"]["total_principal"] == pytest.approx(1158586.16, abs=0.5)
+
+    def test_principal_raised_after_the_last_installment_gets_a_final_one(self, env):
+        client, db_path = env
+        loan_id = create(client, principal_amount=12000, interest_rate=0, loan_term_months=12, start_date="2021-01-15")
+        mark_paid(db_path, loan_id, *range(1, 13))
+        execute(db_path, "UPDATE loans SET principal_amount = 15000 WHERE loan_id = ?", (loan_id,))
+        entry = audit(client)[1][loan_id]
+        assert entry["issues"] == ["incomplete"] and entry["balance_left"] == 3000
+        data = client.post(f"/loans/{loan_id}/repair-schedule", json={"dry_run": False}).json()["data"]
+        assert [r["principal_payment"] for r in data["new_rows"]] == [3000]
+        assert loan_id not in audit(client)[1]
+
+    def test_a_principal_below_what_the_history_repaid_must_be_fixed_first(self, env):
+        client, db_path = env
+        loan_id = create(client, principal_amount=12000, interest_rate=0, loan_term_months=12, start_date="2027-01-15")
+        mark_paid(db_path, loan_id, 1, 2, 3)
+        execute(db_path, "UPDATE loans SET principal_amount = 2000 WHERE loan_id = ?", (loan_id,))
+        entry = audit(client)[1][loan_id]
+        assert entry["proposed_action"] == "fix_loan_terms" and "at least $3,000.00" in entry["summary"]
+        before = schedule(db_path, loan_id)
+        r = client.post(f"/loans/{loan_id}/repair-schedule", json={"dry_run": False})
+        assert r.status_code == 422 and "at least $3,000.00" in r.json()["detail"]
+        r = client.put(f"/loans/{loan_id}", json={"interest_rate": 5})
+        assert r.status_code == 422 and "already repaid" in r.json()["detail"], r.text
+        assert schedule(db_path, loan_id) == before
+
+    def test_a_window_after_the_recorded_payments_opens_on_the_same_debt(self, env):
+        client, db_path = env
+        loan_id = _principal_changed_loan(client, db_path)
+        full = statements(db_path, "2027-01", "2028-06")["balance_sheet"]["by_period"]
+        march = next(row for row in full if row["period"] == "2027-03")
+        assert march["debt"] == pytest.approx(103746.19, abs=0.01)
+        later = statements(db_path, "2027-04", "2028-06")
+        assert later["detail"]["loans"][loan_id]["opening_balance"] == pytest.approx(march["debt"], abs=0.01)
+        assert later["balance_sheet"]["by_period"][-1]["debt"] == pytest.approx(0, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# LN1-R: another frequency's calendar only for history from a frequency change
+# ---------------------------------------------------------------------------
+
+def _seed_late_monthly(db_path):
+    """12-month 0% monthly loan of 12,000 from Jan 31, 2026 with 30.44-day dates; #1 is paid but dated Apr 20,
+    10 days before the date a quarterly #1 would have."""
+    insert_loan(db_path, "LATE", principal=12000, term=12, start="2026-01-31")
+    dates = legacy_dates(date(2026, 1, 31), 12)
+    dates[0] = "2026-04-20"
+    insert_rows(db_path, "LATE", [(n, d, 1000, 1000, 0, 12000 - 1000 * n, "paid" if n == 1 else "scheduled")
+                                  for n, d in enumerate(dates, start=1)])
+
+
+class TestOtherFrequencyHistory:
+    def test_a_late_monthly_payment_is_not_taken_for_quarterly_history(self, env):
+        client, db_path = env
+        _seed_late_monthly(db_path)
+        data = client.post("/loans/LATE/repair-schedule", json={"dry_run": True}).json()["data"]
+        assert data["action"] == "redate"
+        to = {r["payment_number"]: r["to_date"] for r in data["redated_rows"]}
+        assert to[2] == "2026-04-30" and to[12] == "2027-02-28"          # no calendar month skipped
+        assert data["after"]["payoff_date"] == "2027-02-28"
+        assert any("installment 2 would fall due on Mar 31, 2026" in w
+                   and "payoff moves from Jan 31, 2027 to Feb 28, 2027" in w for w in data["warnings"]), data["warnings"]
+        client.post("/loans/LATE/repair-schedule", json={"dry_run": False})
+        assert "LATE" not in audit(client)[1]
+
+    @pytest.mark.parametrize("new_start, payoff", [("2026-12-31", "Dec 31, 2028"), ("2026-11-30", "Nov 30, 2028"),
+                                                  ("2026-10-31", "Oct 31, 2028")])
+    def test_a_start_date_moved_earlier_always_explains_the_push(self, env, new_start, payoff):
+        """Two months earlier puts the paid #1 on a quarterly position by chance; it warns like one or three."""
+        client, db_path = env
+        loan_id = create(client, principal_amount=24000, interest_rate=0, loan_term_months=24, start_date="2027-01-31")
+        mark_paid(db_path, loan_id, 1)                                       # #1 due Feb 28, 2027
+        data = put(client, loan_id, {"start_date": new_start}, preview="true")["data"]
+        assert data["after"]["last_payment_date"] == date.fromisoformat(new_start).replace(year=2028).isoformat()
+        assert any("on or before the last recorded payment (Feb 28, 2027)" in w
+                   and f"payoff moves from Jan 31, 2029 to {payoff}" in w for w in data["warnings"]), data["warnings"]
+
+    def test_quarterly_history_is_followed_on_later_edits_without_a_warning(self, env):
+        client, db_path = env
+        loan_id = create(client, principal_amount=12000, interest_rate=6, loan_term_months=12, start_date="2027-01-31",
+                         payment_frequency="quarterly")
+        mark_paid(db_path, loan_id, 1)                                       # #1 on Apr 30, 2027
+        put(client, loan_id, {"payment_frequency": "monthly"})
+        data = put(client, loan_id, {"interest_rate": 7}, preview="true")["data"]
+        assert data["new_rows"][0]["payment_date"] == "2027-05-31"
+        assert data["new_rows"][-1]["payment_date"] == "2028-01-31"
+        assert data["warnings"] == []
+        assert loan_id not in audit(client)[1]
+
+    def test_a_date_on_a_quarterly_position_alone_is_not_quarterly_history(self):
+        from api.loan_routes import _history_anchor, _terms
+        terms = _terms({"principal_amount": 12000, "interest_rate": 0, "loan_term_months": 12,
+                        "start_date": "2026-01-31", "payment_frequency": "monthly"})
+        kept = [{"payment_number": 1, "payment_date": "2026-04-30"}]       # exactly start + 3 months
+        on_own_calendar = [{"payment_number": 2, "payment_date": "2026-03-31"}]
+        after_a_change = [{"payment_number": 2, "payment_date": "2026-05-31"}]
+        anchor = _history_anchor(terms, kept, on_own_calendar)
+        assert anchor["months"] == 3 and anchor["pushed"] is True
+        anchor = _history_anchor(terms, kept, after_a_change)
+        assert anchor["months"] == 3 and anchor["pushed"] is False
+
+    def test_a_push_that_keeps_the_payoff_says_so(self, env):
+        client, db_path = env
+        loan_id = create(client, principal_amount=1200, interest_rate=0, loan_term_months=12, start_date="2026-01-01")
+        execute(db_path, "UPDATE loan_payments SET payment_status = 'paid', payment_date = '2026-03-01' "
+                         "WHERE loan_id = ? AND payment_number = 1", (loan_id,))
+        data = put(client, loan_id, {"interest_rate": 5}, preview="true")["data"]
+        assert data["new_rows"][0]["payment_date"] == "2026-04-01"
+        assert any("payoff stays on Jan 1, 2027" in w for w in data["warnings"]), data["warnings"]

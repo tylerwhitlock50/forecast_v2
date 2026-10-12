@@ -9,7 +9,7 @@ import { describeAuditExample, issueLabel } from './loanScheduleUtils';
 const ACTION_TEXT = {
   redate: 'Move the unpaid installments to their calendar dates (amounts unchanged)',
   regenerate: 'Rebuild the unpaid installments after the last paid one',
-  fix_loan_terms: 'Edit the loan and enter a valid start date first',
+  fix_loan_terms: 'Edit the loan first, as described above (a repair cannot fix its terms)',
 };
 
 /**
