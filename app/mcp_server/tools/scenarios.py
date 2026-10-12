@@ -73,7 +73,7 @@ async def update_scenario(
     Only the fields given are changed."""
     body = strip_none({"name": name, "description": description, "notes": notes, "is_base": is_base})
     if not body:
-        from mcp.server.fastmcp.exceptions import ToolError
+        from mcp.server.mcpserver.exceptions import ToolError
         raise ToolError("Give at least one of name, description, notes, is_base")
     return await call("PUT", f"/forecast/scenario/{require(forecast_id, 'forecast_id')}", json=body)
 

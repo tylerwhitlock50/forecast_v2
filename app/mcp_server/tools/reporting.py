@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import Field
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, call, mcp, require, strip_none
 

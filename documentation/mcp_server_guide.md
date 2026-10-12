@@ -173,7 +173,7 @@ a contained follow-up in `app/services/financial_statements.py`.
 * Tools call the REST endpoints in-process through an ASGI transport, so they cannot drift
   from what the UI does. The exceptions are the bulk adjusters and the read-only SQL tool,
   which use the database directly.
-* Dependency: `mcp==1.30.0` (pinned in `app/requirements.txt`). The package is named
-  `mcp_server` so it does not shadow the SDK's `mcp` package on the `app/` path.
+* Dependency: the `mcp` Python SDK (2.x, pinned in `app/requirements.txt`). The package is
+  named `mcp_server` so it does not shadow the SDK's `mcp` package on the `app/` path.
 * Tests: `pytest tests/test_mcp_server.py -v` drives the real app over JSON-RPC against a
   seeded temporary database.

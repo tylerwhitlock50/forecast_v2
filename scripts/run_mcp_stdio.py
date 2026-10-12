@@ -45,8 +45,8 @@ def main() -> None:
         stdin = anyio.wrap_file(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"))
         stdout = anyio.wrap_file(real_stdout)
         async with stdio_server(stdin, stdout) as (read_stream, write_stream):
-            # Same as FastMCP.run_stdio_async, with explicit streams.
-            server = mcp._mcp_server
+            # Same as MCPServer.run_stdio_async, with explicit streams.
+            server = mcp._lowlevel_server
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
     anyio.run(serve)

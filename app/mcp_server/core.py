@@ -1,5 +1,5 @@
 """
-MCP server core: the FastMCP instance, the in-process API client every tool
+MCP server core: the MCPServer instance, the in-process API client every tool
 uses, and the helpers that turn API responses into tool results.
 
 Design
@@ -22,8 +22,8 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
@@ -42,27 +42,24 @@ Workflow tools: forecast_adjust_sales re-prices or re-volumes sales rows for cho
 
 Before destructive or sweeping changes, call forecast_save_database to take a named snapshot the user can restore from the Database screen."""
 
-mcp = FastMCP(
-    SERVER_NAME,
-    instructions=INSTRUCTIONS,
-    # Mounted under /mcp by the FastAPI app, so the inner path is the root.
-    streamable_http_path="/",
-    stateless_http=True,
-    json_response=True,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]
-        + [h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()],
-        allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
-        + [o.strip() for o in os.getenv("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()],
-    ),
+mcp = MCPServer(SERVER_NAME, instructions=INSTRUCTIONS)
+
+# DNS-rebinding protection for the HTTP transport: only localhost Host /
+# Origin headers are accepted unless MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS
+# add more (comma-separated, e.g. "192.168.1.20:*").
+TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    + [h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()],
+    allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+    + [o.strip() for o in os.getenv("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()],
 )
 
 # Tool annotation presets. Hints only; the API enforces nothing on top.
-READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
-UPSERT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False)
+READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
+UPSERT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)
 
 
 # ---------------------------------------------------------------------------

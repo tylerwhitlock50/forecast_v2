@@ -21,14 +21,14 @@ from typing import Any, AsyncIterator, Optional
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
 
-from mcp_server.core import mcp, set_app
+from mcp_server.core import TRANSPORT_SECURITY, mcp, set_app
 import mcp_server.tools  # noqa: F401  (registers the tools)
 
 MCP_PATH = "/mcp"
 
-# The SDK's streamable-HTTP transport for the current app lifespan. Its
-# session manager is single-use, so it is rebuilt on every lifespan start
-# (production starts once; the test suite starts one app per test).
+# The SDK's streamable-HTTP transport for the current app lifespan. A
+# session manager runs once, so the transport is built on every lifespan
+# start (production starts once; the test suite starts one app per test).
 _transport: Optional[Any] = None
 
 
@@ -57,10 +57,12 @@ _dispatch = _Dispatch()
 async def mcp_lifespan() -> AsyncIterator[None]:
     """Run the MCP transport for the life of the FastAPI app."""
     global _transport
-    # FastMCP caches one session manager per instance and a manager can only
-    # run once, so start each lifespan from a fresh transport.
-    mcp._session_manager = None
-    _transport = mcp.streamable_http_app()
+    _transport = mcp.streamable_http_app(
+        streamable_http_path="/",      # served at /mcp by the FastAPI app
+        json_response=True,
+        stateless_http=True,
+        transport_security=TRANSPORT_SECURITY,
+    )
     try:
         async with mcp.session_manager.run():
             yield
