@@ -594,6 +594,14 @@ class DatabaseManager:
                         # Column may already exist under a concurrent startup; ignore
                         if 'duplicate column name' not in str(alter_err).lower():
                             raise
+            # Keep the single-base invariant on upgraded databases: if scenarios
+            # exist and none is flagged, the lowest forecast_id becomes the base.
+            cursor.execute("SELECT COUNT(*) FROM forecast WHERE is_base = 1")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "UPDATE forecast SET is_base = 1 WHERE forecast_id = "
+                    "(SELECT forecast_id FROM forecast ORDER BY forecast_id LIMIT 1)"
+                )
             conn.commit()
             print("Forecast table migration completed successfully")
         except Exception as e:

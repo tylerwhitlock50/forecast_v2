@@ -12,6 +12,7 @@ import sqlite3
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import sqlite3 as _sqlite3
 
 _APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "app"))
 if _APP_DIR not in sys.path:
@@ -38,7 +39,8 @@ def _seed(db_path: str) -> None:
                  VALUES ('X1', 'Scenario tool', 'AD', 100, 'monthly', '2026-01-01', 1, 'F001')""")
     c.execute("""INSERT INTO expenses (expense_id, expense_name, category_id, amount, frequency, start_date, is_active, forecast_id)
                  VALUES ('X2', 'Rent', 'AD', 300, 'monthly', '2026-01-01', 1, NULL)""")
-    c.execute("INSERT INTO expense_allocations (allocation_id, expense_id, period, allocated_amount, allocation_type) VALUES ('A1', 'X1', '2026-01', 100, 'scheduled')")
+    c.execute("""INSERT INTO expense_allocations (allocation_id, expense_id, period, allocated_amount, allocation_type, payment_status, payment_date, actual_amount)
+                 VALUES ('A1', 'X1', '2026-01', 100, 'scheduled', 'paid', '2026-01-15', 98.5)""")
     c.execute("""INSERT INTO payroll (employee_id, employee_name, department, weekly_hours, hourly_rate, rate_type, start_date, benefits_eligible, forecast_id)
                  VALUES ('E1', 'Pat', 'Ops', 40, 30, 'hourly', '2026-01-01', 0, 'F001')""")
     c.execute("""INSERT INTO payroll (employee_id, employee_name, department, weekly_hours, hourly_rate, rate_type, start_date, benefits_eligible, forecast_id)
@@ -166,8 +168,12 @@ def test_duplicate_copies_everything_and_applies_overrides(client):
     assert names == ["Rent", "Scenario tool"]      # own copy + company-wide
     branch_expense = next(e for e in expenses if e["expense_name"] == "Scenario tool")
     assert branch_expense["expense_id"] != "X1"
-    allocs = client.get("/expenses/allocations", params={"expense_id": branch_expense["expense_id"]}).json()["data"]
-    assert len(allocs["allocations"]) == 1
+    allocs = client.get("/expenses/allocations", params={"expense_id": branch_expense["expense_id"]}).json()["data"]["allocations"]
+    assert len(allocs) == 1
+    # payment details travel with the allocation
+    assert allocs[0]["payment_status"] == "paid"
+    assert allocs[0]["payment_date"] == "2026-01-15"
+    assert allocs[0]["actual_amount"] == 98.5
 
 
 def test_duplicate_defaults_and_validation(client):
@@ -264,3 +270,78 @@ def test_comparison_uses_one_shared_window(client):
     explicit = client.get("/forecast/comparison", params={"forecast_ids": "F001", "start_period": "2026-02", "end_period": "2026-02"}).json()["data"]
     assert explicit["comparison"][0]["revenue"] == 2200
     assert client.get("/forecast/comparison", params={"forecast_ids": "F001", "start_period": "2026-02"}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Single-base invariant
+# ---------------------------------------------------------------------------
+
+def test_cannot_clear_the_only_base(client):
+    res = client.put("/forecast/scenario/F001", json={"is_base": False})
+    assert res.status_code == 422
+    bases = [s["forecast_id"] for s in client.get("/forecast/scenarios").json()["data"]["scenarios"] if s["is_base"]]
+    assert bases == ["F001"]
+    # moving the flag is the way to change it
+    assert client.put("/forecast/scenario/F002", json={"is_base": True}).status_code == 200
+    bases = [s["forecast_id"] for s in client.get("/forecast/scenarios").json()["data"]["scenarios"] if s["is_base"]]
+    assert bases == ["F002"]
+    # unsetting a non-base scenario is a harmless no-op
+    assert client.put("/forecast/scenario/F001", json={"is_base": False, "name": "Base"}).status_code == 200
+
+
+def test_deleting_the_base_promotes_another(client):
+    res = client.delete("/forecast/scenario/F001")
+    assert res.status_code == 200
+    assert res.json()["data"]["promoted_base"] == "F002"
+    scenarios = client.get("/forecast/scenarios").json()["data"]["scenarios"]
+    assert [(s["forecast_id"], s["is_base"]) for s in scenarios] == [("F002", True)]
+
+
+def test_migration_backfills_a_base_on_upgraded_databases():
+    tmp = tempfile.mkdtemp()
+    db_path = os.path.join(tmp, "legacy.db")
+    conn = _sqlite3.connect(db_path)
+    # A pre-is_base schema with two scenarios, as an existing install would have.
+    conn.execute("CREATE TABLE forecast (forecast_id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, notes TEXT)")
+    conn.execute("INSERT INTO forecast (forecast_id, name) VALUES ('F007', 'Later')")
+    conn.execute("INSERT INTO forecast (forecast_id, name) VALUES ('F002', 'Earlier')")
+    conn.commit()
+    conn.close()
+    try:
+        mgr = DatabaseManager(database_path=db_path, data_dir=tmp)
+        mgr.initialize()
+        conn = _sqlite3.connect(db_path)
+        rows = conn.execute("SELECT forecast_id, is_base FROM forecast ORDER BY forecast_id").fetchall()
+        conn.close()
+        assert rows == [("F002", 1), ("F007", 0)]
+        # idempotent: running again keeps the same base
+        mgr.migrate_forecast_table()
+        conn = _sqlite3.connect(db_path)
+        assert conn.execute("SELECT forecast_id FROM forecast WHERE is_base = 1").fetchall() == [("F002",)]
+        conn.close()
+        mgr.close_all_connections()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Expense update clears optional fields with explicit nulls
+# ---------------------------------------------------------------------------
+
+def test_expense_update_clears_optional_fields_with_null(client):
+    assert client.put("/expenses/X1", json={"vendor": "Acme", "end_date": "2026-06-30"}).status_code == 200
+    row = next(e for e in client.get("/expenses/").json()["data"]["expenses"] if e["expense_id"] == "X1")
+    assert row["vendor"] == "Acme" and row["end_date"] == "2026-06-30"
+    allocs = client.get("/expenses/allocations", params={"expense_id": "X1"}).json()["data"]["allocations"]
+    assert len(allocs) == 6   # Jan-Jun
+
+    assert client.put("/expenses/X1", json={"vendor": None, "end_date": None}).status_code == 200
+    row = next(e for e in client.get("/expenses/").json()["data"]["expenses"] if e["expense_id"] == "X1")
+    assert row["vendor"] is None and row["end_date"] is None
+    allocs = client.get("/expenses/allocations", params={"expense_id": "X1"}).json()["data"]["allocations"]
+    assert len(allocs) > 6    # open-ended again, allocations regenerated
+
+    # required columns are never blanked by a null
+    assert client.put("/expenses/X1", json={"expense_name": None, "amount": 150}).status_code == 200
+    row = next(e for e in client.get("/expenses/").json()["data"]["expenses"] if e["expense_id"] == "X1")
+    assert row["expense_name"] == "Scenario tool" and row["amount"] == 150

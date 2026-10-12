@@ -105,6 +105,19 @@ def _set_base(cursor, forecast_id: str) -> None:
     cursor.execute("UPDATE forecast SET is_base = 1 WHERE forecast_id = ?", (forecast_id,))
 
 
+def _ensure_base(cursor) -> Optional[str]:
+    """If scenarios exist and none is the base, promote the lowest forecast_id. Returns the promoted id, if any."""
+    cursor.execute("SELECT COUNT(*) FROM forecast WHERE is_base = 1")
+    if cursor.fetchone()[0] > 0:
+        return None
+    cursor.execute("SELECT forecast_id FROM forecast ORDER BY forecast_id LIMIT 1")
+    row = cursor.fetchone()
+    if not row:
+        return None
+    cursor.execute("UPDATE forecast SET is_base = 1 WHERE forecast_id = ?", (row[0],))
+    return row[0]
+
+
 @router.get("/scenarios", response_model=ForecastResponse)
 async def get_forecast_scenarios():
     """All scenarios with row counts, sales window and whether assumptions are set."""
@@ -204,7 +217,14 @@ async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, An
         if scenario_data.get("is_base"):
             _set_base(cursor, forecast_id)
         elif "is_base" in scenario_data:
-            cursor.execute("UPDATE forecast SET is_base = 0 WHERE forecast_id = ?", (forecast_id,))
+            # There is always exactly one base: the flag moves to another
+            # scenario (set is_base on it), it cannot simply be cleared.
+            cursor.execute("SELECT is_base FROM forecast WHERE forecast_id = ?", (forecast_id,))
+            if cursor.fetchone()[0]:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This is the base scenario. Mark another scenario as the base instead of clearing this one.",
+                )
         conn.commit()
         record = _scenario_row(cursor, forecast_id)
     except HTTPException:
@@ -341,15 +361,16 @@ async def duplicate_forecast_scenario(forecast_id: str, scenario_data: Optional[
                         (new_expense_id, *fields, new_forecast_id, now, now),
                     )
                     cursor.execute(
-                        """SELECT period, allocated_amount, allocation_type, payment_status, notes
+                        """SELECT period, allocated_amount, allocation_type, payment_status, payment_date, actual_amount, notes
                            FROM expense_allocations WHERE expense_id = ?""",
                         (old_expense_id,),
                     )
-                    for period, amount, alloc_type, status, alloc_notes in cursor.fetchall():
+                    for alloc in cursor.fetchall():
                         cursor.execute(
-                            """INSERT INTO expense_allocations (allocation_id, expense_id, period, allocated_amount, allocation_type, payment_status, notes)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                            (f"ALLOC-{uuid.uuid4().hex[:8].upper()}", new_expense_id, period, amount, alloc_type, status, alloc_notes),
+                            """INSERT INTO expense_allocations (allocation_id, expense_id, period, allocated_amount, allocation_type,
+                                                                payment_status, payment_date, actual_amount, notes)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (f"ALLOC-{uuid.uuid4().hex[:8].upper()}", new_expense_id, *alloc),
                         )
                     copied_expenses += 1
 
@@ -463,6 +484,8 @@ async def delete_forecast_scenario(forecast_id: str):
             for table in SCENARIO_TABLES:
                 cursor.execute(f"DELETE FROM {table} WHERE forecast_id = ?", (forecast_id,))
             cursor.execute("DELETE FROM forecast WHERE forecast_id = ?", (forecast_id,))
+            # Deleting the base promotes another scenario so one base always remains.
+            promoted = _ensure_base(cursor)
             conn.commit()
         except HTTPException:
             conn.rollback()
@@ -474,6 +497,7 @@ async def delete_forecast_scenario(forecast_id: str):
             status="success",
             data={
                 "forecast_id": forecast_id,
+                "promoted_base": promoted,
                 "deleted": {
                     "sales": record["sales_rows"],
                     "expenses": record["expense_count"],
