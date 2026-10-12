@@ -21,12 +21,17 @@ from api.reporting_routes import router as reporting_router
 from api.source_data_routes import router as source_data_router
 from api.database_management_routes import router as database_management_router
 
+# MCP server (AI assistants manage the model through the same API)
+from mcp_server import mcp_lifespan, mount_mcp
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI app"""
     # Startup
     initialize_database()
-    yield
+    # The MCP streamable-HTTP session manager must run for the life of the app
+    async with mcp_lifespan():
+        yield
     # Shutdown (if needed)
 
 app = FastAPI(
@@ -62,6 +67,9 @@ app.include_router(loan_router)
 app.include_router(reporting_router)
 app.include_router(source_data_router)
 app.include_router(database_management_router)
+
+# MCP endpoint for Claude Code / Codex: http://localhost:8000/mcp
+mount_mcp(app)
 
 @app.get("/")
 async def root():

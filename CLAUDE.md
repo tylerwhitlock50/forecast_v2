@@ -40,6 +40,7 @@ cd frontend && npm install && npm start
 # Backend tests
 pytest tests/ -v
 pytest tests/test_financial_statements.py -v   # statements engine + reporting routes
+pytest tests/test_mcp_server.py -v             # MCP server over JSON-RPC + bulk adjusters
 
 # Frontend tests and production build
 cd frontend && CI=true npx react-scripts test --watchAll=false
@@ -50,6 +51,7 @@ cd frontend && CI=true npm run build
 - React Frontend: http://localhost:3000
 - FastAPI Backend: http://localhost:8000
 - API Documentation: http://localhost:8000/docs
+- MCP endpoint (Claude Code / Codex): http://localhost:8000/mcp (`claude mcp add --transport http forecast http://localhost:8000/mcp`; `.mcp.json` in the repo root does this for Claude Code automatically)
 
 ## Application Architecture
 
@@ -66,6 +68,8 @@ cd frontend && CI=true npm run build
   - `reporting_routes.py` - Financial statements, CSV export, budget-vs-actual, assumptions, capex, actuals
 - **Services**: Business logic in `app/services/`
   - `financial_statements.py` - The statements engine. Single source of truth for the income statement, cash flow and balance sheet. Every number on the reporting screens, the payroll monthly forecast and the scenario comparison comes from here.
+  - `model_adjustments.py` - Bulk what-if adjustments (re-price / re-volume sales rows by period, customer, product; re-price BOM lines by material). Keeps `total_revenue` and `material_cost` consistent. Used by the MCP server.
+- **MCP server**: `app/mcp_server/` - Model Context Protocol server mounted at `/mcp` (streamable HTTP, stateless JSON) so Claude Code / Codex can manage the model. `core.py` holds the `MCPServer` instance and an in-process ASGI client; `tools/*.py` register one tool module per domain. Tools call the REST endpoints in-process (no duplicated business logic); only the bulk adjusters and the read-only SQL tool touch the database directly. Package is named `mcp_server` so it does not shadow the SDK's `mcp` package. Guide: `documentation/mcp_server_guide.md`. Tests: `tests/test_mcp_server.py`.
 - **Utilities**: `app/utils/cost_rollup.py` (per-unit material / labor / machine cost with data-quality warnings), `data_loader.py`, `period_normalizer.py`
 
 ### Frontend (React)

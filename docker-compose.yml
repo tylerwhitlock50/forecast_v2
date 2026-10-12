@@ -11,6 +11,10 @@ services:
     environment:
       # Set to 'true' to force reload CSV data over existing database
       - FORCE_DB_RELOAD=false
+      # MCP endpoint (/mcp) accepts Host localhost / 127.0.0.1 only; add LAN
+      # addresses here to connect Claude Code / Codex from another machine,
+      # e.g. MCP_ALLOWED_HOSTS=192.168.1.20:*
+      - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-}
     networks:
       - forecast-network
 
