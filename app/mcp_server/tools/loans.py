@@ -33,16 +33,33 @@ async def create_loan(
     loan_type: Annotated[str, Field(description=", ".join(LOAN_TYPES))],
     principal_amount: Annotated[float, Field(gt=0)],
     interest_rate: Annotated[float, Field(description="Annual rate as a percentage, e.g. 7.5", ge=0)],
-    loan_term_months: Annotated[int, Field(gt=0)],
+    loan_term_months: Annotated[int, Field(gt=0, description=(
+        "Whole months to maturity; a multiple of 3 for quarterly and of 12 for annual payments"))],
     start_date: Annotated[str, Field(description="YYYY-MM-DD origination date; proceeds land in that month")],
-    payment_type: Annotated[str, Field(description="amortizing or interest_only")] = "amortizing",
+    payment_type: Annotated[str, Field(description=(
+        "amortizing, or interest_only (interest each period; the principal is repaid on balloon_date, or with the "
+        "last installment at maturity when there is none)"))] = "amortizing",
     payment_frequency: Annotated[str, Field(description="monthly, quarterly or annually")] = "monthly",
-    balloon_payment: Optional[float] = None,
-    balloon_date: Optional[str] = None,
+    balloon_payment: Annotated[Optional[float], Field(description=(
+        "Optional, at most principal_amount. Amortizing: the level installments are sized to leave this amount "
+        "owing, repaid with the balloon installment (balloon_date, or the last installment at maturity). "
+        "Interest-only: informational; the balloon repays the whole balance owed"))] = None,
+    balloon_date: Annotated[Optional[str], Field(description=(
+        "Optional YYYY-MM-DD, after start_date and on or before maturity (start_date + loan_term_months). The "
+        "first installment on or after it repays the whole balance still owed (amortizing or interest_only); "
+        "e.g. a 20-year amortization (loan_term_months 240) with a 5-year balloon"))] = None,
     description: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Add a loan and generate its amortization schedule. Proceeds, interest
-    and principal flow into the cash flow statement and balance sheet."""
+    """Add a loan and generate its amortization schedule on calendar months
+    (installment n due n payment periods after start_date). Proceeds,
+    interest and principal flow into the cash flow statement and balance
+    sheet. The last installment always clears the balance: amortizing loans
+    pay level installments, with balloon_date the installment on or after it
+    repays the rest; interest_only loans repay the principal on balloon_date
+    or, without one, at maturity. Refused when the term is not whole payment
+    periods, balloon_date is not after start_date and on or before maturity,
+    or balloon_payment exceeds the principal. Returns loan_id,
+    payments_generated and warnings."""
     if loan_type not in LOAN_TYPES:
         raise ToolError(f"loan_type must be one of {', '.join(LOAN_TYPES)}")
     if payment_type not in ("amortizing", "interest_only"):
@@ -101,9 +118,17 @@ async def update_loan(
     history: paid / skipped installments and any with an actual date,
     actual amount or note are kept exactly; only the installments after
     the last of them are replaced (re-amortised from its remaining balance
-    over the rest of the term, on calendar months). Returns
-    schedule {regenerated, kept_paid, kept, removed, added}, before / after
-    {total_interest, payoff_date, ...} and samples of the rows."""
+    over the months left to maturity, on calendar months). After recorded
+    payments: a payment_frequency change continues one new period after the
+    last kept payment; a principal_amount change adds the difference to the
+    balance still owed (refused if the new principal is less than what is
+    already repaid); a start_date after the recorded payments is refused.
+    The same term / balloon rules as forecast_create_loan apply to the
+    loan with the changes applied. Returns schedule {regenerated, kept_paid,
+    kept, removed, added}, before / after {total_interest, payoff_date (null
+    while money is still owed after the last installment),
+    last_payment_date, final_balance, ...}, warnings and samples of the
+    rows."""
     unknown = [k for k in updates if k not in LOAN_FIELDS]
     if unknown:
         raise ToolError(f"Unknown loan fields: {', '.join(unknown)}. Allowed: {', '.join(LOAN_FIELDS)}")
@@ -197,5 +222,8 @@ async def loan_cash_flow(
     start_period: Annotated[str, Field(description="YYYY-MM")],
     end_period: Annotated[str, Field(description="YYYY-MM")],
 ) -> Dict[str, Any]:
-    """Debt service (principal + interest) per period over a window."""
+    """Debt service per month over a window (every month listed): principal,
+    interest, total payment and loan proceeds, by loan and in total, from the
+    saved schedules of active loans. remaining_balance is the debt owed at
+    the end of each month and equals the balance sheet's debt line."""
     return await call("GET", "/loans/cash-flow", params={"start_period": start_period, "end_period": end_period})

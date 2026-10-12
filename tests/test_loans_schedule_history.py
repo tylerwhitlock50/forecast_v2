@@ -248,7 +248,9 @@ class TestPreview:
         assert data["preview"] is True
         assert data["schedule"]["regenerated"] is True
         assert data["schedule"]["kept_paid"] == 1 and data["schedule"]["removed"] == 2 and data["schedule"]["added"] == 11
-        assert data["before"]["payoff_date"] == "2026-04-02" and data["after"]["payoff_date"] == "2027-01-01"
+        # The legacy schedule stops with 900 still owed: no payoff date before, only its last installment.
+        assert data["before"]["payoff_date"] is None and data["before"]["last_payment_date"] == "2026-04-02"
+        assert data["before"]["final_balance"] == 900 and data["after"]["payoff_date"] == "2027-01-01"
         assert data["before"]["total_interest"] == 0 and data["after"]["total_interest"] > 0
         assert data["before"]["payments"] == 3 and data["after"]["payments"] == 12
         assert data["after"]["paid"] == 1

@@ -1,6 +1,7 @@
 import {
-  auditBannerText, comparisonRows, describeAuditExample, describeScheduleChange, isBlank, issueLabel,
-  loanFormValues, needsSchedulePreview, paymentStatusLabel,
+  addMonthsToDay, auditBannerText, comparisonRows, describeAuditExample, describeScheduleChange,
+  formatComparisonValue, isBlank, issueLabel, loanFormValues, loanTermErrors, needsSchedulePreview,
+  paymentStatusLabel,
 } from './loanScheduleUtils';
 
 const preview = {
@@ -39,6 +40,41 @@ describe('comparisonRows', () => {
     const rows = Object.fromEntries(comparisonRows(preview).map(r => [r.key, r]));
     expect(rows.payoff).toMatchObject({ before: '2026-04-02', after: '2027-01-01', changed: true });
     expect(rows.interest).toMatchObject({ before: 0, after: 33.37, changed: true, kind: 'money' });
+    expect(rows.owed).toBeUndefined();
+  });
+
+  it('shows what is still owed when the last installment does not pay the loan off', () => {
+    const unpaid = {
+      before: { payments: 12, payoff_date: null, last_payment_date: '2028-01-15', final_balance: 100000 },
+      after: { payments: 12, payoff_date: '2028-01-15', last_payment_date: '2028-01-15', final_balance: 0 },
+    };
+    const rows = Object.fromEntries(comparisonRows(unpaid).map(r => [r.key, r]));
+    expect(rows.payoff).toMatchObject({ before: null, after: '2028-01-15', changed: true });
+    expect(rows.owed).toMatchObject({ before: 100000, after: 0, kind: 'money', changed: true });
+    expect(formatComparisonValue(rows.payoff.before, 'date')).toBe('-');
+  });
+});
+
+describe('loan form checks shared with the API', () => {
+  it('adds calendar months with the day clamped to month end', () => {
+    expect(addMonthsToDay('2026-01-31', 1)).toBe('2026-02-28');
+    expect(addMonthsToDay('2028-01-31', 1)).toBe('2028-02-29');
+    expect(addMonthsToDay('2027-01-01', 240)).toBe('2047-01-01');
+    expect(addMonthsToDay('', 3)).toBeNull();
+  });
+
+  it('flags terms that are not whole periods and balloons outside the term', () => {
+    const base = { loan_term_months: '12', payment_frequency: 'quarterly', start_date: '2027-01-15',
+      principal_amount: '30000', balloon_date: '', balloon_payment: '' };
+    expect(loanTermErrors(base)).toEqual({});
+    expect(loanTermErrors({ ...base, loan_term_months: '10' }).loan_term_months).toMatch(/use 9 or 12 months/);
+    expect(loanTermErrors({ ...base, loan_term_months: '2' }).loan_term_months).toMatch(/use 3 months/);
+    expect(loanTermErrors({ ...base, payment_frequency: 'annually', loan_term_months: '18' }).loan_term_months)
+      .toMatch(/whole number of years: use 12 or 24 months/);
+    expect(loanTermErrors({ ...base, balloon_date: '2027-01-15' }).balloon_date).toMatch(/after start date/);
+    expect(loanTermErrors({ ...base, balloon_date: '2028-02-01' }).balloon_date).toMatch(/maturity \(Jan 15, 2028\)/);
+    expect(loanTermErrors({ ...base, balloon_date: '2028-01-15' })).toEqual({});
+    expect(loanTermErrors({ ...base, balloon_payment: '30000.01' }).balloon_payment).toMatch(/more than the principal/);
   });
 });
 
