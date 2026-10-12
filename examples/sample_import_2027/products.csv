@@ -1,0 +1,9 @@
+Item Number,Description,Product Family,List Price,UOM,BOM,Routing
+RF-100,Ridgeline Hunter .308 Win,Rifle,"$1,399.00",EA,BOM-RF100,RT-RF100
+RF-200,Summit Long Range 6.5 Creedmoor,Rifle,"$2,299.00",EA,BOM-RF200,RT-RF200
+RF-300,Traverse Carbon .300 Win Mag,Rifle,"$4,495.00",EA,BOM-RF300,RT-RF300
+PS-100,Sentinel Full Size 9mm,Pistol,$699.00,EA,BOM-PS100,RT-PS100
+PS-200,Vanguard Compact 9mm,Pistol,$629.00,EA,BOM-PS200,RT-PS200
+AC-100,Carbon Muzzle Brake 5/8-24,Accessory,$149.00,EA,BOM-AC100,RT-AC100
+AC-200,One-Piece Scope Mount 30mm,Accessory,$99.50,EA,BOM-AC200,RT-AC200
+AC-300,Hard Rifle Case 50in,Accessory,$219.00,EA,BOM-AC300,RT-AC300

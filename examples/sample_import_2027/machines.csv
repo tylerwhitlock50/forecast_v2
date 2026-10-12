@@ -1,0 +1,6 @@
+Work Center,Work Center Name,Hourly Rate,Capacity Hours
+WC-MILL1,Haas VF-4 Vertical Mill,$85.00,320
+WC-LATH1,Okuma LB3000 CNC Lathe,$95.00,320
+WC-EDM1,Wire EDM,$65.00,160
+WC-FIN1,Cerakote Spray Booth,$40.00,160
+WC-TEST,Function Test Range,$30.00,120

@@ -4,7 +4,7 @@ import { toast } from 'react-hot-toast';
 import { useConfirm } from '../Common/ConfirmDialog';
 import './DatabaseModals.css';
 
-const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
+const DatabaseLoadModal = ({ isOpen, onClose, onLoad, onAfterReset }) => {
   const confirm = useConfirm();
   const [databases, setDatabases] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -51,6 +51,32 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
     } catch (error) {
       console.error('Error loading database:', error);
       toast.error('Failed to load database');
+    } finally {
+      setLoadingDatabase(false);
+    }
+  };
+
+  // Start from an empty model (e.g. after rehearsing with the sample files).
+  // The server snapshots the current database first, so it can be loaded back.
+  const handleStartClean = async () => {
+    const confirmed = await confirm({
+      title: 'Start with an empty database?',
+      body: 'Every scenario, sale, customer, product, BOM, routing, price and rule is deleted. '
+        + 'A snapshot of the current data is saved first, so you can load it back from this list.',
+      confirmLabel: 'Delete all data',
+      variant: 'destructive',
+    });
+    if (!confirmed) return;
+    setLoadingDatabase(true);
+    try {
+      const response = await api.post('/database/start-clean', { confirm: true, snapshot_first: true }, { suppressErrorToast: true, suppressSuccessToast: true });
+      const backup = response?.data?.backup?.filename;
+      toast.success(backup ? `Database cleared. Previous data saved as ${backup}` : 'Database cleared');
+      onClose();
+      if (onAfterReset) await onAfterReset();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      toast.error(`Could not clear the database${typeof detail === 'string' ? `: ${detail}` : ''}`);
     } finally {
       setLoadingDatabase(false);
     }
@@ -167,6 +193,14 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad }) => {
         </div>
 
         <div className="modal-footer">
+          <button
+            className="btn-danger-outline"
+            onClick={handleStartClean}
+            disabled={loadingDatabase}
+            title="Delete all data and start with an empty model (a snapshot is saved first)"
+          >
+            Start clean…
+          </button>
           <button 
             className="btn-secondary" 
             onClick={onClose}

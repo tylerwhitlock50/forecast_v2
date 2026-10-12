@@ -330,3 +330,23 @@
     width: 100%;
   }
 }
+/* "Start clean" sits on the left of the footer, away from Load. */
+.btn-danger-outline {
+  margin-right: auto;
+  padding: 0.5rem 1rem;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  background: #fff;
+  color: #b91c1c;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-danger-outline:hover {
+  background: #fef2f2;
+}
+
+.btn-danger-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

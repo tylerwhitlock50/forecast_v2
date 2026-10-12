@@ -46,6 +46,24 @@ async def revert_to_last_save() -> Dict[str, Any]:
     return await call("POST", "/database/revert-to-last-save")
 
 
+@mcp.tool(name="forecast_start_clean", annotations=DESTRUCTIVE)
+async def start_clean(
+    confirm: Annotated[bool, Field(description="Must be true: deletes EVERY row of every table (scenarios, sales, BOMs, prices, rules, payroll, ...)")],
+    snapshot_first: Annotated[bool, Field(description="Snapshot the current database first so it can be restored with forecast_load_database")] = True,
+    scenario_name: Annotated[Optional[str], Field(description="Optionally create one empty scenario with this name afterwards, e.g. '2027 Budget'")] = None,
+) -> Dict[str, Any]:
+    """Start from an empty model (keeps the schema). Use it before loading
+    the user's real data after a rehearsal with sample files. Only call it
+    when the user has asked for it in so many words; it removes all data.
+    The response names the snapshot taken first."""
+    if confirm is not True:
+        raise ToolError("Pass confirm=true to delete all data (ask the user first)")
+    body: Dict[str, Any] = {"confirm": True, "snapshot_first": snapshot_first}
+    if scenario_name and scenario_name.strip():
+        body["scenario_name"] = scenario_name.strip()
+    return await call("POST", "/database/start-clean", json=body)
+
+
 @mcp.tool(name="forecast_data_quality", annotations=READ)
 async def data_quality(
     max_examples: Annotated[int, Field(description="Max entries shown per list (counts are always complete)", ge=1, le=500)] = 20,

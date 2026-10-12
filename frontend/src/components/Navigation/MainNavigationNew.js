@@ -409,6 +409,7 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
         isOpen={showLoadModal}
         onClose={() => setShowLoadModal(false)}
         onLoad={handleLoadDatabase}
+        onAfterReset={() => actions.fetchAllData()}
       />
     </nav>
   );

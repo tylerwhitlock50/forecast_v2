@@ -1,0 +1,9 @@
+Deduction Type,Name,Method,Rate,Customer Type,Product Type
+Terms allowance,Terms 2% 10 net 30,percent of gross,2%,,
+Terms allowance,Distributor terms 1%,percent of gross,1%,Distributor,
+Chargebacks,Dealer chargebacks 1%,percent of gross,1%,Dealer,
+FET,FET 11% long guns,embedded,11%,,Rifle
+FET,FET 10% handguns,embedded,10%,,Pistol
+FET,FET exempt - government,embedded,0%,Government,
+FET,FET exempt - export,embedded,0%,Export,
+Commission,Rep commission 5% of net (dealers),percent of net,5%,Dealer,

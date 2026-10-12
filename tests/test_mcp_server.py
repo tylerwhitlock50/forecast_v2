@@ -994,3 +994,14 @@ def test_service_adjust_material_costs_validation_and_delta(cursor):
     assert cursor.execute("SELECT unit_price, material_cost FROM bom WHERE bom_line = 1").fetchone() == (11, 22)
     assert cursor.execute("SELECT unit_price, material_cost FROM bom WHERE bom_line = 2").fetchone() == (6, 6)
     assert out["products_affected"][0]["material_per_unit"] == {"before": 25, "after": 28}
+
+
+def test_start_clean_requires_confirm_and_snapshots_first(mcp_client):
+    client, mgr = mcp_client
+    text, is_error = call_tool(client, "forecast_start_clean", {"confirm": False})
+    assert is_error and "confirm=true" in text
+    assert db_rows(mgr, "SELECT COUNT(*) FROM sales")[0][0] > 0
+    out = ok(client, "forecast_start_clean", {"confirm": True, "scenario_name": "2027 Budget"})
+    assert out["backup"] and out["backup"]["filename"]
+    assert db_rows(mgr, "SELECT COUNT(*) FROM sales") == [(0,)]
+    assert db_rows(mgr, "SELECT name FROM forecast") == [("2027 Budget",)]
