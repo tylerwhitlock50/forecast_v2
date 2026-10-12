@@ -92,7 +92,7 @@ const ScheduleRepairModal = ({ audit, onClose, onRepaired }) => {
                   {!loan.is_active && <Badge variant="secondary">Inactive</Badge>}
                   {loan.statement_impact
                     ? <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-900">Affects the statements</Badge>
-                    : <Badge variant="outline">Day of month only</Badge>}
+                    : <Badge variant="outline">{loan.is_active ? 'Day of month only' : 'Not on the statements'}</Badge>}
                 </div>
                 <p className="text-sm text-slate-700">{loan.summary}</p>
               </div>

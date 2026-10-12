@@ -87,14 +87,22 @@ export const describeScheduleChange = (preview) => {
   return lines;
 };
 
-/** Before / after rows for the comparison table. */
+/**
+ * Before / after rows for the comparison table. The payoff date is blank when
+ * the last installment leaves money owed; the amount still owed is listed
+ * whenever either side leaves some.
+ */
 export const comparisonRows = (preview) => {
   const before = preview?.before || {};
   const after = preview?.after || {};
+  const owed = (side) => Number(side.final_balance) > 0.01;
   return [
     { key: 'payments', label: 'Installments', before: before.payments, after: after.payments, kind: 'count' },
     { key: 'next', label: 'Next unpaid installment', before: before.next_payment_date, after: after.next_payment_date, kind: 'date' },
     { key: 'payoff', label: 'Payoff date', before: before.payoff_date, after: after.payoff_date, kind: 'date' },
+    ...(owed(before) || owed(after)
+      ? [{ key: 'owed', label: 'Still owed after the last installment', before: before.final_balance, after: after.final_balance, kind: 'money' }]
+      : []),
     { key: 'interest', label: 'Total interest', before: before.total_interest, after: after.total_interest, kind: 'money' },
     { key: 'total', label: 'Total of all payments', before: before.total_payments, after: after.total_payments, kind: 'money' },
   ].map(row => ({ ...row, changed: String(row.before ?? '') !== String(row.after ?? '') }));
@@ -144,3 +152,49 @@ export const loanFormValues = (loan) => {
 /** True when a form value is missing (0 is a value). */
 export const isBlank = (value) => value === '' || value === null || value === undefined
   || (typeof value === 'string' && value.trim() === '');
+
+const FREQUENCY_MONTHS = { monthly: 1, quarterly: 3, annually: 12 };
+
+/** 'YYYY-MM-DD' `months` calendar months after `day`, the day clamped to month end (as the API dates installments). */
+export const addMonthsToDay = (day, months) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(day || ''));
+  if (!match) return null;
+  const index = Number(match[1]) * 12 + Number(match[2]) - 1 + Number(months);
+  const year = Math.floor(index / 12);
+  const month = (index % 12) + 1;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(Math.min(Number(match[3]), lastDay))}`;
+};
+
+/**
+ * The API's checks across loan fields, as form errors: the term is a whole
+ * number of payment periods, the balloon date is after the start date and on
+ * or before maturity, the balloon payment is not more than the principal.
+ */
+export const loanTermErrors = (form) => {
+  const errors = {};
+  const term = Number(form.loan_term_months);
+  const per = FREQUENCY_MONTHS[form.payment_frequency] || 1;
+  if (per > 1 && Number.isInteger(term) && term > 0 && term % per) {
+    const lower = Math.floor(term / per) * per;
+    const unit = per === 3 ? 'quarters' : 'years';
+    errors.loan_term_months = `For ${form.payment_frequency} payments the term must be a whole number of ${unit}: `
+      + `use ${lower ? `${lower} or ` : ''}${lower + per} months`;
+  }
+  const start = isBlank(form.start_date) ? '' : String(form.start_date).slice(0, 10);
+  const balloon = isBlank(form.balloon_date) ? '' : String(form.balloon_date).slice(0, 10);
+  if (start && balloon) {
+    const maturity = Number.isInteger(term) && term > 0 ? addMonthsToDay(start, term) : null;
+    if (balloon <= start) {
+      errors.balloon_date = 'Balloon date must be after start date';
+    } else if (maturity && balloon > maturity) {
+      errors.balloon_date = `Balloon date must be on or before the loan's maturity (${formatDay(maturity)})`;
+    }
+  }
+  if (!isBlank(form.balloon_payment) && !isBlank(form.principal_amount)
+      && Number(form.balloon_payment) > Number(form.principal_amount)) {
+    errors.balloon_payment = 'Balloon payment cannot be more than the principal';
+  }
+  return errors;
+};

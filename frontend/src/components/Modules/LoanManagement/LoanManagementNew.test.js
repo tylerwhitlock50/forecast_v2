@@ -125,6 +125,42 @@ describe('LoanModal', () => {
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ interest_rate: 0, loan_name: 'Legacy term loan' }));
   });
 
+  it('shows the balloon fields for an amortizing loan and clears a removed balloon', () => {
+    // The schedule now uses a balloon on amortizing loans too, so it must be visible and removable.
+    const onSave = jest.fn();
+    render(<LoanModal loan={{ ...loan, balloon_date: '2026-12-01', balloon_payment: 500 }} onSave={onSave}
+                      onClose={() => {}} />);
+    expect(screen.getByLabelText('Balloon Due Date')).toHaveValue('2026-12-01');
+    expect(screen.getByTestId('balloon-note')).toHaveTextContent(/repays the balance still owed/);
+    fireEvent.change(screen.getByLabelText('Balloon Due Date'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Balloon Payment Amount ($)'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Update Loan'));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ balloon_date: '', balloon_payment: 0 }));
+  });
+
+  it('does not invent a balloon for a loan that has none', () => {
+    const onSave = jest.fn();
+    render(<LoanModal loan={loan} onSave={onSave} onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Update Loan'));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ balloon_date: '', balloon_payment: null }));
+  });
+
+  it('refuses a term that is not whole quarters and a balloon after maturity, as the API does', () => {
+    const onSave = jest.fn();
+    render(<LoanModal loan={loan} onSave={onSave} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Payment Frequency'), { target: { value: 'quarterly' } });
+    fireEvent.change(screen.getByLabelText('Loan Term * (months)'), { target: { value: '10' } });
+    fireEvent.click(screen.getByText('Update Loan'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/whole number of quarters: use 9 or 12 months/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Loan Term * (months)'), { target: { value: '12' } });
+    fireEvent.change(screen.getByLabelText('Balloon Due Date'), { target: { value: '2027-06-01' } });
+    fireEvent.click(screen.getByText('Update Loan'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/on or before the loan's maturity \(Jan 1, 2027\)/)).toBeInTheDocument();
+  });
+
   it('still requires a rate', () => {
     const onSave = jest.fn();
     render(<LoanModal loan={loan} onSave={onSave} onClose={() => {}} />);

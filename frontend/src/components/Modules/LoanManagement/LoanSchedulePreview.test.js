@@ -121,6 +121,16 @@ describe('Schedule audit banner and repair modal', () => {
     expect(api.post.mock.calls[1][1]).toEqual({ dry_run: false });
   });
 
+  it('labels an inactive loan as not on the statements', () => {
+    const inactive = { ...audit.loans[0], loan_id: 'OLD', is_active: false, statement_impact: false, severity: 'info' };
+    render(<ScheduleRepairModal audit={{ ...audit, loans: [inactive] }} onClose={() => {}} />);
+    const entry = screen.getByTestId('audit-loan-OLD');
+    expect(within(entry).getByText('Inactive')).toBeInTheDocument();
+    expect(within(entry).getByText('Not on the statements')).toBeInTheDocument();
+    expect(within(entry).queryByText('Affects the statements')).not.toBeInTheDocument();
+    expect(within(entry).queryByText('Day of month only')).not.toBeInTheDocument();
+  });
+
   it('says so when nothing is left to repair', () => {
     render(<ScheduleRepairModal audit={{ loans: [], loans_with_issues: 0 }} onClose={() => {}} />);
     expect(screen.getByTestId('repair-all-clear')).toBeInTheDocument();

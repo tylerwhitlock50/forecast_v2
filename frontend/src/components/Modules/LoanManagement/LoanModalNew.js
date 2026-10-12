@@ -6,7 +6,7 @@ import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { Textarea } from '../../ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { isBlank, loanFormValues } from './loanScheduleUtils';
+import { isBlank, loanFormValues, loanTermErrors } from './loanScheduleUtils';
 import { toDateOnly } from '../../../lib/dates';
 
 const LoanModal = ({ loan, onSave, onClose }) => {
@@ -92,24 +92,16 @@ const LoanModal = ({ loan, onSave, onClose }) => {
             newErrors.loan_term_months = 'Loan term must be greater than 0';
         }
 
-        // Balloon payment validations
-        if (formData.payment_type === 'interest_only') {
-            if (!formData.balloon_date) {
-                newErrors.balloon_date = 'Balloon date is required for interest-only loans';
-            }
-        }
+        // Term in whole payment periods, balloon date within the term, balloon
+        // amount within the principal (the same checks the API makes).
+        Object.entries(loanTermErrors(formData)).forEach(([field, message]) => {
+            if (!newErrors[field]) newErrors[field] = message;
+        });
 
         if (formData.balloon_payment && isNaN(formData.balloon_payment)) {
             newErrors.balloon_payment = 'Balloon payment must be a number';
         } else if (formData.balloon_payment && parseFloat(formData.balloon_payment) <= 0) {
             newErrors.balloon_payment = 'Balloon payment must be greater than 0';
-        }
-
-        // Date validations
-        if (formData.start_date && formData.balloon_date) {
-            if (new Date(formData.balloon_date) <= new Date(formData.start_date)) {
-                newErrors.balloon_date = 'Balloon date must be after start date';
-            }
         }
 
         setErrors(newErrors);
@@ -123,14 +115,19 @@ const LoanModal = ({ loan, onSave, onClose }) => {
             return;
         }
 
-        // Convert string values to appropriate types
+        // Convert string values to appropriate types. A blank balloon date is
+        // sent as '' (the API clears it; null would mean "leave as is"), and a
+        // balloon amount the user removed as 0 (no balloon).
+        const hadBalloonPayment = Number(loan?.balloon_payment) > 0;
         const submitData = {
             ...formData,
             principal_amount: parseFloat(formData.principal_amount),
             interest_rate: parseFloat(formData.interest_rate),
             loan_term_months: parseInt(formData.loan_term_months),
-            balloon_payment: formData.balloon_payment ? parseFloat(formData.balloon_payment) : null,
-            balloon_date: formData.balloon_date || null
+            balloon_payment: !isBlank(formData.balloon_payment)
+                ? parseFloat(formData.balloon_payment)
+                : (hadBalloonPayment ? 0 : null),
+            balloon_date: formData.balloon_date || ''
         };
 
         onSave(submitData);
@@ -342,50 +339,56 @@ const LoanModal = ({ loan, onSave, onClose }) => {
                             </CardContent>
                         </Card>
 
-                        {/* Balloon Payment (for interest-only loans) */}
-                        {formData.payment_type === 'interest_only' && (
-                            <Card>
-                                <CardHeader>
-                                    <CardTitle className="text-lg">Balloon Payment</CardTitle>
-                                </CardHeader>
-                                <CardContent>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <Label htmlFor="balloon_payment">Balloon Payment Amount ($)</Label>
-                                            <Input
-                                                id="balloon_payment"
-                                                name="balloon_payment"
-                                                type="number"
-                                                value={formData.balloon_payment}
-                                                onChange={handleChange}
-                                                min="0"
-                                                step="0.01"
-                                                placeholder="Principal amount if not specified"
-                                                className={errors.balloon_payment ? 'border-red-500' : ''}
-                                            />
-                                            {errors.balloon_payment && (
-                                                <p className="text-sm text-red-500">{errors.balloon_payment}</p>
-                                            )}
-                                        </div>
-
-                                        <div className="space-y-2">
-                                            <Label htmlFor="balloon_date">Balloon Due Date *</Label>
-                                            <Input
-                                                id="balloon_date"
-                                                name="balloon_date"
-                                                type="date"
-                                                value={formData.balloon_date}
-                                                onChange={handleChange}
-                                                className={errors.balloon_date ? 'border-red-500' : ''}
-                                            />
-                                            {errors.balloon_date && (
-                                                <p className="text-sm text-red-500">{errors.balloon_date}</p>
-                                            )}
-                                        </div>
+                        {/* Balloon payment (either payment type; the schedule uses it) */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="text-lg">Balloon Payment</CardTitle>
+                                <p className="text-sm text-muted-foreground" data-testid="balloon-note">
+                                    {formData.payment_type === 'interest_only'
+                                        ? 'Optional. The installment on or after the balloon date repays the principal; '
+                                          + 'without a balloon date it is repaid with the last installment, at maturity.'
+                                        : 'Optional. The installment on or after the balloon date repays the balance still '
+                                          + 'owed; a balloon amount sizes the installments to leave that much owing.'}
+                                </p>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="balloon_payment">Balloon Payment Amount ($)</Label>
+                                        <Input
+                                            id="balloon_payment"
+                                            name="balloon_payment"
+                                            type="number"
+                                            value={formData.balloon_payment}
+                                            onChange={handleChange}
+                                            min="0"
+                                            step="0.01"
+                                            placeholder={formData.payment_type === 'interest_only'
+                                                ? 'The principal' : 'Balance owed on the balloon date'}
+                                            className={errors.balloon_payment ? 'border-red-500' : ''}
+                                        />
+                                        {errors.balloon_payment && (
+                                            <p className="text-sm text-red-500">{errors.balloon_payment}</p>
+                                        )}
                                     </div>
-                                </CardContent>
-                            </Card>
-                        )}
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="balloon_date">Balloon Due Date</Label>
+                                        <Input
+                                            id="balloon_date"
+                                            name="balloon_date"
+                                            type="date"
+                                            value={formData.balloon_date}
+                                            onChange={handleChange}
+                                            className={errors.balloon_date ? 'border-red-500' : ''}
+                                        />
+                                        {errors.balloon_date && (
+                                            <p className="text-sm text-red-500">{errors.balloon_date}</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
 
                         {/* Additional Details */}
                         <Card>

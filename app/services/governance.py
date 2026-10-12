@@ -964,12 +964,27 @@ def loan_schedule_issue(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any
     installments off their calendar dates, missing / out-of-order dates,
     broken balances, short or missing schedules), or None when every
     schedule is fine. Each entry carries loan_id, loan_name, summary,
-    statement_impact (payments land in the wrong month on the statements).
+    wrong_month / out_of_order / missing_dates counts, issues and
+    statement_impact (payments land in the wrong month or are missing on the
+    statements, or the loan is not fully repaid there; never for an
+    inactive loan). The detail names each of those impacts with its count.
     """
     flagged = [e for e in entries or [] if isinstance(e, dict)]
     if not flagged:
         return None
     affecting = [e for e in flagged if e.get("statement_impact")]
+    wrong_month = sum(1 for e in affecting if e.get("wrong_month") or e.get("out_of_order"))
+    missing = sum(1 for e in affecting
+                  if e.get("missing_dates")
+                  or set(e.get("issues") or ()) & {"no_schedule", "incomplete", "numbering_gap", "balance_break"})
+    unchecked = sum(1 for e in affecting if "bad_start_date" in (e.get("issues") or ()))
+    impacts = []
+    if wrong_month:
+        impacts.append(f"{wrong_month} put interest and principal in the wrong month on the statements")
+    if missing:
+        impacts.append(f"{missing} leave payments missing from the statements or the loan not fully repaid there")
+    if unchecked:
+        impacts.append(f"{unchecked} cannot be checked (the start date is not a date)")
     examples = []
     for entry in flagged:
         name = entry.get("loan_name") or entry.get("loan_id")
@@ -980,7 +995,7 @@ def loan_schedule_issue(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any
         "Loan schedules to review",
         "These loans' saved payment schedules are not on calendar-month dates (older versions stepped 30.44 days "
         "per payment) or are incomplete"
-        + (f"; {len(affecting)} put interest and principal in the wrong month on the statements." if affecting else "."),
+        + (f"; {'; '.join(impacts)}." if impacts else "."),
         "On Loan Schedules, open 'Review & repair', check each loan's preview and repair it. Paid installments are "
         "kept exactly as recorded.",
         len(flagged), examples, "/loans")

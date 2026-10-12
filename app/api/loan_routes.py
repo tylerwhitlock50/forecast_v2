@@ -24,7 +24,8 @@ from db.models import (
     ForecastResponse, Loan, LoanCreate, LoanUpdate, LoanPayment, LoanPaymentCreate,
     AmortizationSchedule, LoanWithDetails, LoanSummary, CashFlowProjection
 )
-from services.financial_statements import add_months
+from services.financial_statements import add_months, loans_by_period, period_range
+from services.financial_statements import _parse_date as _engine_date
 
 
 def payment_date_for(start_date: str, months_after: int) -> str:
@@ -53,6 +54,11 @@ PAYMENT_COLUMNS = ('payment_id', 'loan_id', 'payment_number', 'payment_date', 'p
                    'actual_payment_date', 'actual_payment_amount', 'notes')
 #: Balance-chain tolerance for legacy rows (each stored value is rounded to cents).
 BALANCE_TOLERANCE = 0.05
+#: A kept row dated within this many days of its numbered calendar date is on
+#: the loan's calendar (schedules saved with 30.44-day steps drift a few days
+#: either side of it).
+ON_CALENDAR_DAYS = 15
+PERIOD_NAMES = {1: 'month', 3: 'quarter', 12: 'year'}
 
 
 def calculate_loan_payment(principal: float, annual_rate: float, term_months: int, payment_type: str = "amortizing") -> float:
@@ -83,6 +89,76 @@ def _period_payment(balance: float, annual_rate: float, remaining_months: int, f
     return round(balance * (rate * (1 + rate) ** periods) / ((1 + rate) ** periods - 1), 2)
 
 
+def _installments(term_months: int, freq_months: int) -> int:
+    """Installments in a term: one per payment period, the last one a short
+    period when the term is not a whole number of periods."""
+    if term_months <= 0:
+        return 0
+    return -(-term_months // freq_months)
+
+
+def _installment_months(number: int, freq_months: int, term_months: int) -> int:
+    """Months after the start date that installment `number` falls due on the
+    loan's calendar: `number` periods on, the last one at maturity when the
+    term is not a whole number of periods (numbers past the term continue a
+    period apart)."""
+    if number <= 0:
+        return 0
+    full = _installments(term_months, freq_months)
+    if number <= full:
+        return min(number * freq_months, term_months)
+    return max(term_months, 0) + (number - full) * freq_months
+
+
+def _tail_months(anchor: int, freq_months: int, term_months: int, count: int) -> List[int]:
+    """Months after the start date of the `count` installments after calendar
+    position `anchor`: a period apart, the one that would pass maturity
+    falling at maturity instead (a short final period)."""
+    months, position = [], anchor
+    for _ in range(count):
+        following = position + freq_months
+        if position < term_months < following:
+            following = term_months
+        months.append(following)
+        position = following
+    return months
+
+
+def _installments_after(anchor: int, freq_months: int, term_months: int) -> int:
+    """Installments from calendar position `anchor` to maturity; one (to pay
+    off what is left) when the term has already run out."""
+    if term_months > anchor:
+        return _installments(term_months - anchor, freq_months)
+    return 1
+
+
+def _period_rate(annual_rate: float, months: int) -> float:
+    """Interest rate for an installment period of `months` months."""
+    return annual_rate / (12 / months)
+
+
+def _level_payment(balance: float, annual_rate: float, lengths: List[int], future_value: float = 0.0) -> float:
+    """Level installment that brings `balance` down to `future_value` over
+    installment periods of the given lengths (months). Equal periods with
+    nothing left at the end use the usual annuity (`calculate_loan_payment`
+    / `_period_payment`); a short final period or a balloon amount use the
+    general annuity on each period's own rate."""
+    n = len(lengths)
+    if n == 0:
+        return round(balance, 2)
+    if future_value <= 0.005 and len(set(lengths)) == 1:
+        if lengths[0] == 1:
+            return calculate_loan_payment(balance, annual_rate, n, "amortizing")
+        return _period_payment(balance, annual_rate, n * lengths[0], lengths[0])
+    # balance * prod(1 + r_i) - payment * sum_j prod_{i > j}(1 + r_i) = future_value
+    annuity, growth = 0.0, 1.0
+    for rate in reversed([_period_rate(annual_rate, m) for m in lengths]):
+        annuity += growth
+        growth *= 1 + rate
+    payment = (balance * growth - future_value) / annuity
+    return payment if annual_rate == 0 else round(payment, 2)
+
+
 def generate_amortization_schedule(
     loan_id: str,
     principal: float,
@@ -96,123 +172,87 @@ def generate_amortization_schedule(
     *,
     first_payment_number: int = 1,
     opening_balance: Optional[float] = None,
-    cycle_offset: int = 0,
+    anchor_months: Optional[int] = None,
 ) -> List[LoanPayment]:
     """
-    Amortization schedule for a loan, installment n due `n` payment periods
-    after the start date on calendar months (`payment_date_for`).
+    Amortization schedule on calendar months (`add_months`, day clamped to
+    month end). Installment n of a new loan is due n payment periods after
+    the start date; when the term is not a whole number of periods the last
+    installment falls at maturity (start date + term) and covers the months
+    left. Each installment's interest covers the months since the one before.
 
     With `first_payment_number` > 1 and `opening_balance` it builds only the
-    rest of a schedule: installments first_payment_number..end of term,
-    re-amortising `opening_balance` over the remaining term (used when the
-    earlier installments are history and must be kept). `cycle_offset`
-    pushes the due dates that many periods later (used when a start date
-    change would otherwise date new installments before recorded ones).
-    The last installment always clears the balance (no rounding residue).
+    rest of a schedule whose earlier installments are history: it continues
+    from calendar position `anchor_months` (months after the start date the
+    history ends at; installment first_payment_number - 1's by default), a
+    period apart to maturity, numbered on from `first_payment_number`, and
+    re-amortises `opening_balance` over those installments. When the history
+    already runs to maturity one final installment pays the balance off.
+
+    The last installment always clears the balance (no rounding residue):
+
+    * amortizing: level installments over the term; with `balloon_date` the
+      first installment on or after it repays the balance still owed (a
+      balloon); with `balloon_payment` the level installment is sized to
+      leave that amount owing, repaid by the balloon installment (or by the
+      last installment, at maturity).
+    * interest_only: interest each period; the principal is repaid on the
+      balloon date or, without one, with the last installment at maturity.
     """
-    payments = []
-    remaining_balance = principal if opening_balance is None else opening_balance
-
-    # Calculate payment frequency multiplier
-    freq_months = FREQUENCY_MONTHS.get(payment_frequency, 1)
-
-    # Adjust calculations for payment frequency
-    periods_per_year = 12 / freq_months
-    period_rate = annual_rate / periods_per_year
-    total_periods = term_months // freq_months
-
-    numbers = list(range(first_payment_number, total_periods + 1))
-    force_payoff = False
-    if not numbers and first_payment_number > 1 and remaining_balance > 0.01:
-        # History already runs to (or past) the end of the term but a balance
-        # is left: one final installment pays it off.
-        numbers = [first_payment_number]
-        force_payoff = True
-    if not numbers or remaining_balance <= 0.005:
+    remaining_balance = float(principal if opening_balance is None else opening_balance)
+    if remaining_balance <= 0.005:
         return []
-
-    def due(payment_num: int) -> datetime:
-        return datetime.strptime(payment_date_for(start_date, freq_months * (payment_num + cycle_offset)), '%Y-%m-%d')
-
-    balloon = datetime.strptime(balloon_date[:10], '%Y-%m-%d') if balloon_date else None
+    freq_months = FREQUENCY_MONTHS.get(payment_frequency, 1)
+    term = int(term_months or 0)
+    anchor = (_installment_months(first_payment_number - 1, freq_months, term)
+              if anchor_months is None else int(anchor_months))
+    months = _tail_months(anchor, freq_months, term, _installments_after(anchor, freq_months, term))
+    lengths = [later - earlier for earlier, later in zip([anchor] + months[:-1], months)]
+    start = _parse_day(start_date)
+    dates = [add_months(start, m) for m in months]
+    balloon = _parse_day(balloon_date)
+    payoff = next((i for i, d in enumerate(dates) if balloon is not None and d >= balloon), len(dates) - 1)
 
     if payment_type == "interest_only":
-        # Interest-only payments
-        interest_payment = remaining_balance * period_rate
-        principal_payment = 0
-
-        for payment_num in numbers:
-            payment_date = due(payment_num)
-
-            # Check if this is the balloon payment date
-            is_balloon = False
-            if (balloon and payment_date >= balloon) or force_payoff:
-                principal_payment = remaining_balance
-                is_balloon = True
-
-            payment_amount = interest_payment + principal_payment
-            remaining_balance -= principal_payment
-
-            payment = LoanPayment(
-                payment_id=f"{loan_id}-{payment_num:03d}",
-                loan_id=loan_id,
-                payment_number=payment_num,
-                payment_date=payment_date.strftime('%Y-%m-%d'),
-                payment_amount=round(payment_amount, 2),
-                principal_payment=round(principal_payment, 2),
-                interest_payment=round(interest_payment, 2),
-                remaining_balance=round(remaining_balance, 2),
-                payment_status="scheduled"
-            )
-            payments.append(payment)
-
-            if is_balloon:
-                break
-
-            # Reset principal payment for next iteration
-            principal_payment = 0
-
+        level = None
+    elif balloon_payment and float(balloon_payment) > 0:
+        level = _level_payment(remaining_balance, annual_rate, lengths[:payoff + 1],
+                               min(float(balloon_payment), remaining_balance))
     else:
-        # Amortizing loan
-        remaining_months = term_months - (first_payment_number - 1) * freq_months
-        if remaining_months <= 0:
-            remaining_months = freq_months
-        if freq_months == 1:
-            payment_amount = calculate_loan_payment(remaining_balance, annual_rate, remaining_months, payment_type)
+        level = _level_payment(remaining_balance, annual_rate, lengths)
+
+    payments = []
+    for i, (due, length) in enumerate(zip(dates, lengths)):
+        payment_num = first_payment_number + i
+        interest_payment = remaining_balance * _period_rate(annual_rate, length)
+        last = i == payoff
+        if level is None:
+            # Interest only; the balloon (or the last installment) repays the principal.
+            principal_payment = remaining_balance if last else 0.0
+            amount = interest_payment + principal_payment
         else:
-            payment_amount = _period_payment(remaining_balance, annual_rate, remaining_months, freq_months)
-        last_number = numbers[-1]
-
-        for payment_num in numbers:
-            payment_date = due(payment_num)
-
-            interest_payment = remaining_balance * period_rate
-            principal_payment = payment_amount - interest_payment
-            amount = payment_amount
-
+            principal_payment = level - interest_payment
+            amount = level
             # Never pay more principal than is owed, and clear the balance on
-            # the last installment.
-            if principal_payment > remaining_balance or payment_num == last_number:
+            # the balloon / last installment.
+            if principal_payment > remaining_balance or last:
                 principal_payment = remaining_balance
                 amount = principal_payment + interest_payment
+        remaining_balance -= principal_payment
 
-            remaining_balance -= principal_payment
-
-            payment = LoanPayment(
-                payment_id=f"{loan_id}-{payment_num:03d}",
-                loan_id=loan_id,
-                payment_number=payment_num,
-                payment_date=payment_date.strftime('%Y-%m-%d'),
-                payment_amount=round(amount, 2),
-                principal_payment=round(principal_payment, 2),
-                interest_payment=round(interest_payment, 2),
-                remaining_balance=round(remaining_balance, 2),
-                payment_status="scheduled"
-            )
-            payments.append(payment)
-
-            if remaining_balance <= 0.01:  # Account for rounding
-                break
+        payments.append(LoanPayment(
+            payment_id=f"{loan_id}-{payment_num:03d}",
+            loan_id=loan_id,
+            payment_number=payment_num,
+            payment_date=due.strftime('%Y-%m-%d'),
+            payment_amount=round(amount, 2),
+            principal_payment=round(principal_payment, 2),
+            interest_payment=round(interest_payment, 2),
+            remaining_balance=round(remaining_balance, 2),
+            payment_status="scheduled"
+        ))
+        if last or remaining_balance <= 0.01:  # Account for rounding
+            break
 
     return payments
 
@@ -339,6 +379,57 @@ def _validation_errors(values: Dict[str, Any]) -> List[str]:
     return errors
 
 
+def _cross_field_errors(values: Dict[str, Any], changed: Optional[List[str]] = None) -> List[str]:
+    """Checks that combine fields, run on the loan's effective values (create:
+    the posted loan; update: the stored loan with the changes applied). With
+    `changed`, only the checks involving a changed field run, so an edit never
+    fails on a stored value it does not touch.
+
+    * loan_term_months is a whole number of payment periods (a multiple of 3
+      for quarterly, of 12 for annual payments);
+    * balloon_date is after start_date and on or before maturity (start_date
+      + loan_term_months);
+    * balloon_payment is not more than principal_amount.
+    """
+    errors: List[str] = []
+
+    def involved(*names):
+        return changed is None or any(name in changed for name in names)
+
+    try:
+        term = int(round(float(values.get('loan_term_months') or 0)))
+    except (TypeError, ValueError):
+        term = 0
+    frequency = str(values.get('payment_frequency') or 'monthly').strip().lower()
+    per = FREQUENCY_MONTHS.get(frequency, 1)
+    if per > 1 and term > 0 and term % per and involved('loan_term_months', 'payment_frequency'):
+        lower, upper = term // per * per, (term // per + 1) * per
+        choices = f"{lower} or {upper}" if lower else str(upper)
+        errors.append(f"loan_term_months ({term}) must be a whole number of {PERIOD_NAMES[per]}s (a multiple of {per}) "
+                      f"for {frequency} payments: use {choices} months, or monthly payments")
+
+    start = _parse_day(values.get('start_date'))
+    balloon = _parse_day(values.get('balloon_date'))
+    if balloon and start and involved('balloon_date', 'start_date', 'loan_term_months'):
+        maturity = add_months(start, term) if term > 0 else None
+        if balloon <= start:
+            errors.append(f"balloon_date ({balloon.isoformat()}) must be after start_date ({start.isoformat()})")
+        elif maturity and balloon > maturity:
+            errors.append(f"balloon_date ({balloon.isoformat()}) must be on or before the loan's maturity "
+                          f"({maturity.isoformat()}: start_date + {term} months)")
+
+    if values.get('balloon_payment') not in (None, '') and involved('balloon_payment', 'principal_amount'):
+        try:
+            balloon_payment = float(values['balloon_payment'])
+            principal = float(values.get('principal_amount') or 0)
+        except (TypeError, ValueError):
+            balloon_payment = None
+        if balloon_payment is not None and balloon_payment > principal + 0.005:
+            errors.append(f"balloon_payment ({balloon_payment:,.2f}) cannot be more than principal_amount "
+                          f"({principal:,.2f})")
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Schedule history: keep recorded rows, rebuild the rest
 # ---------------------------------------------------------------------------
@@ -410,27 +501,79 @@ def _last_kept_date(kept: List[Dict[str, Any]]) -> Optional[date]:
     return max(dates) if dates else None
 
 
-def _cycle_offset(start: date, freq_months: int, first_number: int, after: Optional[date]) -> int:
-    """Periods to push new installments so the first lands in a month after
-    the last kept row (0 when the loan's calendar already does)."""
-    if after is None:
-        return 0
-    k = first_number
-    while k < first_number + 1200 and _month_index(add_months(start, freq_months * k)) <= _month_index(after):
-        k += 1
-    return k - first_number
+def _history_anchor(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Where the kept history ends on the loan's calendar, as months after the
+    start date (`months`); the installments after it continue a payment
+    period apart from there.
+
+    * No history: 0, so installment n is due n periods after the start date.
+    * The last kept row (installment n0) dated within ON_CALENDAR_DAYS of its
+      calendar date (n0 periods after the start; schedules saved with
+      30.44-day steps drift a few days either side): that position, so the
+      next installment is due on its own calendar date and rows already on
+      their dates never move. The numbering of another payment frequency
+      counts too: history kept from before a frequency change.
+    * Otherwise (the start date changed, a frequency changed earlier, or the
+      history is far from its dates): the last calendar position on or
+      before the last kept date, so the next installment is the first one
+      a period after it and no period after it is left without a payment.
+      `pushed` when that is later than installment n0 + 1's own calendar date
+      (which falls on or before the last kept payment).
+
+    Also returns last_date (the latest kept date), number (the last kept
+    installment number) and numbered_date (its calendar date).
+    """
+    result: Dict[str, Any] = {'months': 0, 'last_date': None, 'number': 0, 'numbered_date': None, 'pushed': False}
+    if not kept:
+        return result
+    start, term, freq = terms['start'], terms['term'], terms['freq_months']
+    number = int(kept[-1].get('payment_number') or len(kept))
+    last = _last_kept_date(kept)
+    numbered = _installment_months(number, freq, term)
+    result.update(months=numbered, last_date=last, number=number, numbered_date=add_months(start, numbered))
+    if last is None:
+        return result
+    for per in [freq] + [m for m in sorted(set(FREQUENCY_MONTHS.values())) if m != freq]:
+        position = _installment_months(number, per, term)
+        if abs((last - add_months(start, position)).days) <= ON_CALENDAR_DAYS:
+            result['months'] = position
+            return result
+    position = max(_month_index(last) - _month_index(start), 0)
+    if position and add_months(start, position) > last:
+        position -= 1
+    following = add_months(start, _installment_months(number + 1, freq, term))
+    result.update(months=position, pushed=following <= last)
+    return result
 
 
 def _expected_dates(terms: Dict[str, Any], kept: List[Dict[str, Any]], rest: List[Dict[str, Any]]) -> List[str]:
-    """Calendar-correct due dates for the rows after the history: installment
-    n is due n periods after the start date (pushed past the last kept row
-    if the calendar would put it on or before it)."""
+    """Calendar-correct due dates for the rows after the history: a payment
+    period apart from where the history ends (`_history_anchor`), so
+    installment n is due n periods after the start date unless the history
+    is off that calendar; the one that would pass maturity at maturity."""
     if not rest or terms['start'] is None:
         return []
-    first = int(rest[0].get('payment_number') or 0)
-    offset = _cycle_offset(terms['start'], terms['freq_months'], first, _last_kept_date(kept))
-    return [add_months(terms['start'], terms['freq_months'] * (int(r.get('payment_number') or 0) + offset)).isoformat()
-            for r in rest]
+    anchor = _history_anchor(terms, kept)['months']
+    return [add_months(terms['start'], m).isoformat()
+            for m in _tail_months(anchor, terms['freq_months'], terms['term'], len(rest))]
+
+
+def _start_after_history(new_start: Optional[date], rows: List[Dict[str, Any]]) -> Optional[str]:
+    """Why a new start date cannot be used: it is after the payment history
+    that is kept as recorded (a loan cannot be repaid before it starts), or
+    None when it is fine."""
+    if new_start is None:
+        return None
+    kept, _ = _split_history(rows)
+    dates = sorted(d for r in kept for d in (_parse_day(r.get('payment_date')), _parse_day(r.get('actual_payment_date')))
+                   if d)
+    if not dates or new_start <= dates[0]:
+        return None
+    return (f"The new start date {_nice_date(new_start)} is after the payment history kept for this loan "
+            f"({_plural(len(kept), 'installment')} kept as recorded, the earliest dated {_nice_date(dates[0])}): a loan "
+            f"cannot be repaid before it starts, and recorded payments are never moved. Use a start date on or before "
+            f"{_nice_date(dates[0])}, or clear those payments' paid / skipped status, actual date, amount and note first.")
 
 
 def _unique_payment_id(cursor, loan_id: str, wanted: str, taken: set) -> str:
@@ -448,34 +591,72 @@ def _unique_payment_id(cursor, loan_id: str, wanted: str, taken: set) -> str:
         candidate = f"{wanted}-{uuid.uuid4().hex[:6]}"
 
 
-def _plan_regeneration(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _push_warning(terms: Dict[str, Any], anchor: Dict[str, Any], rows: List[Dict[str, Any]],
+                  final_rows: List[Dict[str, Any]], first_date: Optional[str]) -> str:
+    """Why the installments after the history are later than the start date's
+    calendar puts them (`_history_anchor` pushed them past the last kept
+    payment), with the payoff dates before and after."""
+    following = add_months(terms['start'], _installment_months(anchor['number'] + 1, terms['freq_months'], terms['term']))
+    text = (f"The recorded payments do not follow the loan's calendar from its start date ({_nice_date(terms['start'])}): "
+            f"installment {anchor['number'] + 1} would fall due on {_nice_date(following)}, on or before the last "
+            f"recorded payment ({_nice_date(anchor['last_date'])}). The installments after it continue on the calendar "
+            f"after that payment" + (f", from {_nice_date(first_date)}" if first_date else ""))
+    before = _summary(rows)['last_payment_date']
+    after = _summary(final_rows)['last_payment_date']
+    if before and after and before != after:
+        text += f"; the payoff moves from {_nice_date(before)} to {_nice_date(after)}"
+    return text + "."
+
+
+def _plan_regeneration(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]],
+                       previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Keep the history rows exactly; rebuild every installment after the
     last one from its remaining balance (the principal when there is no
-    history), numbered on from it, for the rest of the term."""
+    history), numbered on from it, a payment period apart on the loan's
+    calendar from where the history ends (`_history_anchor`) to maturity.
+
+    `previous` is the stored loan before an edit (None for a repair):
+
+    * a payment frequency change after recorded payments continues one new
+      period after the last kept payment, over the months left to maturity;
+    * a principal change after recorded payments adds the difference to the
+      balance the rebuilt installments repay (refused with 422 when the new
+      principal is less than what the kept payments already repaid).
+    """
     terms = _terms(loan)
     if terms['start'] is None:
         raise HTTPException(status_code=422, detail="The loan's start date is not a date (YYYY-MM-DD); fix it before rebuilding the schedule.")
     kept, rest = _split_history(rows)
     warnings: List[str] = []
+    anchor = _history_anchor(terms, kept)
+    recorded = sum(1 for r in kept if _is_recorded(r))
+    old = _terms(previous) if previous is not None else None
     if kept:
         opening = float(kept[-1].get('remaining_balance') or 0)
-        first_number = int(kept[-1].get('payment_number') or len(kept)) + 1
+        first_number = anchor['number'] + 1
+        delta = terms['principal'] - old['principal'] if old is not None else 0.0
+        if abs(delta) > 0.005:
+            if opening + delta < -0.005:
+                repaid = old['principal'] - opening
+                raise HTTPException(status_code=422, detail=(
+                    f"The new principal ({terms['principal']:,.2f}) is less than the {repaid:,.2f} already repaid by the "
+                    f"{_plural(len(kept), 'installment')} kept as recorded history, so the balance would be negative. "
+                    f"Enter a principal of at least {repaid:,.2f}, or clear those payments' paid status first."))
+            warnings.append(
+                f"Principal changed from {old['principal']:,.2f} to {terms['principal']:,.2f} after "
+                f"{_plural(recorded, 'recorded payment')}: those payments stay as recorded, and the difference of "
+                f"{abs(delta):,.2f} is {'added to' if delta > 0 else 'taken off'} the {opening:,.2f} owed after "
+                f"installment {anchor['number']}, so {opening + delta:,.2f} is repaid by the installments after it.")
+            opening = max(round(opening + delta, 2), 0.0)
     else:
         opening = terms['principal']
         first_number = 1
-    after = _last_kept_date(kept)
-    offset = _cycle_offset(terms['start'], terms['freq_months'], first_number, after)
-    if offset and kept:
-        warnings.append(
-            f"The start date puts installment {first_number} on or before the last recorded payment "
-            f"({after.isoformat()}); the new installments continue on the loan's calendar after it."
-        )
     loan_id = loan['loan_id']
     new = generate_amortization_schedule(
         loan_id, terms['principal'], terms['rate'], terms['term'], terms['start'].isoformat(),
         terms['payment_type'], terms['balloon_payment'],
         terms['balloon_date'].isoformat() if terms['balloon_date'] else None, terms['frequency'],
-        first_payment_number=first_number, opening_balance=opening, cycle_offset=offset,
+        first_payment_number=first_number, opening_balance=opening, anchor_months=anchor['months'],
     )
     taken = {r.get('payment_id') for r in kept}
     new_rows = []
@@ -483,14 +664,51 @@ def _plan_regeneration(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]])
         row = p.model_dump()
         row['payment_id'] = _unique_payment_id(cursor, loan_id, row['payment_id'], taken)
         new_rows.append(row)
+    final_rows = kept + new_rows
+    first_date = new_rows[0]['payment_date'] if new_rows else None
+    maturity = add_months(terms['start'], terms['term'])
+
+    if kept and old is not None and old['frequency'] != terms['frequency'] and new_rows:
+        months_left = terms['term'] - anchor['months']
+        unit = PERIOD_NAMES.get(terms['freq_months'], 'period')
+        warnings.append(
+            f"Payment frequency changed from {old['frequency']} to {terms['frequency']} after "
+            f"{_plural(recorded, 'recorded payment')}: the {opening:,.2f} still owed is re-amortised over the "
+            + (f"{_plural(months_left, 'month')} left to maturity ({_nice_date(maturity)}) " if months_left > 0 else "")
+            + f"as {_plural(len(new_rows), terms['frequency'] + ' installment')}, the first on {_nice_date(first_date)}, "
+            f"one {unit} after the last kept payment; each installment's interest covers the months since the one before.")
+    elif kept and anchor['pushed']:
+        warnings.append(_push_warning(terms, anchor, rows, final_rows, first_date))
     if kept and opening <= 0.005 and rest:
         warnings.append("The recorded payments already repay the loan; the unpaid installments after them are removed.")
-    if kept and int(kept[-1].get('payment_number') or 0) >= terms['term'] // max(terms['freq_months'], 1) and new_rows:
+    if kept and anchor['months'] >= terms['term'] and new_rows:
         warnings.append("The recorded payments run to the end of the term with a balance left; one final installment pays it off.")
+    elif new_rows and terms['freq_months'] > 1 and terms['term'] % terms['freq_months']:
+        warnings.append(
+            f"The term ({terms['term']} months) is not a whole number of {PERIOD_NAMES[terms['freq_months']]}s: the last "
+            f"installment, at maturity ({_nice_date(maturity)}), covers the "
+            f"{_plural(terms['term'] % terms['freq_months'], 'month')} left.")
+    warnings += _balloon_notes(terms, new_rows)
     return {
         'action': 'regenerate', 'kept': kept, 'removed': rest, 'new': new_rows, 'redated': [],
-        'final_rows': kept + new_rows, 'opening_balance': opening, 'warnings': warnings,
+        'final_rows': final_rows, 'opening_balance': opening, 'anchor_months': anchor['months'], 'warnings': warnings,
     }
+
+
+def _balloon_notes(terms: Dict[str, Any], new_rows: List[Dict[str, Any]]) -> List[str]:
+    """An interest-only loan's balloon repays the whole balance owed: say so
+    when the stored balloon_payment is a different amount."""
+    if terms['payment_type'] != 'interest_only' or not new_rows:
+        return []
+    try:
+        stated = float(terms['balloon_payment'] or 0)
+    except (TypeError, ValueError):
+        return []
+    balloon = new_rows[-1]
+    if stated <= 0 or abs(stated - float(balloon['principal_payment'] or 0)) <= 1.0:
+        return []
+    return [f"balloon_payment ({stated:,.2f}) is not used for an interest-only loan: the balloon installment on "
+            f"{_nice_date(balloon['payment_date'])} repays the balance owed, {float(balloon['principal_payment']):,.2f}."]
 
 
 def _no_plan(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -499,10 +717,14 @@ def _no_plan(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Totals, payoff date and next unpaid installment of a schedule."""
+    """Totals, payoff date and next unpaid installment of a schedule.
+    payoff_date is the last installment's date only when it brings the
+    balance to zero (None when money is still owed after it);
+    last_payment_date is the last installment's date either way."""
     ordered = sorted(rows, key=lambda r: int(r.get('payment_number') or 0))
     _, rest = _split_history(ordered)
     last = ordered[-1] if ordered else {}
+    final_balance = round(float(last.get('remaining_balance') or 0), 2) if ordered else None
 
     def total(key):
         return round(sum(float(r.get(key) or 0) for r in ordered), 2)
@@ -514,8 +736,9 @@ def _summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         'total_payments': total('payment_amount'),
         'total_principal': total('principal_payment'),
         'total_interest': total('interest_payment'),
-        'payoff_date': last.get('payment_date') if ordered else None,
-        'final_balance': round(float(last.get('remaining_balance') or 0), 2) if ordered else None,
+        'payoff_date': last.get('payment_date') if ordered and final_balance <= 0.01 else None,
+        'last_payment_date': last.get('payment_date') if ordered else None,
+        'final_balance': final_balance,
         'next_payment_date': rest[0].get('payment_date') if rest else None,
     }
 
@@ -565,7 +788,10 @@ def _apply_plan(cursor, loan: Dict[str, Any], plan: Dict[str, Any]) -> None:
         terms = _terms(loan)
         opening = plan['opening_balance'] if plan['opening_balance'] is not None else terms['principal']
         if plan['kept']:
-            remaining_months = max(terms['term'] - int(plan['kept'][-1].get('payment_number') or 0) * terms['freq_months'], 1)
+            anchor = plan.get('anchor_months')
+            if anchor is None:
+                anchor = _installment_months(int(plan['kept'][-1].get('payment_number') or 0), terms['freq_months'], terms['term'])
+            remaining_months = max(terms['term'] - anchor, 1)
             monthly = calculate_loan_payment(opening, terms['rate'], remaining_months, terms['payment_type']) if opening > 0.005 else 0
         else:
             monthly = calculate_loan_payment(terms['principal'], terms['rate'], max(terms['term'], 1), terms['payment_type'])
@@ -611,11 +837,16 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
     }
     issues: List[str] = []
 
+    # The statements only read active loans, so an inactive one's schedule
+    # cannot put anything in the wrong month there until it is reactivated.
+    active = entry['is_active']
+    inactive_note = "" if active else " The loan is inactive, so it is not on the statements until it is reactivated."
+
     if terms['start'] is None:
         issues.append('bad_start_date')
         entry.update(issues=issues, needs_recompute=False, proposed_action='fix_loan_terms',
-                     statement_impact=True, severity='warning',
-                     summary=f"The start date '{loan.get('start_date')}' is not a date, so the payment calendar cannot be checked. Edit the loan and enter the start date.")
+                     statement_impact=active, severity='warning' if active else 'info',
+                     summary=f"The start date '{loan.get('start_date')}' is not a date, so the payment calendar cannot be checked. Edit the loan and enter the start date." + inactive_note)
         return entry
 
     if not rows:
@@ -674,13 +905,14 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
             balance = remaining
 
         # Completeness: the schedule stops before the end of the term with money
-        # still owed, or (amortizing loans) runs the full term but does not pay
-        # the loan off (old quarterly / annual maths left a residue).
+        # still owed, or ends without paying the loan off (old quarterly /
+        # annual maths left a residue; old interest-only schedules without a
+        # balloon date never repaid the principal).
         last = rows[-1]
-        total_periods = terms['term'] // terms['freq_months']
+        total_periods = _installments(terms['term'], terms['freq_months'])
         left = float(last.get('remaining_balance') or 0)
         stops_early = left > 0.01 and int(last.get('payment_number') or 0) < total_periods
-        not_repaid = terms['payment_type'] == 'amortizing' and left > 1.0
+        not_repaid = left > 1.0
         if stops_early or not_repaid:
             issues.append('incomplete')
             entry['balance_left'] = round(left, 2)
@@ -689,7 +921,8 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
     if not issues:
         return None
     needs_recompute = any(i in issues for i in ('no_schedule', 'numbering_gap', 'balance_break', 'incomplete'))
-    statement_impact = needs_recompute or bool(entry['wrong_month'] or entry['missing_dates'] or entry['out_of_order'])
+    statement_impact = active and (needs_recompute
+                                   or bool(entry['wrong_month'] or entry['missing_dates'] or entry['out_of_order']))
 
     parts = []
     if 'no_schedule' in issues:
@@ -715,6 +948,7 @@ def _audit_loan(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Optional[Di
     summary = summary[:1].upper() + summary[1:] + "."
     if entry['paid_rows']:
         summary += f" {_plural(entry['paid_rows'], 'paid payment')} will be kept as recorded."
+    summary += inactive_note
 
     entry.update(
         issues=issues,
@@ -760,8 +994,15 @@ def schedule_audit(cursor) -> List[Dict[str, Any]]:
     examples (up to 3 {payment_number, stored_date, expected_date, issue}),
     needs_recompute, proposed_action ('redate' | 'regenerate' |
     'fix_loan_terms'), statement_impact (payments land in the wrong month or
-    are missing on the statements), severity ('warning' | 'info'), summary
-    (one plain sentence) and action. Never writes.
+    are missing on the statements, or the loan is not fully repaid there;
+    always false for an inactive loan, which the statements do not read),
+    severity ('warning' when statement_impact, else 'info'), summary (one
+    plain sentence) and action. Never writes.
+
+    Calendar-correct dates come from `_history_anchor`: installment n is due
+    n periods after the start date (the last one at maturity when the term
+    is not a whole number of periods); after kept history that is off that
+    calendar, the installments continue a period apart after it.
     """
     return _audit_report(cursor)[0]
 
@@ -785,16 +1026,21 @@ def _plan_repair(cursor, loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> Di
     kept, rest = _split_history(rows)
     redated = []
     final_rows = list(kept)
-    for row, exp in zip(rest, _expected_dates(terms, kept, rest)):
+    expected = _expected_dates(terms, kept, rest)
+    for row, exp in zip(rest, expected):
         current = str(row.get('payment_date') or '').strip()
         if current != exp:
             redated.append({'payment_number': row.get('payment_number'), 'from_date': row.get('payment_date'),
                             'to_date': exp, '_rowid': row['_rowid']})
             row = dict(row, payment_date=exp)
         final_rows.append(row)
+    warnings = []
+    anchor = _history_anchor(terms, kept)
+    if redated and anchor['pushed']:
+        warnings.append(_push_warning(terms, anchor, rows, final_rows, expected[0] if expected else None))
     return {
         'action': 'redate' if redated else 'none', 'kept': kept if redated else [], 'removed': [], 'new': [],
-        'redated': redated, 'final_rows': final_rows, 'opening_balance': None, 'warnings': [], 'audit': audit,
+        'redated': redated, 'final_rows': final_rows, 'opening_balance': None, 'warnings': warnings, 'audit': audit,
     }
 
 
@@ -814,6 +1060,9 @@ def _describe_plan(plan: Dict[str, Any], payload: Dict[str, Any]) -> str:
         text += f"{_plural(counts['removed'], 'unpaid installment')} replaced with {counts['added']} new"
         if after.get('payoff_date'):
             text += f", payoff {_nice_date(after['payoff_date'])}"
+        elif after.get('last_payment_date') and (after.get('final_balance') or 0) > 0.01:
+            text += (f", last installment {_nice_date(after['last_payment_date'])} with "
+                     f"${after['final_balance']:,.2f} still owed")
         return text
     if plan['action'] == 'redate':
         return (f"{_plural(counts['redated'], 'unpaid installment')} moved onto calendar dates, amounts unchanged"
@@ -823,12 +1072,20 @@ def _describe_plan(plan: Dict[str, Any], payload: Dict[str, Any]) -> str:
 
 @router.post("/", response_model=ForecastResponse)
 async def create_loan(loan_data: LoanCreate):
-    """Create a new loan and generate its amortization schedule"""
+    """
+    Create a new loan and generate its amortization schedule (see
+    `generate_amortization_schedule`). Refused with 422 when a value is
+    invalid, the term is not a whole number of payment periods, the balloon
+    date is not after the start date and on or before maturity, or the
+    balloon payment is more than the principal. Response data: loan_id,
+    payments_generated and warnings.
+    """
     conn = None
     try:
         from db.database import db_manager
 
-        errors = _validation_errors(loan_data.model_dump())
+        values = loan_data.model_dump()
+        errors = _validation_errors(values) or _cross_field_errors(values)
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
         start_date = _store_value('start_date', loan_data.start_date)
@@ -901,9 +1158,12 @@ async def create_loan(loan_data: LoanCreate):
         conn.commit()
         db_manager.close_connection(conn)
 
+        warnings = _balloon_notes(_terms({**values, 'start_date': start_date, 'payment_type': payment_type,
+                                          'payment_frequency': payment_frequency}),
+                                  [p.model_dump() for p in payments])
         return ForecastResponse(
             status="success",
-            data={"loan_id": loan_id, "payments_generated": len(payments)},
+            data={"loan_id": loan_id, "payments_generated": len(payments), "warnings": warnings},
             message=f"Loan '{loan_data.loan_name}' created successfully with {len(payments)} scheduled payments"
         )
 
@@ -1339,85 +1599,83 @@ async def get_loan_cash_flow_projection(
     start_period: str = Query(..., description="Start period in YYYY-MM format"),
     end_period: str = Query(..., description="End period in YYYY-MM format")
 ):
-    """Get loan payment cash flow projection for specified period range"""
+    """
+    Debt service and debt per month over a window, from the saved schedules
+    of the active loans (the rows the statements book). Every month in the
+    window is listed, with zero flows when nothing is due.
+
+    Per month: total_principal, total_interest, total_payment, loan_proceeds
+    and remaining_balance, the debt owed at the end of the month: the
+    opening balance plus proceeds minus principal, rolled forward exactly as
+    the balance sheet's debt line (`services.financial_statements.
+    loans_by_period`). loan_payments lists each loan with a payment or
+    proceeds that month (loan_id, loan_name, lender, loan_type,
+    principal_payment, interest_payment, payment_amount, payment_count,
+    loan_proceeds, remaining_balance).
+    """
+    try:
+        periods = period_range(start_period, end_period)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"{e} (periods are YYYY-MM)")
     conn = None
     try:
         from db.database import db_manager
-        
+
         conn = db_manager.get_connection()
         cursor = conn.cursor()
-        
-        # Convert periods to date range
-        start_date = f"{start_period}-01"
-        end_date = f"{end_period}-31"  # End of month
-        
-        cursor.execute("""
-            SELECT 
-                strftime('%Y-%m', lp.payment_date) as period,
-                l.loan_name,
-                l.lender,
-                l.loan_type,
-                SUM(lp.principal_payment) as total_principal,
-                SUM(lp.interest_payment) as total_interest,
-                SUM(lp.payment_amount) as total_payment,
-                COUNT(*) as payment_count
-            FROM loan_payments lp
-            JOIN loans l ON lp.loan_id = l.loan_id
-            WHERE lp.payment_date >= ? AND lp.payment_date <= ?
-              AND l.is_active = 1
-            GROUP BY strftime('%Y-%m', lp.payment_date), l.loan_id
-            ORDER BY period, l.loan_name
-        """, (start_date, end_date))
-        
-        payment_data = cursor.fetchall()
-        
-        # Group by period
-        projections = {}
-        for row in payment_data:
-            period = row[0]
-            if period not in projections:
-                projections[period] = {
-                    "period": period,
-                    "loan_payments": [],
-                    "total_principal": 0,
-                    "total_interest": 0,
-                    "total_payment": 0,
-                    "remaining_balance": 0
-                }
-            
-            loan_payment = {
-                "loan_name": row[1],
-                "lender": row[2],
-                "loan_type": row[3],
-                "principal_payment": row[4],
-                "interest_payment": row[5],
-                "payment_amount": row[6],
-                "payment_count": row[7]
-            }
-            
-            projections[period]["loan_payments"].append(loan_payment)
-            projections[period]["total_principal"] += row[4]
-            projections[period]["total_interest"] += row[5]
-            projections[period]["total_payment"] += row[6]
-        
-        # Calculate remaining balance for each period
-        for period in sorted(projections.keys()):
-            cursor.execute("""
-                SELECT SUM(l.current_balance) as total_balance
-                FROM loans l
-                WHERE l.is_active = 1
-            """)
-            balance_row = cursor.fetchone()
-            projections[period]["remaining_balance"] = balance_row[0] if balance_row[0] else 0
-        
+        flows = loans_by_period(cursor, periods)
+        window = set(periods)
+        cursor.execute("SELECT loan_id, loan_name, lender, loan_type FROM loans WHERE is_active = 1")
+        names = {row[0]: row[1:] for row in cursor.fetchall()}
+        # Payment amounts and counts per loan and month, dated as the engine dates them.
+        paid: Dict[Tuple[str, str], List[float]] = {}
+        cursor.execute("SELECT lp.loan_id, lp.payment_date, lp.payment_amount FROM loan_payments lp "
+                       "JOIN loans l ON l.loan_id = lp.loan_id WHERE l.is_active = 1")
+        for loan_id, pay_date, amount in cursor.fetchall():
+            day = _engine_date(pay_date)
+            period = day.strftime("%Y-%m") if day else None
+            if period in window:
+                slot = paid.setdefault((loan_id, period), [0.0, 0])
+                slot[0] += float(amount or 0)
+                slot[1] += 1
+
+        balances = {loan_id: float(entry["opening_balance"]) for loan_id, entry in flows["by_loan"].items()}
+        debt = float(flows["opening_debt"])
+        projections = []
+        for period in periods:
+            debt += flows["proceeds"][period] - flows["principal"][period]
+            loan_rows = []
+            for loan_id, entry in flows["by_loan"].items():
+                balances[loan_id] += entry["proceeds"][period] - entry["principal"][period]
+                amount, count = paid.get((loan_id, period), (0.0, 0))
+                if not count and not entry["proceeds"][period]:
+                    continue
+                loan_name, lender, loan_type = names.get(loan_id, (entry.get("loan_name"), None, None))
+                loan_rows.append({
+                    "loan_id": loan_id, "loan_name": loan_name, "lender": lender, "loan_type": loan_type,
+                    "principal_payment": round(entry["principal"][period], 2),
+                    "interest_payment": round(entry["interest"][period], 2),
+                    "payment_amount": round(amount, 2), "payment_count": count,
+                    "loan_proceeds": round(entry["proceeds"][period], 2),
+                    "remaining_balance": round(balances[loan_id], 2),
+                })
+            loan_rows.sort(key=lambda r: (str(r["loan_name"] or ""), r["loan_id"]))
+            projection = CashFlowProjection(
+                period=period, loan_payments=loan_rows,
+                total_principal=round(flows["principal"][period], 2),
+                total_interest=round(flows["interest"][period], 2),
+                total_payment=round(flows["payments"][period], 2),
+                remaining_balance=round(debt, 2),
+            ).model_dump()
+            projection["loan_proceeds"] = round(flows["proceeds"][period], 2)
+            projections.append(projection)
+
         db_manager.close_connection(conn)
-        
-        projection_list = [CashFlowProjection(**data) for data in projections.values()]
-        
+
         return ForecastResponse(
             status="success",
-            data={"projections": [p.dict() for p in projection_list]},
-            message=f"Retrieved cash flow projections for {len(projection_list)} periods"
+            data={"projections": projections},
+            message=f"Retrieved cash flow projections for {len(projections)} periods"
         )
         
     except HTTPException:
@@ -1458,17 +1716,30 @@ async def update_loan(
       actual_payment_amount or note) exactly as stored. Installments after it
       are replaced: they start from that row's remaining_balance (the
       principal when there is no history), are numbered on from its
-      payment_number, re-amortised over the rest of the term and dated on
-      calendar months (installment n = start date + n payment periods, day
-      clamped to month end; pushed past the last recorded payment if a start
-      date change would date them on or before it).
+      payment_number, re-amortised over the months left to maturity and
+      dated on calendar months (installment n = start date + n payment
+      periods, day clamped to month end; when the history is off that
+      calendar, e.g. after a start date change, they continue on the
+      calendar after the last recorded payment, with a warning giving the
+      old and new payoff dates).
+    * A payment_frequency change after recorded payments continues one new
+      period after the last kept payment, to maturity; each installment's
+      interest covers the months since the one before (warning).
+    * A principal_amount change after recorded payments adds the difference
+      to the balance the rebuilt installments repay (warning); 422 when the
+      new principal is less than what the kept payments already repaid.
+    * 422 when start_date would be after the payment history kept as
+      recorded, when the term is not a whole number of payment periods, or
+      when the balloon date / payment do not fit the loan (checked on the
+      stored loan with the changes applied, only for the fields changed).
     * `?preview=true` (or `"preview": true` in the body) returns the same
-      answer without writing anything.
+      answer without writing anything; the flag is never a loan field.
 
     Response data: loan_id, preview, changed_fields, changes {field: {from,
     to}}, action ('none' | 'regenerate'), schedule {regenerated, kept_paid,
     kept, removed, added, redated}, before / after {payments, paid, recorded,
-    total_payments, total_principal, total_interest, payoff_date,
+    total_payments, total_principal, total_interest, payoff_date (null when
+    the last installment leaves money owed), last_payment_date,
     final_balance, next_payment_date}, kept_rows, removed_rows, new_rows,
     redated_rows, warnings.
     """
@@ -1484,7 +1755,10 @@ async def update_loan(
             raise HTTPException(status_code=404, detail="Loan not found")
 
         body = loan_update.model_dump(exclude_unset=True)
-        preview = bool(preview or body.pop('preview', None))
+        # Always take the body flag out (even when the query flag is set), so
+        # it is never compared or saved as a loan field.
+        body_preview = body.pop('preview', None)
+        preview = bool(preview or body_preview)
         values = {k: v for k, v in body.items() if v is not None}
         if not values:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -1496,10 +1770,17 @@ async def update_loan(
         updated = dict(loan)
         for field in changed:
             updated[field] = _store_value(field, values[field])
+        errors = _cross_field_errors(updated, changed)
+        if errors:
+            raise HTTPException(status_code=422, detail="; ".join(errors))
         schedule_changed = [f for f in changed if f in SCHEDULE_FIELDS]
 
         rows = _load_rows(cursor, loan_id)
-        plan = _plan_regeneration(cursor, updated, rows) if schedule_changed else _no_plan(rows)
+        if 'start_date' in schedule_changed:
+            problem = _start_after_history(_parse_day(updated.get('start_date')), rows)
+            if problem:
+                raise HTTPException(status_code=422, detail=problem)
+        plan = _plan_regeneration(cursor, updated, rows, previous=loan) if schedule_changed else _no_plan(rows)
         payload = _plan_payload(rows, plan)
 
         if not changed:
