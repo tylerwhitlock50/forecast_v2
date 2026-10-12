@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import VarianceReport, { buildActualsTemplate } from '../components/VarianceReport';
+import VarianceReport, { buildActualsTemplate, saveMessage } from '../components/VarianceReport';
 import api from '../../../../lib/apiClient';
 
 jest.mock('../../../../lib/apiClient', () => ({
@@ -105,8 +105,12 @@ const actualsFor = (period) => ({
     : []
 });
 
+let currentVariance = variancePayload;
+
 const mockGet = (url) => {
-  if (url.startsWith('/reporting/variance')) return Promise.resolve({ status: 'success', data: variancePayload });
+  if (url.startsWith('/reporting/variance')) return Promise.resolve({ status: 'success', data: currentVariance });
+  if (url.startsWith('/reporting/actuals/batches')) return Promise.resolve({ status: 'success', data: { batches: [], total_count: 0 } });
+  if (url.startsWith('/reporting/actuals/periods')) return Promise.resolve({ status: 'success', data: { periods: [], closed_periods: [] } });
   if (url.startsWith('/reporting/actuals/line-items')) return Promise.resolve({ status: 'success', data: lineItemsPayload });
   if (url.startsWith('/reporting/actuals?')) {
     const period = new URLSearchParams(url.split('?')[1]).get('start_period');
@@ -120,8 +124,13 @@ const rowFor = (lineItem) => screen.getByTestId(`variance-row-${lineItem}`);
 describe('VarianceReport', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    currentVariance = variancePayload;
     api.get.mockImplementation(mockGet);
-    api.post.mockResolvedValue({ status: 'success', data: { saved: 2 }, message: 'Saved' });
+    api.post.mockResolvedValue({
+      status: 'success',
+      data: { outcome: 'imported', written: true, inserted: 0, updated: 2, unchanged: 0, rejected: 0, batch_id: 'ACT-1a2b3c4d' },
+      message: 'Imported actuals'
+    });
     api.delete.mockResolvedValue({ status: 'success', data: { deleted: 2 }, message: 'Deleted' });
   });
 
@@ -221,7 +230,63 @@ describe('VarianceReport', () => {
       ])
     );
     expect(body.entries.find(e => e.line_item === 'capex')).toBeUndefined();
-    await screen.findByText(/Saved 2 actual/);
+    await screen.findByText(/Saved 2 actual\(s\) for Feb 2026 \(2 changed\)/);
+    expect(body.source).toBe('manual');
+  });
+
+  it('shows why nothing was saved when the save is refused', async () => {
+    api.post.mockRejectedValue({
+      response: {
+        status: 409,
+        data: {
+          status: 'rejected',
+          detail: 'Nothing imported. This would change closed months: Feb 2026 (1 row).',
+          data: { outcome: 'rejected', message: 'Nothing imported. This would change closed months: Feb 2026 (1 row).', closed_periods: [{ period: '2026-02', rows: 1 }] }
+        }
+      }
+    });
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+    await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toHaveValue(95000));
+    fireEvent.click(screen.getByText('Save actuals'));
+    expect(await screen.findByTestId('actuals-entry-status')).toHaveTextContent('closed months: Feb 2026');
+  });
+
+  it('locks a closed month: badge, "(closed)" in the pickers, entry form disabled', async () => {
+    currentVariance = { ...variancePayload, closed_periods: ['2026-02'] };
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+    await waitFor(() => expect(screen.getByLabelText('Period')).toHaveValue('2026-02'));
+
+    expect(screen.getByTestId('selected-period-closed')).toHaveTextContent('Feb 2026 is closed');
+    expect(within(screen.getByLabelText('Period')).getByText(/Feb 2026 • \(closed\)/)).toBeInTheDocument();
+    expect(screen.getByTestId('entry-period-closed')).toHaveTextContent('Feb 2026 is closed');
+    await waitFor(() => expect(screen.getByLabelText(/^Revenue/)).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Save actuals' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Clear period' })).toBeDisabled();
+
+    // January is open: the form works again.
+    fireEvent.change(screen.getByLabelText('Entry period'), { target: { value: '2026-01' } });
+    expect(screen.queryByTestId('entry-period-closed')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Revenue/)).not.toBeDisabled();
+  });
+
+  it('opens the import dialog and the close / history tabs', async () => {
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+    await screen.findByTestId('variance-table');
+    fireEvent.click(screen.getByTestId('open-actuals-import'));
+    expect(await screen.findByText('Choose file')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Cancel'));
+    await waitFor(() => expect(screen.queryByText('Choose file')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Month-end close'));
+    await screen.findByTestId('actuals-close-panel');
+    expect(api.get).toHaveBeenCalledWith('/reporting/actuals/periods?start_period=2026-01&end_period=2026-03', expect.anything());
+    fireEvent.click(screen.getByText('Import history'));
+    expect(await screen.findByText(/No actuals have been imported/)).toBeInTheDocument();
+  });
+
+  it('describes a save in plain words', () => {
+    expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 2 }, '2026-02')).toBe('Saved 3 actual(s) for Feb 2026 (1 new, 2 changed).');
+    expect(saveMessage({ outcome: 'unchanged', inserted: 0, updated: 0, unchanged: 3 }, '2026-02')).toMatch(/Nothing changed for Feb 2026/);
   });
 
   it('clears a period after confirmation', async () => {
@@ -230,7 +295,7 @@ describe('VarianceReport', () => {
     await waitFor(() => expect(screen.getByLabelText('Period')).toHaveValue('2026-02'));
 
     fireEvent.click(screen.getByText('Clear period'));
-    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/reporting/actuals?period=2026-02'));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/reporting/actuals?period=2026-02', { suppressErrorToast: true }));
     confirmSpy.mockRestore();
   });
 

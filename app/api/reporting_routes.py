@@ -13,13 +13,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from db.database import db_manager
 from db.models import (
-    ActualsUpsertRequest,
     CapitalExpenditureCreate,
     CapitalExpenditureUpdate,
     FinancialAssumptionsUpdate,
@@ -36,6 +35,7 @@ from services.financial_statements import (
     statements_to_rows,
     validate_period,
 )
+from services import actuals as actuals_service
 from services.operations_forecast import (
     DEFAULT_HOURS_PER_FTE,
     build_cogs_forecast,
@@ -345,12 +345,15 @@ async def get_variance(
     start_period: str = Query(...),
     end_period: str = Query(...),
 ):
-    """Budget (from the statements) versus recorded actuals, by line and period."""
+    """Budget (from the statements) versus recorded actuals, by line and period.
+    Also lists the window's closed months (``closed_periods``)."""
     ids = _parse_forecast_ids(forecast_ids)
     _check_window(start_period, end_period)
     conn = db_manager.get_connection()
     try:
-        variance = build_variance(conn.cursor(), ids, start_period, end_period)
+        cursor = conn.cursor()
+        variance = build_variance(cursor, ids, start_period, end_period)
+        variance["closed_periods"] = actuals_service.closed_in_window(cursor, start_period, end_period)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -361,10 +364,52 @@ async def get_variance(
     return ForecastResponse(status="success", data=variance, message="Variance report built")
 
 
+# ---------------------------------------------------------------------------
+# Actuals: entry, import, batches, month-end close (logic in services.actuals)
+# ---------------------------------------------------------------------------
+
+def _actuals_error(exc: "actuals_service.ActualsError") -> JSONResponse:
+    content: Dict[str, Any] = {"status": "error", "detail": str(exc), "message": str(exc)}
+    if exc.data is not None:
+        content["data"] = exc.data
+    return JSONResponse(status_code=exc.status, content=content)
+
+
+def _import_response(status_code: int, report: Dict[str, Any]):
+    """A refused write: 422 / 409 with the explanation in ``detail`` and the full report in ``data``."""
+    if status_code >= 400:
+        return JSONResponse(status_code=status_code, content={
+            "status": "rejected", "detail": report["message"], "message": report["message"], "data": report,
+        })
+    return ForecastResponse(status="success", data=report, message=report["message"])
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _run_actuals_import(rows, *, dry_run, allow_partial, combine_duplicates, control_total, source, filename,
+                        note, file_info=None):
+    conn = db_manager.get_connection()
+    try:
+        return actuals_service.run_import(
+            conn, rows, dry_run=dry_run, allow_partial=allow_partial, combine_duplicates=combine_duplicates,
+            control_total=control_total, source=source, filename=filename, note=note, file_info=file_info)
+    finally:
+        db_manager.close_connection(conn)
+
+
 @router.get("/actuals/line-items", response_model=ForecastResponse)
 async def get_actual_line_items():
-    """The statement lines actuals can be recorded against."""
-    items = [{"line_item": k, **v} for k, v in VARIANCE_LINE_ITEMS.items()]
+    """The statement lines actuals can be recorded against, with the names an import accepts for each."""
+    items = []
+    for key, meta in VARIANCE_LINE_ITEMS.items():
+        aliases = [a for a in actuals_service.LINE_ALIASES.get(key, ())]
+        items.append({"line_item": key, **meta, "aliases": aliases})
     return ForecastResponse(status="success", data={"line_items": items}, message="Line items")
 
 
@@ -376,102 +421,96 @@ async def get_actuals(
     _check_window(start_period, end_period)
     conn = db_manager.get_connection()
     try:
-        rows = load_actuals(conn.cursor(), start_period, end_period)
+        cursor = conn.cursor()
+        rows = load_actuals(cursor, start_period, end_period)
+        cursor.execute("SELECT actual_id, batch_id FROM actuals WHERE period >= ? AND period <= ?",
+                       (start_period, end_period))
+        batch_of = dict(cursor.fetchall())
+        for row in rows:
+            row.setdefault("batch_id", batch_of.get(row.get("actual_id")))
+        closed = actuals_service.closed_in_window(cursor, start_period, end_period)
     finally:
         db_manager.close_connection(conn)
-    return ForecastResponse(status="success", data={"actuals": rows}, message=f"Retrieved {len(rows)} actuals")
-
-
-def _upsert_actuals(cursor, entries: List[Dict[str, Any]]) -> int:
-    count = 0
-    for entry in entries:
-        period = validate_period(entry["period"])
-        line_item = str(entry["line_item"]).strip()
-        if line_item not in VARIANCE_LINE_ITEMS:
-            raise ValueError(f"Unknown line_item '{line_item}'")
-        reference_id = entry.get("reference_id") or ""
-        cursor.execute(
-            """
-            INSERT INTO actuals (actual_id, period, line_item, amount, reference_id, source, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(period, line_item, reference_id) DO UPDATE SET
-                amount = excluded.amount,
-                source = excluded.source,
-                notes = excluded.notes,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (f"ACT-{uuid.uuid4().hex[:10]}", period, line_item, float(entry["amount"]),
-             reference_id, entry.get("source"), entry.get("notes")),
-        )
-        count += 1
-    return count
+    return ForecastResponse(status="success", data={"actuals": rows, "closed_periods": closed},
+                            message=f"Retrieved {len(rows)} actuals")
 
 
 @router.post("/actuals", response_model=ForecastResponse)
-async def upsert_actuals(request: ActualsUpsertRequest):
-    """Create or update actuals; (period, line_item, reference_id) is the key."""
-    conn = db_manager.get_connection()
+async def upsert_actuals(
+    payload: Dict[str, Any] = Body(...),
+    dry_run: Optional[bool] = Query(None),
+    allow_partial: Optional[bool] = Query(None),
+    combine_duplicates: Optional[bool] = Query(None),
+    control_total: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+):
+    """
+    Create or update actuals from JSON: ``{entries: [{period, line_item, amount, reference_id?, notes?,
+    source?}], dry_run?, allow_partial?, combine_duplicates?, control_total?, source?, filename?, note?,
+    first_row_number? | row_numbers?}`` (flags may also be query parameters; the body wins). Column
+    names go through the same aliases as a file import (Month, Account, Actual ...). Same pipeline and answers
+    as the file import: (period, line_item, reference_id) is the key; atomic unless allow_partial; a
+    refused write is 422 (409 for a closed month) with the report in ``data``.
+    """
+    if not isinstance(payload, dict):
+        return _actuals_error(actuals_service.ActualsError("Send {entries: [...]}"))
+    entries = payload.get("entries", payload.get("rows"))
+
+    def pick(name, query_value):
+        return payload[name] if name in payload and payload[name] is not None else query_value
+
     try:
-        count = _upsert_actuals(conn.cursor(), [e.dict() for e in request.entries])
-        conn.commit()
-    except ValueError as exc:
-        conn.rollback()
-        raise HTTPException(status_code=422, detail=str(exc))
-    finally:
-        db_manager.close_connection(conn)
-    return ForecastResponse(status="success", data={"saved": count}, message=f"Saved {count} actual(s)")
+        first_row = int(payload.get("first_row_number") or 1)
+        rows = actuals_service.rows_from_entries(entries, first_row, payload.get("row_numbers"))
+        control = actuals_service.parse_control_total(pick("control_total", control_total))
+        status_code, report = await run_in_threadpool(
+            _run_actuals_import, rows,
+            dry_run=_flag(pick("dry_run", dry_run)),
+            allow_partial=_flag(pick("allow_partial", allow_partial)),
+            combine_duplicates=_flag(pick("combine_duplicates", combine_duplicates)),
+            control_total=control, source=pick("source", source) or "api",
+            filename=payload.get("filename"), note=payload.get("note"))
+    except actuals_service.ActualsError as exc:
+        return _actuals_error(exc)
+    except (TypeError, ValueError) as exc:
+        return _actuals_error(actuals_service.ActualsError(str(exc)))
+    return _import_response(status_code, report)
 
 
 @router.post("/actuals/import", response_model=ForecastResponse)
-async def import_actuals(file: UploadFile = File(...), source: Optional[str] = Query(None)):
+async def import_actuals(
+    file: UploadFile = File(...),
+    source: Optional[str] = Query(None, description="Where the numbers come from (default: the file name)"),
+    dry_run: bool = Query(False, description="Check the file and report what would happen; write nothing"),
+    allow_partial: bool = Query(False, description="Write the valid rows even if some rows are rejected"),
+    combine_duplicates: bool = Query(False, description="Add up rows with the same period, line and reference"),
+    control_total: Optional[str] = Query(None, description="The file's amounts must add up to this (within 0.005)"),
+    sheet: Optional[str] = Query(None, description="Excel sheet (default: the first with period / line / amount columns)"),
+    note: Optional[str] = Query(None, description="A note kept with the import batch"),
+):
     """
-    Import actuals from CSV with columns: period, line_item, amount
-    (optional: reference_id, notes).
+    Import actuals from a CSV or XLSX file: one row per month and line with the columns period,
+    line_item and amount (optional reference_id, notes). Common header names are accepted (Month,
+    Account, Line, Actual, Ref, Memo) and line items may be keys, labels or common names ('Net Sales').
+    Atomic: any rejected row and nothing is written (422, or 409 when a row would change a closed month,
+    with the full report in ``data``) unless allow_partial. A dry run always answers 200 with the report
+    (``outcome`` = what a real import would do). Every write is recorded as a batch you can undo.
     """
     raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=422, detail="File must be UTF-8 encoded CSV")
-    reader = csv.DictReader(io.StringIO(text))
-    required = {"period", "line_item", "amount"}
-    if not reader.fieldnames or not required.issubset({f.strip().lower() for f in reader.fieldnames}):
-        raise HTTPException(status_code=422, detail="CSV must have columns: period, line_item, amount")
 
-    entries: List[Dict[str, Any]] = []
-    errors: List[str] = []
-    for i, row in enumerate(reader, start=2):
-        row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-        if not row.get("period") and not row.get("line_item"):
-            continue
-        try:
-            amount = float(str(row.get("amount", "")).replace(",", "").replace("$", ""))
-        except ValueError:
-            errors.append(f"Row {i}: invalid amount '{row.get('amount')}'")
-            continue
-        entries.append({
-            "period": row.get("period"),
-            "line_item": row.get("line_item"),
-            "amount": amount,
-            "reference_id": row.get("reference_id", ""),
-            "notes": row.get("notes"),
-            "source": source or file.filename,
-        })
+    def run():
+        rows, info = actuals_service.read_table(file.filename, raw, sheet)
+        control = actuals_service.parse_control_total(control_total)
+        return _run_actuals_import(
+            rows, dry_run=dry_run, allow_partial=allow_partial, combine_duplicates=combine_duplicates,
+            control_total=control, source=source or "file import", filename=file.filename, note=note,
+            file_info=info)
 
-    conn = db_manager.get_connection()
     try:
-        count = _upsert_actuals(conn.cursor(), entries)
-        conn.commit()
-    except ValueError as exc:
-        conn.rollback()
-        raise HTTPException(status_code=422, detail=str(exc))
-    finally:
-        db_manager.close_connection(conn)
-    return ForecastResponse(
-        status="success",
-        data={"imported": count, "errors": errors},
-        message=f"Imported {count} actual(s)" + (f", {len(errors)} row(s) skipped" if errors else ""),
-    )
+        status_code, report = await run_in_threadpool(run)
+    except actuals_service.ActualsError as exc:
+        return _actuals_error(exc)
+    return _import_response(status_code, report)
 
 
 @router.delete("/actuals", response_model=ForecastResponse)
@@ -480,24 +519,101 @@ async def delete_actuals(
     line_item: Optional[str] = Query(None),
     actual_id: Optional[str] = Query(None),
 ):
+    """Delete actuals by id, month and / or line. Refused (409) when a matching row is in a closed month.
+    The deletion is recorded in the batch history."""
     if not any([period, line_item, actual_id]):
         raise HTTPException(status_code=422, detail="Provide actual_id, period and/or line_item")
-    clauses, params = [], []
-    if actual_id:
-        clauses.append("actual_id = ?"); params.append(actual_id)
-    if period:
-        clauses.append("period = ?"); params.append(_check_period(period))
-    if line_item:
-        clauses.append("line_item = ?"); params.append(line_item)
+    period = _check_period(period) if period else None
     conn = db_manager.get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"DELETE FROM actuals WHERE {' AND '.join(clauses)}", params)
-        deleted = cursor.rowcount
-        conn.commit()
+        result = actuals_service.delete_actuals(conn, period=period, line_item=line_item, actual_id=actual_id)
+    except actuals_service.ActualsError as exc:
+        return _actuals_error(exc)
     finally:
         db_manager.close_connection(conn)
-    return ForecastResponse(status="success", data={"deleted": deleted}, message=f"Deleted {deleted} actual(s)")
+    deleted = result["deleted"]
+    return ForecastResponse(status="success", data=result, message=f"Deleted {deleted} actual(s)")
+
+
+@router.get("/actuals/batches", response_model=ForecastResponse)
+async def list_actuals_batches(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Every actuals import / save / deletion, newest first, with the rows each still owns and whether it can be undone."""
+    conn = db_manager.get_connection()
+    try:
+        data = actuals_service.list_batches(conn, limit, offset)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=data, message=f"{len(data['batches'])} batch(es)")
+
+
+@router.delete("/actuals/batches/{batch_id}", response_model=ForecastResponse)
+async def undo_actuals_batch(
+    batch_id: str,
+    dry_run: bool = Query(False, description="Report what undo would remove; change nothing"),
+):
+    """Undo an import: delete the rows still stamped with this batch. Refused (409) for closed months."""
+    conn = db_manager.get_connection()
+    try:
+        result = actuals_service.undo_batch(conn, batch_id.strip(), dry_run=dry_run)
+    except actuals_service.ActualsError as exc:
+        return _actuals_error(exc)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=result, message=result["message"])
+
+
+@router.get("/actuals/periods", response_model=ForecastResponse)
+async def list_actuals_periods(
+    start_period: Optional[str] = Query(None, description="With end_period: list every month of the window"),
+    end_period: Optional[str] = Query(None),
+):
+    """Months with their close status (open / closed, by whom, when) and how many actuals they hold."""
+    if bool(start_period) != bool(end_period):
+        raise HTTPException(status_code=422, detail="Give both start_period and end_period, or neither")
+    if start_period:
+        _check_window(start_period, end_period)
+    conn = db_manager.get_connection()
+    try:
+        data = actuals_service.list_periods(conn, start_period, end_period)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=data, message=f"{len(data['closed_periods'])} closed month(s)")
+
+
+@router.post("/actuals/periods/{period}/close", response_model=ForecastResponse)
+async def close_actuals_period(period: str, request: Request, payload: Optional[Dict[str, Any]] = Body(None)):
+    """Close a month: its actuals cannot be imported, changed, deleted or undone until it is reopened.
+    Body: {closed_by?, note?} (closed_by defaults to the X-Forecast-User header). Closing a closed month
+    changes nothing."""
+    period = _check_period(period)
+    payload = payload or {}
+    closed_by = payload.get("closed_by") or request.headers.get("x-forecast-user")
+    conn = db_manager.get_connection()
+    try:
+        result = actuals_service.close_period(conn, period, closed_by, payload.get("note"))
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=result, message=result["message"])
+
+
+@router.post("/actuals/periods/{period}/reopen", response_model=ForecastResponse)
+async def reopen_actuals_period(period: str, request: Request, payload: Optional[Dict[str, Any]] = Body(None)):
+    """Reopen a closed month. Body: {reason (required), reopened_by?} (reopened_by defaults to the
+    X-Forecast-User header); the reason is kept with the month."""
+    period = _check_period(period)
+    payload = payload or {}
+    reopened_by = payload.get("reopened_by") or request.headers.get("x-forecast-user")
+    conn = db_manager.get_connection()
+    try:
+        result = actuals_service.reopen_period(conn, period, payload.get("reason"), reopened_by)
+    except actuals_service.ActualsError as exc:
+        return _actuals_error(exc)
+    finally:
+        db_manager.close_connection(conn)
+    return ForecastResponse(status="success", data=result, message=result["message"])
 
 
 # ---------------------------------------------------------------------------

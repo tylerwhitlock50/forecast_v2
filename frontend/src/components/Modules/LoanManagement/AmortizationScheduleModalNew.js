@@ -7,6 +7,67 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
 import { DataTable } from '../../ui/data-table';
 import { Badge } from '../../ui/badge';
+import { paymentStatusLabel } from './loanScheduleUtils';
+
+const STATUS_VARIANTS = { Paid: 'success', Skipped: 'secondary', Recorded: 'info', Overdue: 'destructive', Scheduled: 'outline' };
+
+/**
+ * Payment-by-payment schedule. Paid and recorded rows (history) are shaded
+ * and show what was actually paid: changing the loan's terms never changes
+ * them.
+ */
+export const PaymentScheduleTable = ({ payments, formatCurrency, formatDate }) => {
+    if (!payments || payments.length === 0) {
+        return <div className="p-8 text-center text-muted-foreground">No payment data available</div>;
+    }
+    return (
+        <table className="w-full text-sm" data-testid="payment-schedule-table">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs text-slate-600">
+                <tr>
+                    <th className="px-3 py-2 font-medium">#</th>
+                    <th className="px-3 py-2 font-medium">Due</th>
+                    <th className="px-3 py-2 text-right font-medium">Payment</th>
+                    <th className="px-3 py-2 text-right font-medium">Principal</th>
+                    <th className="px-3 py-2 text-right font-medium">Interest</th>
+                    <th className="px-3 py-2 text-right font-medium">Balance after</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {payments.map((payment, i) => {
+                    const label = paymentStatusLabel(payment);
+                    const history = Boolean(payment.recorded);
+                    const hasActualAmount = payment.actual_payment_amount !== null && payment.actual_payment_amount !== undefined;
+                    const hasActual = Boolean(payment.actual_payment_date) || hasActualAmount;
+                    return (
+                        <tr
+                            key={`${payment.payment_id}-${i}`}
+                            className={`border-t ${history ? 'bg-green-50/70' : ''}`}
+                            data-testid={history ? 'history-row' : 'schedule-row'}
+                        >
+                            <td className="px-3 py-1.5 font-semibold tabular-nums">{payment.payment_number}</td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">{formatDate(payment.payment_date)}</td>
+                            <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{formatCurrency(payment.payment_amount)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatCurrency(payment.principal_payment)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatCurrency(payment.interest_payment)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-red-600">{formatCurrency(payment.remaining_balance)}</td>
+                            <td className="px-3 py-1.5">
+                                <Badge variant={STATUS_VARIANTS[label] || 'outline'}>{label}</Badge>
+                                {hasActual && (
+                                    <div className="mt-0.5 text-xs text-slate-600">
+                                        {payment.actual_payment_date ? `Paid ${formatDate(payment.actual_payment_date)}` : 'Paid'}
+                                        {hasActualAmount ? ` - ${formatCurrency(payment.actual_payment_amount)}` : ''}
+                                    </div>
+                                )}
+                                {payment.notes && <div className="mt-0.5 max-w-[16rem] truncate text-xs text-slate-500" title={payment.notes}>{payment.notes}</div>}
+                            </td>
+                        </tr>
+                    );
+                })}
+            </tbody>
+        </table>
+    );
+};
 
 const AmortizationScheduleModal = ({ schedule, onClose }) => {
     const [viewMode, setViewMode] = useState('all'); // 'all', 'upcoming', 'annual'
@@ -25,15 +86,15 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
 
     const getFilteredPayments = () => {
         if (!schedule.payment_schedule) return [];
-        
+
         const today = new Date();
-        
+
         switch (viewMode) {
             case 'upcoming':
-                return schedule.payment_schedule.filter(payment => 
-                    (parseLocalDate(payment.payment_date) || new Date(0)) >= today
+                return schedule.payment_schedule.filter(payment =>
+                    !payment.recorded && (parseLocalDate(payment.payment_date) || new Date(0)) >= today
                 ).slice(0, 12); // Next 12 payments
-                
+
             case 'annual':
                 // Group by year and show annual totals
                 const yearlyData = {};
@@ -56,59 +117,13 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
                     yearlyData[year].ending_balance = payment.remaining_balance;
                 });
                 return Object.values(yearlyData);
-                
+
             default:
                 return schedule.payment_schedule;
         }
     };
 
     const filteredPayments = getFilteredPayments();
-
-    const regularColumns = [
-        {
-            key: 'payment_number',
-            title: 'Payment #',
-            render: (value) => <span className="font-semibold">{value}</span>
-        },
-        {
-            key: 'payment_date',
-            title: 'Date',
-            type: 'date'
-        },
-        {
-            key: 'payment_amount',
-            title: 'Payment Amount',
-            type: 'currency',
-            render: (value) => <span className="font-semibold">{formatCurrency(value)}</span>
-        },
-        {
-            key: 'principal_payment',
-            title: 'Principal',
-            type: 'currency'
-        },
-        {
-            key: 'interest_payment',
-            title: 'Interest',
-            type: 'currency'
-        },
-        {
-            key: 'remaining_balance',
-            title: 'Remaining Balance',
-            render: (value) => <span className="font-semibold text-red-600">{formatCurrency(value)}</span>
-        },
-        {
-            key: 'payment_status',
-            title: 'Status',
-            render: (value) => {
-                const variants = {
-                    'scheduled': 'default',
-                    'paid': 'success',
-                    'overdue': 'destructive'
-                };
-                return <Badge variant={variants[value] || 'default'}>{value}</Badge>;
-            }
-        }
-    ];
 
     const annualColumns = [
         {
@@ -142,43 +157,57 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
         }
     ];
 
-    const columns = viewMode === 'annual' ? annualColumns : regularColumns;
-
     if (!schedule) {
         return null;
     }
 
+    const payments = schedule.payment_schedule || [];
+    const recordedCount = payments.filter(p => p.recorded).length;
+    const paidCount = payments.filter(p => String(p.payment_status || '').toLowerCase() === 'paid').length;
+
+    const csvCell = (value) => {
+        if (value === null || value === undefined) return '';
+        const text = String(value);
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+
     const exportToCsv = () => {
-        const csvContent = "data:text/csv;charset=utf-8," + 
-            "Payment Number,Date,Payment Amount,Principal,Interest,Remaining Balance,Status\n" +
-            (schedule.payment_schedule || []).map(payment => 
-                `${payment.payment_number},${payment.payment_date},${payment.payment_amount},${payment.principal_payment},${payment.interest_payment},${payment.remaining_balance},${payment.payment_status}`
-            ).join("\n");
-        
-        const encodedUri = encodeURI(csvContent);
+        const header = 'Payment Number,Date,Payment Amount,Principal,Interest,Remaining Balance,Status,Actual Payment Date,Actual Payment Amount,Notes';
+        const lines = payments.map(payment => [
+            payment.payment_number, payment.payment_date, payment.payment_amount, payment.principal_payment,
+            payment.interest_payment, payment.remaining_balance, payment.payment_status,
+            payment.actual_payment_date, payment.actual_payment_amount, payment.notes,
+        ].map(csvCell).join(','));
+        const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
+        link.setAttribute("href", url);
         link.setAttribute("download", `${schedule.loan_name}_amortization_schedule.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     };
 
     return (
         <Modal className="max-w-7xl" onClick={onClose}>
             <div onClick={e => e.stopPropagation()}>
                 <ModalHeader>
-                    <ModalTitle>Amortization Schedule - {schedule.loan_name}</ModalTitle>
+                    <div className="pr-8">
+                        <ModalTitle>Amortization Schedule - {schedule.loan_name}</ModalTitle>
+                        <p className="mt-1 text-sm text-muted-foreground">{schedule.lender}</p>
+                    </div>
                     <ModalClose onClick={onClose} />
                 </ModalHeader>
 
                 <ModalContent className="space-y-6">
                     {/* Loan Summary */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <StatsCard
-                            title="Lender"
-                            value={schedule.lender}
-                            variant="default"
+                            title="Paid"
+                            value={`${paidCount} of ${payments.length}`}
+                            subtitle={recordedCount > paidCount ? `${recordedCount} recorded` : undefined}
+                            variant={paidCount ? 'success' : 'default'}
                         />
                         <StatsCard
                             title="Principal"
@@ -217,14 +246,21 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
                         />
                     </div>
 
+                    {recordedCount > 0 && (
+                        <p className="rounded-md border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-900" data-testid="history-note">
+                            Shaded rows are paid or recorded payments. They are history: changing the loan's terms
+                            never changes them, only the installments after the last one are recalculated.
+                        </p>
+                    )}
+
                     {/* View Mode Tabs */}
                     <Tabs value={viewMode} onValueChange={setViewMode}>
                         <TabsList className="grid w-full grid-cols-3">
                             <TabsTrigger value="all">
-                                All Payments ({schedule.payment_schedule?.length || 0})
+                                All Payments ({payments.length})
                             </TabsTrigger>
                             <TabsTrigger value="upcoming">
-                                Next 12 Payments
+                                Next 12 Unpaid
                             </TabsTrigger>
                             <TabsTrigger value="annual">
                                 Annual Summary
@@ -234,12 +270,20 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
                         <TabsContent value={viewMode} className="space-y-4">
                             <Card>
                                 <CardContent className="p-0">
-                                    <div className="max-h-96 overflow-y-auto">
-                                        <DataTable
-                                            data={filteredPayments}
-                                            columns={columns}
-                                            emptyMessage="No payment data available"
-                                        />
+                                    <div className="max-h-96 overflow-auto rounded-md border">
+                                        {viewMode === 'annual' ? (
+                                            <DataTable
+                                                data={filteredPayments}
+                                                columns={annualColumns}
+                                                emptyMessage="No payment data available"
+                                            />
+                                        ) : (
+                                            <PaymentScheduleTable
+                                                payments={filteredPayments}
+                                                formatCurrency={formatCurrency}
+                                                formatDate={formatDate}
+                                            />
+                                        )}
                                     </div>
                                 </CardContent>
                             </Card>
@@ -247,7 +291,7 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
                     </Tabs>
 
                     {/* Schedule Statistics */}
-                    {viewMode === 'all' && schedule.payment_schedule && schedule.payment_schedule.length > 0 && (
+                    {viewMode === 'all' && payments.length > 0 && (
                         <Card>
                             <CardHeader>
                                 <CardTitle>Schedule Statistics</CardTitle>
@@ -256,26 +300,26 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                                     <StatsCard
                                         title="Total Payments"
-                                        value={schedule.payment_schedule.length}
+                                        value={payments.length}
                                         variant="default"
                                     />
                                     <StatsCard
                                         title="Interest to Principal Ratio"
                                         value={
-                                            schedule.total_interest && schedule.loan_summary?.principal_amount ? 
-                                            `${((schedule.total_interest / schedule.loan_summary.principal_amount) * 100).toFixed(1)}%` : 
+                                            schedule.total_interest && schedule.loan_summary?.principal_amount ?
+                                            `${((schedule.total_interest / schedule.loan_summary.principal_amount) * 100).toFixed(1)}%` :
                                             'N/A'
                                         }
                                         variant="warning"
                                     />
                                     <StatsCard
                                         title="First Payment Date"
-                                        value={formatDate(schedule.payment_schedule[0]?.payment_date)}
+                                        value={formatDate(payments[0]?.payment_date)}
                                         variant="default"
                                     />
                                     <StatsCard
                                         title="Final Payment Date"
-                                        value={formatDate(schedule.payment_schedule[schedule.payment_schedule.length - 1]?.payment_date)}
+                                        value={formatDate(payments[payments.length - 1]?.payment_date)}
                                         variant="default"
                                     />
                                 </div>

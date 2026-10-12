@@ -393,7 +393,13 @@ class TestReportingRoutes:
 
     def test_actuals_csv_import(self, client):
         csv_text = "period,line_item,amount,notes\n2026-02,revenue,\"2,100\",from GL\n2026-02,admin_expense,90,\n2026-02,revenue,oops,\n"
+        # All-or-nothing by default: one bad row means nothing is written.
         r = client.post("/reporting/actuals/import", files={"file": ("actuals.csv", csv_text, "text/csv")})
+        assert r.status_code == 422, r.text
+        assert client.get("/reporting/actuals", params={"start_period": "2026-02", "end_period": "2026-02"}).json()["data"]["actuals"] == []
+        # allow_partial writes the valid rows and reports the bad one.
+        r = client.post("/reporting/actuals/import", params={"allow_partial": "true"},
+                        files={"file": ("actuals.csv", csv_text, "text/csv")})
         assert r.status_code == 200, r.text
         assert r.json()["data"]["imported"] == 2
         assert len(r.json()["data"]["errors"]) == 1

@@ -57,24 +57,101 @@ async def create_loan(
     }))
 
 
+#: Schedule rows shown per list in an update / repair preview (the counts and
+#: before / after totals always cover every row).
+PREVIEW_ROWS = 6
+
+
+def _compact_preview(body: Dict[str, Any], include_rows: bool) -> Dict[str, Any]:
+    """Keep the counts and before / after totals; list rows as {columns, rows}
+    tables, trimmed to the first and last few unless include_rows."""
+    for key in ("kept_rows", "removed_rows", "new_rows"):
+        rows = body.get(key)
+        if not isinstance(rows, list):
+            continue
+        body[f"{key[:-5]}_count"] = len(rows)
+        if not include_rows and len(rows) > PREVIEW_ROWS:
+            head = rows[:PREVIEW_ROWS - 1]
+            body[key] = as_table(head + rows[-1:])
+            body[key]["omitted"] = len(rows) - PREVIEW_ROWS
+            body[key]["note"] = f"first {PREVIEW_ROWS - 1} and the last row shown; include_rows=true lists all"
+        else:
+            body[key] = as_table(rows)
+    redated = body.get("redated_rows")
+    if isinstance(redated, list) and not include_rows and len(redated) > PREVIEW_ROWS:
+        body["redated_rows"] = redated[:PREVIEW_ROWS]
+        body["redated_rows_omitted"] = len(redated) - PREVIEW_ROWS
+    return body
+
+
 @mcp.tool(name="forecast_update_loan", annotations=UPSERT)
 async def update_loan(
     loan_id: str,
     updates: Annotated[Dict[str, Any], Field(description=f"Fields to change; any of {', '.join(LOAN_FIELDS)}")],
+    preview: Annotated[bool, Field(description=(
+        "true: return what would change (changed fields, schedule kept / removed / added rows, total interest "
+        "and payoff date before / after) without saving. Preview first when changing loan terms."))] = False,
+    include_rows: Annotated[bool, Field(description="List every kept / removed / new schedule row instead of a sample")] = False,
 ) -> Dict[str, Any]:
-    """Update a loan's terms (rate, principal, term, dates, active flag). The
-    schedule is regenerated when terms change."""
+    """Update a loan. Only fields whose value really changes count (5 == 5.0;
+    re-sending current values changes nothing). The payment schedule is
+    rebuilt only when a schedule field changes (principal_amount,
+    interest_rate, loan_term_months, start_date, payment_type,
+    payment_frequency, balloon_payment, balloon_date), and never touches
+    history: paid / skipped installments and any with an actual date,
+    actual amount or note are kept exactly; only the installments after
+    the last of them are replaced (re-amortised from its remaining balance
+    over the rest of the term, on calendar months). Returns
+    schedule {regenerated, kept_paid, kept, removed, added}, before / after
+    {total_interest, payoff_date, ...} and samples of the rows."""
     unknown = [k for k in updates if k not in LOAN_FIELDS]
     if unknown:
         raise ToolError(f"Unknown loan fields: {', '.join(unknown)}. Allowed: {', '.join(LOAN_FIELDS)}")
     if not updates:
         raise ToolError("updates must contain at least one field")
-    return await call("PUT", f"/loans/{require(loan_id, 'loan_id')}", json=updates)
+    body = await call("PUT", f"/loans/{quote(require(loan_id, 'loan_id'), safe='')}", json=updates,
+                      params={"preview": preview})
+    return _compact_preview(body, include_rows)
+
+
+@mcp.tool(name="forecast_loan_schedule_audit", annotations=READ)
+async def loan_schedule_audit() -> Dict[str, Any]:
+    """Legacy schedule check (read-only): loans whose unpaid installments are
+    not on calendar-month dates (schedules saved before the date fix used
+    30.44-day steps, e.g. Jan 31 / Mar 2 / Apr 2, which can put a payment in
+    the wrong month on the cash flow), have missing / out-of-order dates,
+    broken balances, stop before the end of the term, or have no schedule.
+    Per loan: counts (drifted, wrong_month, missing_dates, out_of_order),
+    issues, up to 3 examples, statement_impact, proposed_action
+    ('redate' | 'regenerate') and a plain summary. Paid history is never
+    flagged for change. Fix with forecast_repair_loan_schedule (dry run first)."""
+    return await call("GET", "/loans/schedule-audit")
+
+
+@mcp.tool(name="forecast_repair_loan_schedule", annotations=UPSERT)
+async def repair_loan_schedule(
+    loan_id: str,
+    dry_run: Annotated[bool, Field(description=(
+        "true (default): preview only. Show the user the preview, then call again with dry_run=false to save."))] = True,
+    include_rows: Annotated[bool, Field(description="List every kept / removed / new schedule row instead of a sample")] = False,
+) -> Dict[str, Any]:
+    """Put one loan's legacy schedule back on calendar months. Paid /
+    recorded installments are kept exactly. The unpaid installments after
+    them are re-dated (amounts unchanged) when only dates are off, or rebuilt
+    from the last kept balance when the schedule is incomplete or
+    inconsistent. Returns action ('none' | 'redate' | 'regenerate'),
+    schedule counts, redated_rows [{payment_number, from_date, to_date}],
+    before / after totals and payoff date. Run with dry_run=true first."""
+    body = await call("POST", f"/loans/{quote(require(loan_id, 'loan_id'), safe='')}/repair-schedule",
+                      json={"dry_run": dry_run})
+    return _compact_preview(body, include_rows)
 
 
 @mcp.tool(name="forecast_delete_loan", annotations=DESTRUCTIVE)
 async def delete_loan(loan_id: str) -> Dict[str, Any]:
-    """Delete a loan and its schedule."""
+    """Delete a loan and its whole schedule, paid history included (cannot be
+    undone). To retire a paid-off loan and keep its history, update it with
+    is_active=false instead."""
     return await call("DELETE", f"/loans/{require(loan_id, 'loan_id')}")
 
 

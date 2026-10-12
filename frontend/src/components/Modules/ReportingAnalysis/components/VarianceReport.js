@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Lock, Upload } from 'lucide-react';
 import api from '../../../../lib/apiClient';
 import { useVariance } from '../hooks/useVariance';
 import { Card } from '../../../ui/card';
@@ -7,8 +8,13 @@ import { Input } from '../../../ui/input';
 import { Label } from '../../../ui/label';
 import { Select, SelectOption } from '../../../ui/select';
 import { Badge } from '../../../ui/badge';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../../ui/tabs';
 import { cn } from '../../../../lib/utils';
 import { formatAccounting, formatPct, formatPeriod } from '../utils/formatters';
+import ImportActualsDialog from '../actuals/ImportActualsDialog';
+import ImportHistory from '../actuals/ImportHistory';
+import PeriodClosePanel, { ClosedBadge } from '../actuals/PeriodClosePanel';
+import { errorText, saveActualEntries } from '../actuals/actualsApi';
 
 const STATEMENT_LABELS = {
   income: 'Income statement',
@@ -63,6 +69,18 @@ export const buildActualsTemplate = (lineItems, period) => {
   return `${header}\n${body}\n`;
 };
 
+// "Saved 2 actual(s) for Feb 2026" / why nothing was saved, from the import report.
+export const saveMessage = (report, period) => {
+  const written = (report?.inserted || 0) + (report?.updated || 0);
+  if (report?.outcome === 'unchanged' || written === 0) {
+    return `Nothing changed for ${formatPeriod(period)}: the amounts already match what is stored.`;
+  }
+  const parts = [];
+  if (report.inserted) parts.push(`${report.inserted} new`);
+  if (report.updated) parts.push(`${report.updated} changed`);
+  return `Saved ${written} actual(s) for ${formatPeriod(period)} (${parts.join(', ')}).`;
+};
+
 const VarianceReport = ({ forecastIds, period }) => {
   const { variance, loading, error, fetchVariance } = useVariance();
   const [selectedPeriod, setSelectedPeriod] = useState('');
@@ -71,7 +89,9 @@ const VarianceReport = ({ forecastIds, period }) => {
   const [entryValues, setEntryValues] = useState({});
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState(null);
-  const [importResult, setImportResult] = useState(null);
+  const [showImport, setShowImport] = useState(false);
+  const [actualsTab, setActualsTab] = useState('entry');
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(() => fetchVariance(forecastIds, period), [fetchVariance, forecastIds, period]);
 
@@ -101,6 +121,9 @@ const VarianceReport = ({ forecastIds, period }) => {
   const incompleteLines = useMemo(() => variance?.incomplete_lines || [], [variance]);
   const periodCoverage = useMemo(() => variance?.period_coverage || [], [variance]);
   const selectedCoverage = periodCoverage.find(c => c.period === selectedPeriod) || null;
+  const closedPeriods = useMemo(() => variance?.closed_periods || [], [variance]);
+  const selectedClosed = closedPeriods.includes(selectedPeriod);
+  const entryClosed = closedPeriods.includes(entryPeriod);
 
   const effectiveLineItems = useMemo(() => {
     if (lineItems.length > 0) return lineItems;
@@ -135,6 +158,13 @@ const VarianceReport = ({ forecastIds, period }) => {
     loadEntryValues(entryPeriod);
   }, [entryPeriod, loadEntryValues]);
 
+  // After an import, undo, close or reopen: reload the report, the entry form and the actuals panels.
+  const refreshAll = useCallback(async () => {
+    setRefreshKey(k => k + 1);
+    await refresh();
+    await loadEntryValues(entryPeriod);
+  }, [refresh, loadEntryValues, entryPeriod]);
+
   const handleSaveActuals = async () => {
     const entries = effectiveLineItems
       .filter(li => entryValues[li.line_item] !== undefined && entryValues[li.line_item] !== '' && entryValues[li.line_item] !== null)
@@ -147,29 +177,17 @@ const VarianceReport = ({ forecastIds, period }) => {
     setSaving(true);
     setStatus(null);
     try {
-      await api.post('/reporting/actuals', { entries });
-      setStatus({ type: 'success', text: `Saved ${entries.length} actual(s) for ${formatPeriod(entryPeriod)}.` });
-      await refresh();
-      await loadEntryValues(entryPeriod);
+      const result = await saveActualEntries(entries, { source: 'manual' });
+      if (!result.ok) {
+        setStatus({ type: 'error', text: result.message || 'Nothing was saved.' });
+        return;
+      }
+      setStatus({ type: 'success', text: saveMessage(result.report, entryPeriod) });
+      await refreshAll();
     } catch (err) {
-      setStatus({ type: 'error', text: err.userMessage || err.message || 'Failed to save actuals' });
+      setStatus({ type: 'error', text: errorText(err, 'Failed to save actuals') });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleImport = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    setImportResult(null);
-    try {
-      const res = await api.upload('/reporting/actuals/import', file);
-      setImportResult({ imported: res?.data?.imported ?? 0, errors: res?.data?.errors || [] });
-      await refresh();
-      await loadEntryValues(entryPeriod);
-    } catch (err) {
-      setImportResult({ imported: 0, errors: [err.userMessage || err.message || 'Import failed'] });
     }
   };
 
@@ -190,13 +208,18 @@ const VarianceReport = ({ forecastIds, period }) => {
     if (!entryPeriod) return;
     if (!window.confirm(`Delete all actuals for ${formatPeriod(entryPeriod)}? This cannot be undone.`)) return;
     try {
-      await api.delete(`/reporting/actuals?period=${entryPeriod}`);
+      await api.delete(`/reporting/actuals?period=${entryPeriod}`, { suppressErrorToast: true });
       setEntryValues({});
       setStatus({ type: 'success', text: `Cleared actuals for ${formatPeriod(entryPeriod)}.` });
-      await refresh();
+      await refreshAll();
     } catch (err) {
-      setStatus({ type: 'error', text: err.userMessage || err.message || 'Failed to clear actuals' });
+      setStatus({ type: 'error', text: errorText(err, 'Failed to clear actuals') });
     }
+  };
+
+  const handleImported = () => {
+    setStatus(null);
+    refreshAll();
   };
 
   if (loading && !variance) {
@@ -213,17 +236,25 @@ const VarianceReport = ({ forecastIds, period }) => {
     <div className="space-y-6">
       {/* Period comparison */}
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-medium">Budget vs actual</h3>
+        <div className="min-w-0">
+          <h3 className="flex flex-wrap items-center gap-2 text-lg font-medium">
+            Budget vs actual
+            {selectedClosed && <ClosedBadge className="align-middle" />}
+          </h3>
           <p className="text-sm text-gray-600">
             {withActuals.length > 0
               ? `Actuals entered for ${withActuals.length} of ${periods.length} periods (latest ${formatPeriod(actualsThrough)}).`
-              : 'No actuals entered yet for this window — enter them below or import a CSV.'}
+              : 'No actuals entered yet for this window — enter them below or import a file.'}
           </p>
           {incompleteLines.length > 0 && (
             <p className="text-sm text-amber-800 mt-1" data-testid="incomplete-actuals-note">
               Incomplete actuals: {incompleteLines.map(l => `${l.label} missing ${l.missing_periods.map(formatPeriod).join(', ')}`).join('; ')}.
               A blank month is missing, not zero; to-date variances compare only the months each line has actuals for.
+            </p>
+          )}
+          {selectedClosed && (
+            <p className="text-sm text-gray-600 mt-1" data-testid="selected-period-closed">
+              {formatPeriod(selectedPeriod)} is closed: its actuals are locked until the month is reopened.
             </p>
           )}
           {selectedCoverage && !selectedCoverage.complete && (
@@ -232,15 +263,20 @@ const VarianceReport = ({ forecastIds, period }) => {
             </p>
           )}
         </div>
-        <div className="w-48">
-          <Label htmlFor="variance-period">Period</Label>
-          <Select id="variance-period" value={selectedPeriod} onChange={e => setSelectedPeriod(e.target.value)}>
-            {periods.map(p => (
-              <SelectOption key={p} value={p}>
-                {formatPeriod(p)}{withActuals.includes(p) ? ' •' : ''}
-              </SelectOption>
-            ))}
-          </Select>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-48">
+            <Label htmlFor="variance-period">Period</Label>
+            <Select id="variance-period" value={selectedPeriod} onChange={e => setSelectedPeriod(e.target.value)}>
+              {periods.map(p => (
+                <SelectOption key={p} value={p}>
+                  {formatPeriod(p)}{withActuals.includes(p) ? ' •' : ''}{closedPeriods.includes(p) ? ' (closed)' : ''}
+                </SelectOption>
+              ))}
+            </Select>
+          </div>
+          <Button onClick={() => setShowImport(true)} data-testid="open-actuals-import">
+            <Upload className="mr-2 h-4 w-4" aria-hidden="true" />Import actuals
+          </Button>
         </div>
       </div>
 
@@ -326,76 +362,98 @@ const VarianceReport = ({ forecastIds, period }) => {
         </div>
       </div>
 
-      {/* Enter actuals */}
+      {/* Actuals: enter by hand, month-end close, import history */}
       <Card className="p-4 space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-medium">Enter actuals</h3>
-            <p className="text-sm text-gray-600">Amounts are saved per period and line item; leave a field blank to keep it unchanged.</p>
+        <Tabs value={actualsTab} onValueChange={setActualsTab}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <TabsList className="h-auto flex-wrap justify-start">
+              <TabsTrigger value="entry">Enter by hand</TabsTrigger>
+              <TabsTrigger value="close">Month-end close</TabsTrigger>
+              <TabsTrigger value="history">Import history</TabsTrigger>
+            </TabsList>
           </div>
-          <div className="w-48">
-            <Label htmlFor="entry-period">Entry period</Label>
-            <Select id="entry-period" value={entryPeriod} onChange={e => setEntryPeriod(e.target.value)}>
-              {periods.map(p => (
-                <SelectOption key={p} value={p}>{formatPeriod(p)}</SelectOption>
-              ))}
-            </Select>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {effectiveLineItems.map(li => (
-            <div key={li.line_item}>
-              <Label htmlFor={`actual-${li.line_item}`} className="text-xs text-gray-600">
-                {li.label}
-                <span className="ml-1 text-gray-400">({STATEMENT_LABELS[li.statement] || li.statement})</span>
-              </Label>
-              <Input
-                id={`actual-${li.line_item}`}
-                type="number"
-                step="0.01"
-                className="h-8 mt-1 text-right"
-                value={entryValues[li.line_item] ?? ''}
-                onChange={e => setEntryValues(v => ({ ...v, [li.line_item]: e.target.value }))}
-                placeholder="0.00"
-              />
+          <TabsContent value="entry" className="mt-4 space-y-4">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-medium">Enter actuals</h3>
+                <p className="text-sm text-gray-600">Amounts are saved per period and line item; leave a field blank to keep it unchanged.</p>
+              </div>
+              <div className="w-48">
+                <Label htmlFor="entry-period">Entry period</Label>
+                <Select id="entry-period" value={entryPeriod} onChange={e => setEntryPeriod(e.target.value)}>
+                  {periods.map(p => (
+                    <SelectOption key={p} value={p}>{formatPeriod(p)}{closedPeriods.includes(p) ? ' (closed)' : ''}</SelectOption>
+                  ))}
+                </Select>
+              </div>
             </div>
-          ))}
-        </div>
 
-        {status && (
-          <p className={cn('text-sm', status.type === 'error' ? 'text-red-600' : 'text-green-700')}>{status.text}</p>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={handleSaveActuals} disabled={saving || !entryPeriod}>
-            {saving ? 'Saving...' : 'Save actuals'}
-          </Button>
-          <Button variant="outline" asChild className="cursor-pointer">
-            <label>
-              Import CSV
-              <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleImport} data-testid="actuals-import-input" />
-            </label>
-          </Button>
-          <Button variant="outline" onClick={handleDownloadTemplate}>Download template</Button>
-          <Button variant="destructive" onClick={handleClearPeriod} disabled={!entryPeriod}>
-            Clear period
-          </Button>
-        </div>
-
-        {importResult && (
-          <div className="text-sm">
-            <p className="text-green-700">Imported {importResult.imported} row(s).</p>
-            {importResult.errors.length > 0 && (
-              <ul className="mt-1 list-disc list-inside text-red-600">
-                {importResult.errors.map((e, i) => (
-                  <li key={i}>{typeof e === 'string' ? e : JSON.stringify(e)}</li>
-                ))}
-              </ul>
+            {entryClosed && (
+              <div className="flex items-start gap-2 rounded-md border border-gray-300 bg-gray-50 p-3 text-sm text-gray-700" data-testid="entry-period-closed">
+                <Lock className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />
+                <span>
+                  {formatPeriod(entryPeriod)} is closed, so its actuals cannot be changed.{' '}
+                  <button type="button" className="font-medium text-orange-700 hover:underline" onClick={() => setActualsTab('close')}>
+                    Reopen it under Month-end close
+                  </button>{' '}to make changes.
+                </span>
+              </div>
             )}
-          </div>
-        )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {effectiveLineItems.map(li => (
+                <div key={li.line_item}>
+                  <Label htmlFor={`actual-${li.line_item}`} className="text-xs text-gray-600">
+                    {li.label}
+                    <span className="ml-1 text-gray-400">({STATEMENT_LABELS[li.statement] || li.statement})</span>
+                  </Label>
+                  <Input
+                    id={`actual-${li.line_item}`}
+                    type="number"
+                    step="0.01"
+                    className="h-8 mt-1 text-right"
+                    value={entryValues[li.line_item] ?? ''}
+                    onChange={e => setEntryValues(v => ({ ...v, [li.line_item]: e.target.value }))}
+                    placeholder="0.00"
+                    disabled={entryClosed}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {status && (
+              <p className={cn('text-sm', status.type === 'error' ? 'text-red-600' : 'text-green-700')} data-testid="actuals-entry-status">{status.text}</p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={handleSaveActuals} disabled={saving || !entryPeriod || entryClosed}>
+                {saving ? 'Saving...' : 'Save actuals'}
+              </Button>
+              <Button variant="outline" onClick={handleDownloadTemplate}>Download template</Button>
+              <Button variant="destructive" onClick={handleClearPeriod} disabled={!entryPeriod || entryClosed}>
+                Clear period
+              </Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="close" className="mt-4">
+            <PeriodClosePanel start={period?.start} end={period?.end} refreshKey={refreshKey} onChanged={refreshAll} />
+          </TabsContent>
+
+          <TabsContent value="history" className="mt-4">
+            <ImportHistory refreshKey={refreshKey} onChanged={refreshAll} />
+          </TabsContent>
+        </Tabs>
       </Card>
+
+      {showImport && (
+        <ImportActualsDialog
+          onClose={() => setShowImport(false)}
+          onImported={handleImported}
+          onDownloadTemplate={handleDownloadTemplate}
+        />
+      )}
     </div>
   );
 };

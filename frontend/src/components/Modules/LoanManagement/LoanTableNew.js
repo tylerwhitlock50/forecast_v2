@@ -5,7 +5,7 @@ import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 
-const LoanTable = ({ loans, onEdit, onDelete, onViewSchedule }) => {
+const LoanTable = ({ loans, auditByLoan = {}, onEdit, onDelete, onViewSchedule, onReviewSchedule }) => {
     const formatCurrency = (amount) => {
         if (!amount) return '$0';
         return new Intl.NumberFormat('en-US', {
@@ -46,6 +46,16 @@ const LoanTable = ({ loans, onEdit, onDelete, onViewSchedule }) => {
                 <div className="space-y-1">
                     <div className="font-semibold">{row.loan_name}</div>
                     <div className="text-sm text-muted-foreground">ID: {row.loan_id}</div>
+                    {auditByLoan[row.loan_id] && (
+                        <button
+                            type="button"
+                            className="inline-block whitespace-nowrap rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                            title={auditByLoan[row.loan_id].summary}
+                            onClick={() => onReviewSchedule && onReviewSchedule(row.loan_id)}
+                        >
+                            Dates to review
+                        </button>
+                    )}
                     {row.account_number && (
                         <div className="text-sm text-muted-foreground">
                             Acct: {row.account_number}

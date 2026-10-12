@@ -695,6 +695,20 @@ class DatabaseManager:
                 note TEXT
             )
         ''')
+        # What each import overwrote, so undoing it restores the earlier
+        # amounts instead of deleting the rows it changed.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS actuals_batch_changes (
+                batch_id TEXT NOT NULL,
+                actual_id TEXT NOT NULL,
+                previous_amount REAL,
+                previous_notes TEXT,
+                previous_source TEXT,
+                previous_batch_id TEXT,
+                previous_updated_at TEXT,
+                PRIMARY KEY (batch_id, actual_id)
+            )
+        ''')
         # Month-end close: a closed period's actuals cannot be changed until
         # it is reopened (with a reason).
         cursor.execute('''

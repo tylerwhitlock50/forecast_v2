@@ -1,13 +1,17 @@
 """Reporting tools: statements, variance, actuals, assumptions and capex."""
 from __future__ import annotations
 
+import os
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
+import anyio
 from pydantic import Field
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server.core import DESTRUCTIVE, READ, UPSERT, WRITE, as_table, call, mcp, require, strip_none, to_json_text
 from mcp_server.tools._common import scenario_window
+from mcp_server.tools.imports import resolve_path
+from services import actuals as actuals_service
 
 SECTIONS = ("income_statement", "cash_flow", "balance_sheet", "detail", "assumptions", "carry_forward", "warnings")
 DETAIL_KEYS = (
@@ -193,29 +197,183 @@ async def variance(
 
 @mcp.tool(name="forecast_actual_line_items", annotations=READ)
 async def actual_line_items() -> Dict[str, Any]:
-    """The statement line names actuals can be recorded against."""
+    """The statement lines actuals can be recorded against (line_item key,
+    label, direction, statement) and the other names an import accepts for
+    each ('Net Sales' -> revenue, 'Salaries & Wages' -> payroll)."""
     return await call("GET", "/reporting/actuals/line-items")
 
 
 @mcp.tool(name="forecast_list_actuals", annotations=READ)
 async def list_actuals(start_period: Window, end_period: Window) -> Dict[str, Any]:
-    """Recorded actual results by period and statement line."""
+    """Recorded actual results by period and statement line (with the batch
+    that wrote each row), plus the window's closed months."""
     return await call("GET", "/reporting/actuals", params={"start_period": start_period, "end_period": end_period})
+
+
+#: Rows of the per-row report shown without detail=True.
+ACTUALS_ROWS_SAMPLE = 25
+
+ActualsDryRun = Annotated[bool, Field(description=(
+    "Check everything and report what would happen (per-row actions, totals, problems); write nothing. "
+    "Do this first."))]
+AllowPartial = Annotated[bool, Field(description=(
+    "Write the valid rows even if some rows are rejected (default: any rejected row and NOTHING is written)"))]
+CombineDuplicates = Annotated[bool, Field(description=(
+    "Add up rows with the same period + line_item + reference_id (default: they are an error naming both rows)"))]
+ControlTotal = Annotated[Optional[float], Field(description=(
+    "The sum of every amount in the rows must equal this (within 0.005), e.g. the trial-balance total; "
+    "otherwise nothing is written"))]
+ActualsSource = Annotated[Optional[str], Field(description="Where the numbers come from, kept on each row and the batch")]
+ActualsNote = Annotated[Optional[str], Field(description="A note kept with the import batch (e.g. 'April close, TB v2')")]
+ActualsDetail = Annotated[bool, Field(description="Every row's action and every problem instead of a sample")]
+
+
+def _actuals_result(body: Dict[str, Any], detail: bool, source_file: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The import report trimmed for the model: counts, problems, totals and a sample of rows."""
+    keep = ("outcome", "written", "dry_run", "batch_id", "message", "rows_in_file", "inserted", "updated",
+            "unchanged", "rejected", "control_total", "control_difference", "control_matches", "closed_periods",
+            "request_errors", "warnings")
+    out: Dict[str, Any] = {k: body.get(k) for k in keep if body.get(k) not in (None, [], "")}
+    out["status"] = {"imported": "ok", "unchanged": "ok", "partial": "partial", "rejected": "rejected"}.get(
+        body.get("outcome"), body.get("outcome"))
+    if source_file:
+        out["file"] = source_file
+    errors = body.get("errors") or []
+    limit = 500 if detail else ACTUALS_ROWS_SAMPLE
+    out["errors"] = errors[:limit]
+    if len(errors) > limit:
+        out["errors_omitted"] = len(errors) - limit
+    duplicates = body.get("duplicates") or []
+    if duplicates:
+        out["duplicates"] = duplicates[:limit]
+    totals = body.get("totals") or {}
+    out["totals"] = {
+        "grand_total": totals.get("grand_total"),
+        "by_line_item": [{k: t.get(k) for k in ("line_item", "label", "amount", "rows")} for t in totals.get("by_line_item") or []],
+        "by_period": [{k: t.get(k) for k in ("period", "label", "amount", "rows")} for t in totals.get("by_period") or []],
+    }
+    rows = body.get("rows") or []
+    if detail:
+        out["rows"] = as_table(rows[:5000]) if rows else []
+    else:
+        changed = [{k: r.get(k) for k in ("row", "period", "line_item", "reference_id", "amount", "previous_amount")}
+                   for r in rows if r.get("action") == "updated"]
+        if changed:
+            out["changed_rows"] = changed[:ACTUALS_ROWS_SAMPLE]
+            if len(changed) > ACTUALS_ROWS_SAMPLE:
+                out["changed_rows_omitted"] = len(changed) - ACTUALS_ROWS_SAMPLE
+    if body.get("outcome") == "rejected":
+        out["nothing_written"] = True
+        out["next"] = ("Nothing was written. Fix the rows in errors (or closed_periods: reopen with "
+                       "forecast_reopen_actuals_period), or pass allow_partial=true to write only the valid rows.")
+    elif body.get("dry_run"):
+        out["next"] = "Dry run only: nothing was written. Call again with dry_run=false to write."
+    return out
+
+
+async def _write_actuals(payload: Dict[str, Any], detail: bool,
+                         source_file: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """POST /reporting/actuals. A refused write (HTTP 422 / 409, nothing written) comes back as status
+    'rejected' with the same report a dry run gives, so the model sees every row's problem."""
+    try:
+        body = await call("POST", "/reporting/actuals", json=payload)
+    except ToolError as refused:
+        if payload.get("dry_run"):
+            raise
+        try:
+            body = await call("POST", "/reporting/actuals", json={**payload, "dry_run": True})
+        except ToolError:
+            raise refused
+        if body.get("outcome") != "rejected":   # the data changed in between: report the refusal as it was
+            raise refused
+        body = {**body, "dry_run": False, "message": str(refused).split(": ", 1)[-1]}
+    return _actuals_result(body, detail, source_file)
+
+
+def _actuals_payload(entries: List[Dict[str, Any]], dry_run: bool, allow_partial: bool, combine_duplicates: bool,
+                     control_total: Optional[float], source: Optional[str], note: Optional[str]) -> Dict[str, Any]:
+    return strip_none({
+        "entries": entries, "dry_run": dry_run, "allow_partial": allow_partial,
+        "combine_duplicates": combine_duplicates, "control_total": control_total,
+        "source": source or "mcp", "note": note,
+    })
 
 
 @mcp.tool(name="forecast_upsert_actuals", annotations=UPSERT)
 async def upsert_actuals(
     entries: Annotated[List[Dict[str, Any]], Field(
-        description="Rows of {period (YYYY-MM), line_item (see forecast_actual_line_items), amount, reference_id?, source?, notes?}",
+        description=("Rows of {period (YYYY-MM or 'Apr 2026'), line_item (key, label or common name, see "
+                     "forecast_actual_line_items), amount (number or '$1,234.50' / '(500)'; 0 = confirmed zero, "
+                     "blank is rejected), reference_id?, notes?, source?}"),
         min_length=1)],
+    dry_run: ActualsDryRun = False,
+    allow_partial: AllowPartial = False,
+    combine_duplicates: CombineDuplicates = False,
+    control_total: ControlTotal = None,
+    source: ActualsSource = None,
+    note: ActualsNote = None,
+    detail: ActualsDetail = False,
 ) -> Dict[str, Any]:
-    """Record or overwrite actual results for budget-vs-actual reporting.
-    Matched on period + line_item + reference_id."""
-    for i, entry in enumerate(entries):
-        for key in ("period", "line_item", "amount"):
-            if entry.get(key) is None:
-                raise ToolError(f"entries[{i}] is missing {key}")
-    return await call("POST", "/reporting/actuals", json={"entries": entries})
+    """Record or overwrite actual results for budget vs actual, matched on
+    period + line_item + reference_id. Atomic: if any row is rejected
+    nothing is written (status 'rejected', with every row's problem) unless
+    allow_partial. A row that would change a closed month refuses the whole
+    call. Each write is an import batch (batch_id) that
+    forecast_undo_actuals_batch can undo. Reports per-row actions (inserted /
+    updated / unchanged / rejected) and totals by line and month."""
+    return await _write_actuals(
+        _actuals_payload(entries, dry_run, allow_partial, combine_duplicates, control_total, source, note), detail)
+
+
+@mcp.tool(name="forecast_import_actuals", annotations=UPSERT)
+async def import_actuals(
+    rows: Annotated[Optional[List[Dict[str, Any]]], Field(description=(
+        "Rows as objects of column: value (period / month, line_item / account / line, amount / actual, "
+        "reference_id / ref, notes / memo). Give rows OR file_path."))] = None,
+    file_path: Annotated[Optional[str], Field(description=(
+        "Instead of rows: a .csv/.xlsx in the data folder, relative to it (Docker: ./data on the host), e.g. "
+        "'imports/actuals_2026_04.xlsx'. One row per month and line."))] = None,
+    sheet: Annotated[Optional[str], Field(description="XLSX sheet (default: the first with period / line / amount columns)")] = None,
+    header_row: Annotated[Optional[int], Field(description="1-based header row (default: detected)", ge=1)] = None,
+    dry_run: ActualsDryRun = False,
+    allow_partial: AllowPartial = False,
+    combine_duplicates: CombineDuplicates = False,
+    control_total: ControlTotal = None,
+    source: ActualsSource = None,
+    note: ActualsNote = None,
+    detail: ActualsDetail = False,
+) -> Dict[str, Any]:
+    """Import actual results from a CSV / XLSX file (or rows read from one)
+    with the same checks as the Budget vs Actual screen's import: header
+    aliases, every row validated, duplicates (same month + line + reference)
+    are an error unless combine_duplicates, optional control_total
+    reconciliation, closed months refused. Atomic unless allow_partial. Run
+    with dry_run=true first and check totals against the trial balance.
+    Errors name spreadsheet rows."""
+    if rows and file_path:
+        raise ToolError("Give rows or file_path, not both")
+    file_info = None
+    if file_path:
+        path = resolve_path(file_path)
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        try:
+            parsed, info = await anyio.to_thread.run_sync(actuals_service.read_table, os.path.basename(path), raw,
+                                                          sheet, header_row)
+        except actuals_service.ActualsError as exc:
+            raise ToolError(f"{file_path}: {exc}")
+        file_info = {k: v for k, v in info.items() if v is not None}
+        payload = _actuals_payload([r for _n, r in parsed], dry_run, allow_partial, combine_duplicates,
+                                   control_total, source or f"mcp: {os.path.basename(path)}", note)
+        payload["row_numbers"] = [n for n, _r in parsed]
+        payload["filename"] = os.path.basename(path)
+    else:
+        if sheet or header_row:
+            raise ToolError("sheet / header_row apply to file_path only")
+        if not rows:
+            raise ToolError("Give rows (a non-empty list of objects) or file_path")
+        payload = _actuals_payload(rows, dry_run, allow_partial, combine_duplicates, control_total, source, note)
+    return await _write_actuals(payload, detail, file_info)
 
 
 @mcp.tool(name="forecast_delete_actuals", annotations=DESTRUCTIVE)
@@ -224,12 +382,80 @@ async def delete_actuals(
     line_item: Annotated[Optional[str], Field(description="With period: only this line")] = None,
     actual_id: Annotated[Optional[str], Field(description="Delete one row by id")] = None,
 ) -> Dict[str, Any]:
-    """Delete recorded actuals by period (and line item) or by id."""
+    """Delete recorded actuals by period (and line item) or by id. Refused
+    for a closed month (reopen it first). The deletion is kept in the batch
+    history. To take back one import, use forecast_undo_actuals_batch."""
     if not (period or actual_id):
         raise ToolError("Give period (optionally with line_item) or actual_id")
     return await call("DELETE", "/reporting/actuals", params={
         "period": period, "line_item": line_item, "actual_id": actual_id,
     })
+
+
+@mcp.tool(name="forecast_list_actuals_batches", annotations=READ)
+async def list_actuals_batches(
+    limit: Annotated[int, Field(ge=1, le=200)] = 20,
+    offset: Annotated[int, Field(ge=0)] = 0,
+) -> Dict[str, Any]:
+    """The actuals import history, newest first: each batch's source / file,
+    rows inserted / updated / unchanged / rejected, file and control totals,
+    status (imported, partial, undone, deleted), the rows it still owns and
+    whether it can be undone."""
+    body = await call("GET", "/reporting/actuals/batches", params={"limit": limit, "offset": offset})
+    batches = body.get("batches") or []
+    body["batches"] = as_table(batches) if batches else []
+    return body
+
+
+@mcp.tool(name="forecast_undo_actuals_batch", annotations=DESTRUCTIVE)
+async def undo_actuals_batch(
+    batch_id: Annotated[str, Field(description="ACT-xxxxxxxx from forecast_list_actuals_batches or an import result")],
+    dry_run: Annotated[bool, Field(description="Report what would be removed; change nothing (default)")] = True,
+) -> Dict[str, Any]:
+    """Undo an actuals import: delete the rows still stamped with the batch
+    (rows changed since by a later entry belong to that entry and stay).
+    Rows the batch changed are removed too, not restored to their earlier
+    amounts. Refused for closed months. dry_run defaults to true: call again
+    with dry_run=false to undo."""
+    return await call("DELETE", f"/reporting/actuals/batches/{require(batch_id, 'batch_id')}",
+                      params={"dry_run": dry_run})
+
+
+@mcp.tool(name="forecast_actuals_periods", annotations=READ)
+async def actuals_periods(
+    start_period: Annotated[Optional[str], Field(description="YYYY-MM; with end_period lists every month of the window")] = None,
+    end_period: Annotated[Optional[str], Field(description="YYYY-MM")] = None,
+) -> Dict[str, Any]:
+    """Months with their close status (open / closed, by whom, when, note)
+    and how many actuals each holds. Without a window: every month that has
+    actuals or a close record."""
+    body = await call("GET", "/reporting/actuals/periods", params={"start_period": start_period, "end_period": end_period})
+    periods = body.get("periods") or []
+    body["periods"] = as_table(periods) if periods else []
+    return body
+
+
+@mcp.tool(name="forecast_close_actuals_period", annotations=WRITE)
+async def close_actuals_period(
+    period: Annotated[str, Field(description="YYYY-MM")],
+    closed_by: Annotated[Optional[str], Field(description="Who closes the month")] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Close a month: its actuals can then not be imported, changed, deleted
+    or undone until it is reopened with a reason."""
+    return await call("POST", f"/reporting/actuals/periods/{require(period, 'period')}/close",
+                      json=strip_none({"closed_by": closed_by, "note": note}))
+
+
+@mcp.tool(name="forecast_reopen_actuals_period", annotations=WRITE)
+async def reopen_actuals_period(
+    period: Annotated[str, Field(description="YYYY-MM")],
+    reason: Annotated[str, Field(description="Why the closed month must change (kept with the month)", min_length=1)],
+    reopened_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Reopen a closed month so its actuals can change again. A reason is required."""
+    return await call("POST", f"/reporting/actuals/periods/{require(period, 'period')}/reopen",
+                      json=strip_none({"reason": require(reason, "reason"), "reopened_by": reopened_by}))
 
 
 @mcp.tool(name="forecast_get_assumptions", annotations=READ)

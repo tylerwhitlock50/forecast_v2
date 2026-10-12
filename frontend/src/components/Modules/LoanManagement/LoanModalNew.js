@@ -6,6 +6,8 @@ import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { Textarea } from '../../ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { isBlank, loanFormValues } from './loanScheduleUtils';
+import { toDateOnly } from '../../../lib/dates';
 
 const LoanModal = ({ loan, onSave, onClose }) => {
     const [formData, setFormData] = useState({
@@ -32,28 +34,11 @@ const LoanModal = ({ loan, onSave, onClose }) => {
 
     useEffect(() => {
         if (loan) {
-            setFormData({
-                loan_name: loan.loan_name || '',
-                lender: loan.lender || '',
-                loan_type: loan.loan_type || 'term_loan',
-                principal_amount: loan.principal_amount || '',
-                interest_rate: loan.interest_rate || '',
-                loan_term_months: loan.loan_term_months || '',
-                start_date: loan.start_date || '',
-                payment_type: loan.payment_type || 'amortizing',
-                payment_frequency: loan.payment_frequency || 'monthly',
-                balloon_payment: loan.balloon_payment || '',
-                balloon_date: loan.balloon_date || '',
-                description: loan.description || '',
-                collateral_description: loan.collateral_description || '',
-                guarantor: loan.guarantor || '',
-                loan_officer: loan.loan_officer || '',
-                account_number: loan.account_number || '',
-                is_active: loan.is_active !== undefined ? loan.is_active : true
-            });
+            // 0 stays 0 (a 0% loan used to come back blank and fail 'required').
+            setFormData(loanFormValues(loan));
         } else {
-            // Default to current date for new loans
-            const today = new Date().toISOString().split('T')[0];
+            // Default to today (local date, not UTC) for new loans
+            const today = toDateOnly();
             setFormData(prev => ({
                 ...prev,
                 start_date: today
@@ -81,12 +66,12 @@ const LoanModal = ({ loan, onSave, onClose }) => {
         const newErrors = {};
 
         // Required fields
-        if (!formData.loan_name.trim()) newErrors.loan_name = 'Loan name is required';
-        if (!formData.lender.trim()) newErrors.lender = 'Lender is required';
-        if (!formData.principal_amount) newErrors.principal_amount = 'Principal amount is required';
-        if (!formData.interest_rate) newErrors.interest_rate = 'Interest rate is required';
-        if (!formData.loan_term_months) newErrors.loan_term_months = 'Loan term is required';
-        if (!formData.start_date) newErrors.start_date = 'Start date is required';
+        if (isBlank(formData.loan_name)) newErrors.loan_name = 'Loan name is required';
+        if (isBlank(formData.lender)) newErrors.lender = 'Lender is required';
+        if (isBlank(formData.principal_amount)) newErrors.principal_amount = 'Principal amount is required';
+        if (isBlank(formData.interest_rate)) newErrors.interest_rate = 'Interest rate is required (enter 0 for an interest-free loan)';
+        if (isBlank(formData.loan_term_months)) newErrors.loan_term_months = 'Loan term is required';
+        if (isBlank(formData.start_date)) newErrors.start_date = 'Start date is required';
 
         // Numeric validations
         if (formData.principal_amount && isNaN(formData.principal_amount)) {
@@ -95,9 +80,9 @@ const LoanModal = ({ loan, onSave, onClose }) => {
             newErrors.principal_amount = 'Principal amount must be greater than 0';
         }
 
-        if (formData.interest_rate && isNaN(formData.interest_rate)) {
+        if (!isBlank(formData.interest_rate) && isNaN(formData.interest_rate)) {
             newErrors.interest_rate = 'Interest rate must be a number';
-        } else if (formData.interest_rate && (parseFloat(formData.interest_rate) < 0 || parseFloat(formData.interest_rate) > 100)) {
+        } else if (!isBlank(formData.interest_rate) && (parseFloat(formData.interest_rate) < 0 || parseFloat(formData.interest_rate) > 100)) {
             newErrors.interest_rate = 'Interest rate must be between 0 and 100';
         }
 
@@ -246,6 +231,13 @@ const LoanModal = ({ loan, onSave, onClose }) => {
                         <Card>
                             <CardHeader>
                                 <CardTitle className="text-lg">Loan Terms</CardTitle>
+                                {loan && (
+                                    <p className="text-sm text-muted-foreground" data-testid="loan-terms-note">
+                                        Changing the principal, rate, term, start date, payment type or frequency
+                                        recalculates the unpaid installments. Paid and recorded payments are kept
+                                        exactly as they are, and you will see the new schedule before anything is saved.
+                                    </p>
+                                )}
                             </CardHeader>
                             <CardContent>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
