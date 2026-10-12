@@ -196,7 +196,9 @@ All API responses follow this pattern:
 
 ## Data Import/Export
 
-The application supports CSV data loading through the `/load_table` endpoint. Sample data files are in the `data/` directory and are automatically loaded on startup.
+- **Import Data screen (`/import`)** and the `/import/*` endpoints are the way in: customers, products, machines, labor rates, routings, BOMs, prices, deduction rules and the sales forecast (`/forecast/smart_import_sales`). Every import accepts common ERP header aliases, runs as a dry run first (`dry_run: true`) and reports row-level errors; CSV templates come from `GET /import/templates/{kind}`. The MCP server exposes the same imports (`forecast_import_*`).
+- **Exports:** `GET /reporting/workbook` (Excel: gross margin bridge, statements, by product / customer / customer type, labor, machines, unit costs, sales detail, rules), `GET /reporting/statements/export` (CSV), and per-table CSV downloads on the COGS & Labor Forecast screen.
+- `/database/load_table` (append / upsert / replace into one table) still exists for raw table loads. Seed CSVs in `data/` load only into an empty database (or with `FORCE_DB_RELOAD=true`); the repo ships none.
 
 ## Environment Considerations
 

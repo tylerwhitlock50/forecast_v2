@@ -8,7 +8,7 @@
 
 ## Build, Test, and Development Commands
 - Python setup: `pip install -r app/requirements.txt` (use `python -m venv .venv && source .venv/bin/activate`).
-- Run backend (dev): `python main.py` (or `uvicorn app.main:app --reload`).
+- Run backend (dev): `python scripts/run_local.py` (auto-reload) or `python main.py`; plain uvicorn: `uvicorn main:app --app-dir app --reload --reload-dir app`.
 - Run frontend (dev): `cd frontend && npm install && npm run dev` (alias of `start`).
 - Full stack (Docker): `docker-compose up --build` (services: API, frontend).
 - Tests: `pytest -v` (examples: `pytest -m "unit"`, `pytest -m "not slow"`).
