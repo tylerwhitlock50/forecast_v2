@@ -294,7 +294,12 @@ class DatabaseManager:
                 name TEXT NOT NULL,
                 description TEXT,
                 notes TEXT,
-                is_base INTEGER DEFAULT 0
+                is_base INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'draft',
+                locked INTEGER DEFAULT 0,
+                approved_by TEXT,
+                approved_at TEXT,
+                approval_note TEXT
             )
         ''')
         
@@ -434,6 +439,7 @@ class DatabaseManager:
                 expected_raise REAL DEFAULT 0.0,
                 benefits_eligible BOOLEAN DEFAULT 1,
                 allocations TEXT,  -- JSON string for business unit allocations
+                labor_class TEXT,  -- direct / indirect / admin (NULL = not classified, treated as admin)
                 forecast_id TEXT,
                 FOREIGN KEY (forecast_id) REFERENCES forecast (forecast_id)
             )
@@ -666,9 +672,74 @@ class DatabaseManager:
                 notes TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                batch_id TEXT,
                 UNIQUE(period, line_item, reference_id)
             )
         ''')
+        # One row per actuals import / save: who, what file, row counts and
+        # the control total the file was reconciled against.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS actuals_batches (
+                batch_id TEXT PRIMARY KEY,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT,
+                filename TEXT,
+                rows_in_file INTEGER DEFAULT 0,
+                inserted INTEGER DEFAULT 0,
+                updated INTEGER DEFAULT 0,
+                unchanged INTEGER DEFAULT 0,
+                rejected INTEGER DEFAULT 0,
+                file_total REAL,
+                control_total REAL,
+                status TEXT,
+                note TEXT
+            )
+        ''')
+        # Month-end close: a closed period's actuals cannot be changed until
+        # it is reopened (with a reason).
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS actuals_periods (
+                period TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+                closed_at TEXT,
+                closed_by TEXT,
+                note TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # Scenario approvals and unlocks (the baseline history).
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scenario_approvals (
+                approval_id TEXT PRIMARY KEY,
+                forecast_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('approve', 'unlock')),
+                actor TEXT,
+                note TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                snapshot_filename TEXT,
+                workbook_filename TEXT,
+                totals_json TEXT
+            )
+        ''')
+        # Request-level change history: every write through the API (web UI,
+        # MCP, scripts) with who / what / when.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS audit_log (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                client TEXT,
+                actor TEXT,
+                method TEXT,
+                path TEXT,
+                query TEXT,
+                status INTEGER,
+                forecast_id TEXT,
+                summary TEXT,
+                body_excerpt TEXT,
+                duration_ms INTEGER
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at)')
         # Discounts and allowances off gross sales, embedded excise tax and
         # commissions (see services.pricing for matching and precedence).
         # forecast_id NULL = company-wide; NULL scope fields mean "any".
@@ -744,6 +815,77 @@ class DatabaseManager:
             conn.commit()
         except Exception as e:
             print(f"Error migrating financial_assumptions table: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
+    #: Tables whose rows belong to a scenario through forecast_id. Rows of an
+    #: approved (locked) scenario cannot be inserted, changed or deleted; the
+    #: triggers raise SCENARIO_LOCKED, which the API turns into HTTP 409.
+    LOCKED_SCENARIO_TABLES = ("sales", "expenses", "payroll", "capital_expenditures", "financial_assumptions",
+                              "price_list", "sales_deduction_rules")
+
+    def migrate_governance_and_controls(self):
+        """
+        Columns and triggers for scenario approval / locking, actuals batches
+        and payroll labor class (idempotent). Tables are created by
+        create_tables; this adds the columns older databases lack and
+        (re)creates the scenario-lock triggers.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            additions = {
+                "forecast": (("status", "TEXT DEFAULT 'draft'"), ("locked", "INTEGER DEFAULT 0"),
+                             ("approved_by", "TEXT"), ("approved_at", "TEXT"), ("approval_note", "TEXT")),
+                "actuals": (("batch_id", "TEXT"),),
+                "payroll": (("labor_class", "TEXT"),),
+            }
+            for table, cols in additions.items():
+                cursor.execute(f"PRAGMA table_info({table})")
+                existing = {col[1] for col in cursor.fetchall()}
+                for name, ddl in cols:
+                    if name not in existing:
+                        try:
+                            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                        except sqlite3.OperationalError as alter_err:
+                            if 'duplicate column name' not in str(alter_err).lower():
+                                raise
+            locked = "EXISTS (SELECT 1 FROM forecast f WHERE f.forecast_id = {ref}.forecast_id AND f.locked = 1)"
+            for table in self.LOCKED_SCENARIO_TABLES:
+                cursor.execute(f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_lock_{table}_insert BEFORE INSERT ON {table}
+                    WHEN NEW.forecast_id IS NOT NULL AND {locked.format(ref='NEW')}
+                    BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+                """)
+                cursor.execute(f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_lock_{table}_update BEFORE UPDATE ON {table}
+                    WHEN (OLD.forecast_id IS NOT NULL AND {locked.format(ref='OLD')})
+                      OR (NEW.forecast_id IS NOT NULL AND {locked.format(ref='NEW')})
+                    BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+                """)
+                cursor.execute(f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_lock_{table}_delete BEFORE DELETE ON {table}
+                    WHEN OLD.forecast_id IS NOT NULL AND {locked.format(ref='OLD')}
+                    BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+                """)
+            alloc_locked = ("EXISTS (SELECT 1 FROM expenses e JOIN forecast f ON f.forecast_id = e.forecast_id "
+                            "WHERE e.expense_id = {ref}.expense_id AND f.locked = 1)")
+            for event, ref in (("INSERT", "NEW"), ("UPDATE", "OLD"), ("DELETE", "OLD")):
+                cursor.execute(f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_lock_expense_allocations_{event.lower()}
+                    BEFORE {event} ON expense_allocations
+                    WHEN {alloc_locked.format(ref=ref)}
+                    BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+                """)
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_lock_forecast_delete BEFORE DELETE ON forecast
+                WHEN OLD.locked = 1
+                BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+            """)
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating governance / controls schema: {e}")
             conn.rollback()
         finally:
             self.close_connection(conn)
@@ -1487,6 +1629,7 @@ class DatabaseManager:
         self.migrate_payroll_config_table()
         self.migrate_financial_assumptions_table()
         self.migrate_price_list_table()
+        self.migrate_governance_and_controls()
         self.ensure_base_scenario()
 
     def _has_seed_data(self) -> bool:
@@ -1749,6 +1892,9 @@ class DatabaseManager:
             return {name: conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
                     for name in sorted(self.tables_children_first(conn))}
 
+    #: Tables a "start clean" keeps: the change history survives a reset.
+    KEEP_ON_CLEAR = ("audit_log",)
+
     def clear_all_data(self, exclude: Tuple[str, ...] = ()) -> Dict[str, Any]:
         """
         Delete every row of every table (the schema stays), children first,
@@ -1763,9 +1909,12 @@ class DatabaseManager:
             conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # Approved scenarios are locked by triggers; a reset clears them too.
+                if any(r[1] == "locked" for r in conn.execute("PRAGMA table_info(forecast)")):
+                    conn.execute("UPDATE forecast SET locked = 0")
                 counts: Dict[str, int] = {}
                 for name in self.tables_children_first(conn):
-                    if name in exclude:
+                    if name in exclude or name in self.KEEP_ON_CLEAR:
                         continue
                     counts[name] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
                     conn.execute(f'DELETE FROM "{name}"')
