@@ -597,7 +597,7 @@ AUDIT_COLUMNS = ("created_at", "client", "actor", "method", "path", "query", "st
                  "body_excerpt", "duration_ms")
 
 #: Body keys that name who did something (used as the actor when no X-Forecast-User header is sent).
-ACTOR_KEYS = ("actor", "approved_by", "closed_by", "user", "changed_by")
+ACTOR_KEYS = ("actor", "approved_by", "closed_by", "reopened_by", "user", "changed_by")
 
 _BROWSER_UA = re.compile(r"Mozilla/|AppleWebKit|Chrome/|Safari/|Firefox/|Edg/", re.I)
 
@@ -1183,8 +1183,9 @@ def legacy_checks(cursor) -> List[Dict[str, Any]]:
             issues.append(_issue(
                 "employees_without_labor_class", "info",
                 "Employees without a labor class",
-                "Unclassified employees are treated as admin payroll (an operating expense). Production workers "
-                "left unclassified are counted twice: once in direct labor from the routings and again in payroll. "
+                "Unclassified employees are treated as admin payroll (an operating expense). In months where direct "
+                "labor comes from the routings alone (no employee classed direct is paid), a production worker left "
+                "unclassified is counted twice: once in direct labor from the routings and again in payroll. "
                 "A stored class other than direct, indirect or admin (e.g. 'Production') reads as not classified.",
                 "On the Payroll screen, set each employee's labor class: direct (production), indirect (factory "
                 "support) or admin.",
