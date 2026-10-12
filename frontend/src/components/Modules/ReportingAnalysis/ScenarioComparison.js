@@ -21,6 +21,9 @@ export const METRICS = [
   { key: 'payroll', label: 'Payroll', direction: 'expense' },
   { key: 'expenses', label: 'Other operating expense', direction: 'expense' },
   { key: 'operating_income', label: 'Operating income', direction: 'income', bold: true },
+  { key: 'interest_expense', label: 'Interest expense', direction: 'expense', optional: true },
+  { key: 'pre_tax_income', label: 'Pre-tax income', direction: 'income', bold: true, optional: true },
+  { key: 'income_tax', label: 'Income tax', direction: 'expense', optional: true },
   { key: 'net_income', label: 'Net income', direction: 'income', bold: true },
   { key: 'closing_cash', label: 'Closing cash', direction: 'income', bold: true },
 ];

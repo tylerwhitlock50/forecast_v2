@@ -1,6 +1,10 @@
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 
+const money = (value) => new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+}).format(Number(value) || 0);
+
 const ProductSummary = ({ products }) => {
   const summaryData = useMemo(() => {
     const totalProducts = products.length;
@@ -93,8 +97,8 @@ const ProductSummary = ({ products }) => {
       color: "text-green-600"
     },
     {
-      title: "Avg Price",
-      value: `$${summaryData.priceMetrics.average.toFixed(2)}`,
+      title: "Avg List Price",
+      value: money(summaryData.priceMetrics.average),
       icon: "💰",
       color: "text-purple-600"
     },
@@ -105,6 +109,29 @@ const ProductSummary = ({ products }) => {
       color: "text-orange-600"
     }
   ];
+
+  const { totalProducts, completeness, dataQuality } = summaryData;
+  const recommendations = [];
+  if (dataQuality.incompleteProfiles > 0) {
+    recommendations.push({
+      key: 'incomplete', icon: '⚠️', tone: 'bg-yellow-50 border-yellow-200 text-yellow-800',
+      text: `${dataQuality.incompleteProfiles} ${dataQuality.incompleteProfiles === 1 ? 'product is' : 'products are'} missing a list price, BOM or routing, so ${dataQuality.incompleteProfiles === 1 ? 'its' : 'their'} pricing or unit cost is incomplete.`,
+    });
+  }
+  if (totalProducts > 0 && completeness.withPrice < totalProducts) {
+    const missing = totalProducts - completeness.withPrice;
+    recommendations.push({
+      key: 'price', icon: '💰', tone: 'bg-blue-50 border-blue-200 text-blue-800',
+      text: `${missing} ${missing === 1 ? 'product has' : 'products have'} no list price. The list price is the fallback when no price-list rule applies.`,
+    });
+  }
+  if (totalProducts > 0 && completeness.withBOM < totalProducts) {
+    const missing = totalProducts - completeness.withBOM;
+    recommendations.push({
+      key: 'bom', icon: '🏭', tone: 'bg-green-50 border-green-200 text-green-800',
+      text: `${missing} ${missing === 1 ? 'product has' : 'products have'} no BOM, so material cost is $0.`,
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -295,7 +322,7 @@ const ProductSummary = ({ products }) => {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-green-600">
-              ${summaryData.priceMetrics.average.toFixed(2)}
+              {money(summaryData.priceMetrics.average)}
             </p>
           </CardContent>
         </Card>
@@ -309,7 +336,7 @@ const ProductSummary = ({ products }) => {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-red-600">
-              ${summaryData.priceMetrics.maximum.toFixed(2)}
+              {money(summaryData.priceMetrics.maximum)}
             </p>
           </CardContent>
         </Card>
@@ -323,7 +350,7 @@ const ProductSummary = ({ products }) => {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold text-blue-600">
-              ${summaryData.priceMetrics.minimum.toFixed(2)}
+              {money(summaryData.priceMetrics.minimum)}
             </p>
           </CardContent>
         </Card>
@@ -343,54 +370,24 @@ const ProductSummary = ({ products }) => {
         </Card>
       </div>
 
-      {/* Recommendations */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            {summaryData.dataQuality.incompleteProfiles > 0 && (
-              <div className="flex items-start gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <span className="text-xl">⚠️</span>
-                <span className="text-sm text-yellow-800">
-                  {summaryData.dataQuality.incompleteProfiles} products have incomplete profiles. 
-                  Consider adding missing BOM and router information for accurate costing.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.completeness.withPrice < summaryData.totalProducts * 0.8 && (
-              <div className="flex items-start gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <span className="text-xl">💰</span>
-                <span className="text-sm text-blue-800">
-                  Only {Math.round((summaryData.completeness.withPrice / summaryData.totalProducts) * 100)}% of products have pricing. 
-                  Base prices are crucial for revenue forecasting.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.completeness.withBOM < summaryData.totalProducts * 0.8 && (
-              <div className="flex items-start gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-xl">🏭</span>
-                <span className="text-sm text-green-800">
-                  Only {Math.round((summaryData.completeness.withBOM / summaryData.totalProducts) * 100)}% of products have BOM assignments. 
-                  BOMs are essential for accurate cost calculations.
-                </span>
-              </div>
-            )}
-            
-            {Object.keys(summaryData.typeBreakdown).length < 3 && (
-              <div className="flex items-start gap-3 p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                <span className="text-xl">🏷️</span>
-                <span className="text-sm text-purple-800">
-                  Product types are not well diversified. Consider adding more product type categories for better organization.
-                </span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Recommendations (only when there is something to do) */}
+      {recommendations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">Recommendations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {recommendations.map((r) => (
+                <div key={r.key} className={`flex items-start gap-3 p-3 border rounded-lg ${r.tone}`}>
+                  <span className="text-xl">{r.icon}</span>
+                  <span className="text-sm">{r.text}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

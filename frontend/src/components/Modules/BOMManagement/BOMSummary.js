@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
+import { formatCurrency } from '../ReportingAnalysis/utils/formatters';
+import { linesOf, versionOf } from './bomHelpers';
 
 
 const BOMSummary = ({ boms, bomItems, units }) => {
@@ -18,12 +20,17 @@ const BOMSummary = ({ boms, bomItems, units }) => {
       return acc;
     }, {});
     
-    // Cost analysis
+    // Cost analysis. Target costs are optional: the variance compares only
+    // the lines that have one, and is not shown when none do.
     const totalMaterialCost = safeBomItems.reduce((sum, item) => sum + (item.material_cost || 0), 0);
-    const totalTargetCost = safeBomItems.reduce((sum, item) => sum + (item.target_cost || 0), 0);
+    const targeted = safeBomItems.filter(item => Number(item.target_cost) > 0);
+    const totalTargetCost = targeted.reduce((sum, item) => sum + Number(item.target_cost), 0);
+    const targetedMaterialCost = targeted.reduce((sum, item) => sum + (item.material_cost || 0), 0);
     const avgMaterialCost = totalBOMs > 0 ? totalMaterialCost / totalBOMs : 0;
-    const avgTargetCost = totalBOMs > 0 ? totalTargetCost / totalBOMs : 0;
-    const costVariance = totalMaterialCost - totalTargetCost;
+    const bomsWithTarget = new Set(targeted.map(item => `${item.bom_id}|${versionOf(item.version)}`)).size;
+    const avgTargetCost = bomsWithTarget > 0 ? totalTargetCost / bomsWithTarget : null;
+    const costVariance = targeted.length > 0 ? targetedMaterialCost - totalTargetCost : null;
+    const variancePct = targeted.length > 0 && totalTargetCost > 0 ? (costVariance / totalTargetCost) * 100 : null;
     
     // Item analysis
     const totalItems = safeBomItems.length;
@@ -44,29 +51,28 @@ const BOMSummary = ({ boms, bomItems, units }) => {
       return acc;
     }, {});
     
-    // Cost per BOM breakdown
+    // Material cost per unit of each BOM version
     const bomCosts = safeBoms.map(bom => {
-      const bomTotal = safeBomItems
-        .filter(item => item.bom_id === bom.bom_id)
+      const bomTotal = linesOf(safeBomItems, bom.bom_id, bom.version)
         .reduce((sum, item) => sum + (item.material_cost || 0), 0);
-      return { bom_id: bom.bom_id, cost: bomTotal };
+      return { key: `${bom.bom_id}|${versionOf(bom.version)}`, bom_id: bom.bom_id, version: versionOf(bom.version), cost: bomTotal };
     }).sort((a, b) => b.cost - a.cost);
+    const multipleVersions = new Set(safeBoms.map(bom => bom.bom_id)).size < safeBoms.length;
     
     // Data completeness
     const withTargetCost = safeBomItems.filter(item => item.target_cost && item.target_cost > 0).length;
     const withUnitPrice = safeBomItems.filter(item => item.unit_price && item.unit_price > 0).length;
     const withQuantity = safeBomItems.filter(item => item.qty && item.qty > 0).length;
     
-    // Complete BOMs
+    // Complete BOMs: every line has a description, a quantity and a cost
     const completeBOMs = safeBoms.filter(bom => {
-      const bomItemCount = safeBomItems.filter(item => item.bom_id === bom.bom_id).length;
-      const completeItems = safeBomItems.filter(item => 
-        item.bom_id === bom.bom_id && 
-        item.material_description && 
-        item.qty > 0 && 
+      const lines = linesOf(safeBomItems, bom.bom_id, bom.version);
+      const completeItems = lines.filter(item =>
+        item.material_description &&
+        item.qty > 0 &&
         item.unit_price > 0
       ).length;
-      return bomItemCount > 0 && completeItems === bomItemCount;
+      return lines.length > 0 && completeItems === lines.length;
     }).length;
     
     return {
@@ -77,8 +83,10 @@ const BOMSummary = ({ boms, bomItems, units }) => {
         totalTargetCost,
         avgMaterialCost,
         avgTargetCost,
-        costVariance
+        costVariance,
+        variancePct
       },
+      multipleVersions,
       itemStats: {
         totalItems,
         avgItemsPerBOM
@@ -107,9 +115,29 @@ const BOMSummary = ({ boms, bomItems, units }) => {
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5);
 
-  const formatCurrency = (value) => {
-    return `$${Number(value).toFixed(2)}`;
-  };
+  const money = (value) => formatCurrency(Number(value) || 0);
+  const { costStats } = summaryData;
+  const hasTarget = costStats.costVariance !== null;
+
+  const recommendations = [];
+  if (summaryData.dataQuality.incompleteBOMs > 0) {
+    recommendations.push({
+      key: 'incomplete', icon: '⚠️', tone: 'bg-yellow-50',
+      text: `${summaryData.dataQuality.incompleteBOMs} ${summaryData.dataQuality.incompleteBOMs === 1 ? 'BOM has' : 'BOMs have'} lines without a quantity or unit cost, so material cost is understated. See Data Validation.`,
+    });
+  }
+  if (costStats.variancePct !== null && costStats.variancePct > 10) {
+    recommendations.push({
+      key: 'target', icon: '💰', tone: 'bg-red-50',
+      text: `Material costs are ${costStats.variancePct.toFixed(1)}% over target on the lines that have a target cost. Review high-cost items for potential savings.`,
+    });
+  }
+  if (summaryData.totalBOMs > 0 && summaryData.itemStats.avgItemsPerBOM < 3) {
+    recommendations.push({
+      key: 'few', icon: '📦', tone: 'bg-purple-50',
+      text: `BOMs have relatively few lines (average ${summaryData.itemStats.avgItemsPerBOM.toFixed(1)}). Check that all materials and components are included.`,
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -144,8 +172,8 @@ const BOMSummary = ({ boms, bomItems, units }) => {
             <div className="flex items-center space-x-4">
               <div className="text-3xl">💰</div>
               <div>
-                <p className="text-2xl font-bold">{formatCurrency(summaryData.costStats.totalMaterialCost)}</p>
-                <p className="text-sm text-muted-foreground">Total Material Cost</p>
+                <p className="text-2xl font-bold">{money(summaryData.costStats.totalMaterialCost)}</p>
+                <p className="text-sm text-muted-foreground" title="One unit of every BOM version added together">Material cost, all BOMs</p>
               </div>
             </div>
           </CardContent>
@@ -172,22 +200,25 @@ const BOMSummary = ({ boms, bomItems, units }) => {
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Average Material Cost</p>
-              <p className="text-lg font-semibold">{formatCurrency(summaryData.costStats.avgMaterialCost)}</p>
+              <p className="text-sm text-muted-foreground">Average material cost per BOM</p>
+              <p className="text-lg font-semibold">{money(costStats.avgMaterialCost)}</p>
             </div>
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Average Target Cost</p>
-              <p className="text-lg font-semibold">{formatCurrency(summaryData.costStats.avgTargetCost)}</p>
+              <p className="text-sm text-muted-foreground">Average target cost</p>
+              {hasTarget
+                ? <p className="text-lg font-semibold">{money(costStats.avgTargetCost)}</p>
+                : <p className="text-sm text-gray-500" title="Target costs are optional. Set one on a BOM line to compare against it.">No target set</p>}
             </div>
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Cost Variance</p>
-              <p className={`text-lg font-semibold ${summaryData.costStats.costVariance > 0 ? 'text-red-600' : 
-                summaryData.costStats.costVariance < 0 ? 'text-green-600' : 'text-gray-600'}`}>
-                {summaryData.costStats.costVariance > 0 ? '+' : ''}{formatCurrency(summaryData.costStats.costVariance)}
-              </p>
+              <p className="text-sm text-muted-foreground">Cost vs target</p>
+              {hasTarget ? (
+                <p className={`text-lg font-semibold ${costStats.costVariance > 0 ? 'text-red-600' : costStats.costVariance < 0 ? 'text-green-600' : 'text-gray-600'}`}>
+                  {costStats.costVariance > 0 ? '+' : ''}{money(costStats.costVariance)}
+                </p>
+              ) : <p className="text-sm text-gray-500">No target set</p>}
             </div>
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Average Items per BOM</p>
+              <p className="text-sm text-muted-foreground">Average lines per BOM</p>
               <p className="text-lg font-semibold">{summaryData.itemStats.avgItemsPerBOM.toFixed(1)}</p>
             </div>
           </div>
@@ -197,28 +228,28 @@ const BOMSummary = ({ boms, bomItems, units }) => {
       {/* Most Expensive BOMs */}
       <Card>
         <CardHeader>
-          <CardTitle>Most Expensive BOMs</CardTitle>
+          <CardTitle>Most Expensive BOMs <span className="text-sm font-normal text-gray-500">(material cost per unit)</span></CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {summaryData.bomCosts.map(({bom_id, cost}) => (
-              <div key={bom_id} className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
+            {summaryData.bomCosts.map(({ key, bom_id, version, cost }) => (
+              <div key={key} className="flex items-center justify-between">
+                <div className="flex w-56 flex-shrink-0 items-center space-x-2">
                   <Badge variant="outline" className="bg-red-100 text-red-800">
-                    {bom_id}
+                    {bom_id}{summaryData.multipleVersions ? ` v${version}` : ''}
                   </Badge>
-                  <span className="text-sm text-muted-foreground">{formatCurrency(cost)}</span>
+                  <span className="text-sm tabular-nums text-muted-foreground">{money(cost)}</span>
                 </div>
                 <div className="flex-1 mx-4">
                   <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
+                    <div
                       className="bg-red-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${summaryData.bomCosts.length > 0 ? (cost / summaryData.bomCosts[0].cost) * 100 : 0}%` }}
+                      style={{ width: `${summaryData.bomCosts[0].cost > 0 ? (cost / summaryData.bomCosts[0].cost) * 100 : 0}%` }}
                     ></div>
                   </div>
                 </div>
-                <span className="text-sm font-medium">
-                  {summaryData.bomCosts.length > 0 ? ((cost / summaryData.bomCosts[0].cost) * 100).toFixed(1) : 0}%
+                <span className="w-14 text-right text-sm font-medium tabular-nums">
+                  {summaryData.bomCosts[0].cost > 0 ? ((cost / summaryData.bomCosts[0].cost) * 100).toFixed(1) : 0}%
                 </span>
               </div>
             ))}
@@ -317,6 +348,7 @@ const BOMSummary = ({ boms, bomItems, units }) => {
               </div>
             </div>
             
+            {summaryData.completeness.withTargetCost > 0 && (
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>With Target Cost</span>
@@ -329,7 +361,8 @@ const BOMSummary = ({ boms, bomItems, units }) => {
                 ></div>
               </div>
             </div>
-            
+            )}
+
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>With Unit Price</span>
@@ -359,55 +392,24 @@ const BOMSummary = ({ boms, bomItems, units }) => {
         </CardContent>
       </Card>
 
-      {/* Recommendations */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Recommendations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            {summaryData.dataQuality.incompleteBOMs > 0 && (
-              <div className="flex items-start space-x-3 p-3 bg-yellow-50 rounded-lg">
-                <span className="text-xl">⚠️</span>
-                <span className="text-sm">
-                  {summaryData.dataQuality.incompleteBOMs} BOMs have incomplete data. 
-                  Consider adding missing quantities, unit prices, or target costs.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.costStats.costVariance > summaryData.costStats.totalTargetCost * 0.1 && (
-              <div className="flex items-start space-x-3 p-3 bg-red-50 rounded-lg">
-                <span className="text-xl">💰</span>
-                <span className="text-sm">
-                  Material costs are {((summaryData.costStats.costVariance / summaryData.costStats.totalTargetCost) * 100).toFixed(1)}% 
-                  over target. Review high-cost items for potential savings.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.completeness.withTargetCost < summaryData.itemStats.totalItems * 0.8 && (
-              <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
-                <span className="text-xl">🎯</span>
-                <span className="text-sm">
-                  Only {Math.round((summaryData.completeness.withTargetCost / summaryData.itemStats.totalItems) * 100)}% of items have target costs. 
-                  Target costs help track cost performance and identify savings opportunities.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.itemStats.avgItemsPerBOM < 3 && (
-              <div className="flex items-start space-x-3 p-3 bg-purple-50 rounded-lg">
-                <span className="text-xl">📦</span>
-                <span className="text-sm">
-                  BOMs have relatively few items (avg: {summaryData.itemStats.avgItemsPerBOM.toFixed(1)}). 
-                  Ensure all necessary materials and components are included.
-                </span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Recommendations (only when there is something to do) */}
+      {recommendations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recommendations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {recommendations.map((r) => (
+                <div key={r.key} className={`flex items-start space-x-3 p-3 rounded-lg ${r.tone}`}>
+                  <span className="text-xl">{r.icon}</span>
+                  <span className="text-sm">{r.text}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

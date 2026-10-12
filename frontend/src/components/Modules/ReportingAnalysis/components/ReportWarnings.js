@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, Info, X } from 'lucide-react';
-import { formatPeriodRanges } from '../utils/formatters';
+import { formatPeriod, formatPeriodRanges, formatPct } from '../utils/formatters';
 import { COST_WARNING_LABELS } from '../utils/costWarnings';
 
 // Plain-English titles for the warning codes the reporting API returns.
@@ -31,6 +31,50 @@ export const WARNING_LINKS = {
 };
 
 export const warningTitle = (w) => WARNING_TITLES[w?.code] || String(w?.code || 'Warning').replace(/_/g, ' ');
+
+// Codes the API raises once per entity (one warning per machine). They are
+// shown as ONE item that lists every entity, never just the first one.
+const GROUPED = {
+  machine_over_capacity: {
+    title: 'Machines over capacity',
+    lead: (n) => `${n} machines need more hours than are available:`
+  }
+};
+
+/** Collapse per-entity warnings (same grouped code) into { code, grouped: true, items }. */
+export const groupWarnings = (warnings) => {
+  const out = [];
+  const groups = {};
+  (warnings || []).forEach(w => {
+    if (!GROUPED[w?.code]) { out.push(w); return; }
+    if (!groups[w.code]) {
+      groups[w.code] = { code: w.code, level: w.level, grouped: true, items: [] };
+      out.push(groups[w.code]);
+    }
+    groups[w.code].items.push(w);
+  });
+  return out.map(g => (g.grouped && g.items.length === 1 ? g.items[0] : g));
+};
+
+const MACHINE_NAME = /^(.+?) needs more hours than available/;
+const machineName = (w) => w.machine_name || (MACHINE_NAME.exec(w.message || '') || [])[1] || w.machine_id || null;
+
+/** "12 months over (Jan – Dec 2027) · peak 225.9% in Oct 2027" for one machine warning. */
+export const machineDetail = (w) => {
+  const periods = Array.isArray(w.periods) ? w.periods : [];
+  const parts = [];
+  if (periods.length) {
+    parts.push(`${periods.length} month${periods.length === 1 ? '' : 's'} over capacity (${formatPeriodRanges(periods)})`);
+  }
+  if (typeof w.peak_utilization_pct === 'number') {
+    parts.push(`peak ${formatPct(w.peak_utilization_pct)}${w.peak_period ? ` in ${formatPeriod(w.peak_period)}` : ''}`);
+  }
+  return parts.join(' · ');
+};
+
+const sortWorstFirst = (items) => [...items].sort((a, b) =>
+  (b.peak_utilization_pct ?? -1) - (a.peak_utilization_pct ?? -1)
+  || (b.periods || []).length - (a.periods || []).length);
 
 export const isInfoWarning = (w) => w?.level === 'info';
 
@@ -63,8 +107,39 @@ const ProductList = ({ products }) => {
   );
 };
 
+const GroupedItem = ({ g }) => {
+  const meta = GROUPED[g.code];
+  return (
+    <li className="text-sm" data-testid={`warning-group-${g.code}`}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="font-semibold text-amber-900">{meta.title}</span>
+        <span className="text-amber-900">{meta.lead(g.items.length)}</span>
+        <span className="flex flex-wrap gap-3 text-amber-800"><Links code={g.code} /></span>
+      </div>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-amber-900">
+        {sortWorstFirst(g.items).map((w, i) => {
+          const name = machineName(w);
+          const detail = machineDetail(w);
+          return (
+            <li key={`${w.machine_id || name || 'm'}-${i}`}>
+              {name && detail ? (
+                <><span className="font-medium">{name}</span><span className="text-amber-800">: {detail}</span></>
+              ) : (
+                <span>{w.message}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </li>
+  );
+};
+
 const WarningItem = ({ w }) => {
   const [open, setOpen] = useState(false);
+  const peak = w.code === 'machine_over_capacity' && typeof w.peak_utilization_pct === 'number'
+    ? `peak ${formatPct(w.peak_utilization_pct)}${w.peak_period ? ` in ${formatPeriod(w.peak_period)}` : ''}`
+    : null;
   const hasProducts = w.products && Object.keys(w.products).length > 0;
   return (
     <li className="text-sm">
@@ -72,7 +147,7 @@ const WarningItem = ({ w }) => {
         <span className="font-semibold text-amber-900">{warningTitle(w)}</span>
         <span className="text-amber-900">{w.message}</span>
         {Array.isArray(w.periods) && w.periods.length > 0 && (
-          <span className="text-amber-700">({formatPeriodRanges(w.periods)})</span>
+          <span className="text-amber-700">({formatPeriodRanges(w.periods)}{peak ? ` · ${peak}` : ''})</span>
         )}
         <span className="flex flex-wrap gap-3 text-amber-800"><Links code={w.code} /></span>
         {hasProducts && (
@@ -100,7 +175,9 @@ const ReportWarnings = ({ warnings, hide = [], onDismiss, className = '' }) => {
         <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3" role="alert">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-none text-amber-600" aria-hidden="true" />
           <ul className="flex-1 space-y-1.5">
-            {real.map((w, i) => <WarningItem key={`${w.code}-${i}`} w={w} />)}
+            {groupWarnings(real).map((w, i) => (
+              w.grouped ? <GroupedItem key={`${w.code}-${i}`} g={w} /> : <WarningItem key={`${w.code}-${i}`} w={w} />
+            ))}
           </ul>
           {onDismiss && (
             <button type="button" onClick={onDismiss} className="rounded p-1 text-amber-700 hover:bg-amber-100" aria-label="Dismiss warnings">

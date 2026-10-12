@@ -1,6 +1,7 @@
 import {
   BRIDGE_ROWS, bridgeColumns, statementCsvRows, hasSalesInWindow, groupRows, groupTotals, sortRows,
-  groupCsvRows, laborMatrix, laborCsvRows, laborChartData, machineCsvRows, unitCostCsvRows, headline, isOverCapacity
+  groupCsvRows, laborMatrix, laborCsvRows, laborChartData, machineCsvRows, unitCostCsvRows, headline, isOverCapacity,
+  mergeReportWarnings, machinePeak, groupColumns, displayGroupColumns
 } from '../utils/cogsLabor';
 import { toCsv, csvCell, slug, filenameFromDisposition } from '../utils/csv';
 import { formatPeriodRanges } from '../utils/formatters';
@@ -182,5 +183,69 @@ describe('csv helpers', () => {
     expect(formatPeriodRanges(['2027-01', '2027-02', '2027-03', '2027-05'])).toBe('Jan – Mar 2027, May 2027');
     expect(formatPeriodRanges(['2026-11', '2026-12', '2027-01'])).toBe('Nov 2026 – Jan 2027');
     expect(formatPeriodRanges([])).toBe('');
+  });
+});
+
+describe('page warnings', () => {
+  const machine = (id, name, utils) => ({
+    machine_id: id, machine_name: name,
+    by_period: Object.fromEntries(utils.map((u, i) => [`2027-0${i + 1}`, { hours: u, utilization_pct: u }])),
+    totals: { peak_utilization_pct: Math.max(...utils) }
+  });
+  const labor = {
+    by_machine: [machine('M1', 'Mill', [110, 130]), machine('M2', 'Lathe', [90, 105])],
+    warnings: [
+      { code: 'machine_over_capacity', machine_id: 'M1', message: 'Mill needs more hours than available in 2 month(s).', periods: ['2027-01', '2027-02'] },
+      { code: 'machine_over_capacity', machine_id: 'M2', message: 'Lathe needs more hours than available in 1 month(s).', periods: ['2027-02'] },
+      { code: 'cost_warnings', message: '1 product(s) have incomplete BOM/routing data.' }
+    ]
+  };
+  const cogs = { warnings: [{ code: 'cost_warnings', message: '1 product(s) have incomplete BOM/routing data; their COGS may be understated.' }] };
+
+  it('keeps every machine over capacity and drops only the repeated cost warning', () => {
+    const merged = mergeReportWarnings(cogs, labor);
+    expect(merged.map(w => w.code)).toEqual(['cost_warnings', 'machine_over_capacity', 'machine_over_capacity']);
+    expect(merged[0].message).toContain('may be understated');
+    expect(merged[1]).toMatchObject({ machine_name: 'Mill', peak_utilization_pct: 130, peak_period: '2027-02' });
+    expect(merged[2]).toMatchObject({ machine_name: 'Lathe', peak_utilization_pct: 105, peak_period: '2027-02' });
+  });
+
+  it('works with only one of the two reports loaded', () => {
+    expect(mergeReportWarnings(null, labor)).toHaveLength(3);
+    expect(mergeReportWarnings(cogs, null)).toHaveLength(1);
+    expect(mergeReportWarnings(null, null)).toEqual([]);
+  });
+
+  it('finds the busiest month of a machine', () => {
+    expect(machinePeak(labor.by_machine[0])).toEqual({ period: '2027-02', pct: 130 });
+    expect(machinePeak({ totals: { peak_utilization_pct: 99 } })).toEqual({ period: null, pct: 99 });
+    expect(machinePeak({})).toBeNull();
+  });
+});
+
+describe('commissions column', () => {
+  const cogsByCustomer = {
+    by_customer: [
+      { customer_id: 'C1', customer_name: 'Big Sky', customer_type: 'Dealer', totals: { units: 2, gross_sales: 1000, net_sales: 900, product_cogs: 600, commissions: 45.5 } },
+      { customer_id: 'C2', customer_name: 'Gulf Coast', customer_type: 'Distributor', totals: { units: 1, gross_sales: 500, net_sales: 450, product_cogs: 300 } }
+    ]
+  };
+
+  it('is shown for customers and customer types only', () => {
+    expect(displayGroupColumns('customer').map(c => c.key)).toContain('commissions');
+    expect(displayGroupColumns('customer_type').map(c => c.key)).toContain('commissions');
+    expect(displayGroupColumns('product').map(c => c.key)).not.toContain('commissions');
+    expect(groupColumns('product_type').map(c => c.key)).not.toContain('commissions');
+  });
+
+  it('reads, totals and exports commissions', () => {
+    const rows = groupRows(cogsByCustomer, 'customer');
+    expect(rows.map(r => r.commissions)).toEqual([45.5, 0]);
+    expect(groupTotals(rows).commissions).toBe(45.5);
+    const csv = groupCsvRows(rows, 'customer');
+    expect(csv[0][csv[0].length - 1]).toBe('Commissions');
+    expect(csv[1][csv[1].length - 1]).toBe(45.5);
+    expect(csv[csv.length - 1][csv[0].length - 1]).toBe(45.5);
+    expect(groupCsvRows(groupRows(cogs, 'product'), 'product')[0]).not.toContain('Commissions');
   });
 });

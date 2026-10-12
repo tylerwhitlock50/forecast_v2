@@ -19,6 +19,8 @@ import ProductValidation from './ProductValidation';
 import { goToImport } from '../../Common/importLink';
 import { DependencyList, fetchSalesDependencies } from '../RevenueForecasting/salesDependencies';
 
+const listPrice = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 const EXPORT_COLUMNS = ['unit_id', 'unit_name', 'unit_type', 'base_price', 'bom_id', 'bom_version', 'router_id', 'unit_description'];
 
 const TABS = [
@@ -125,7 +127,7 @@ const ProductManagement = () => {
       key: 'unit_name',
       title: 'Product',
       render: (value, row) => (
-        <div className="space-y-0.5">
+        <div className="min-w-[10rem] space-y-0.5">
           <button
             type="button"
             onClick={() => navigate(`/products/${encodeURIComponent(row.unit_id)}`)}
@@ -145,7 +147,10 @@ const ProductManagement = () => {
     {
       key: 'base_price',
       title: 'List price',
-      type: 'currency'
+      // Cents matter for accessories ($99.50), so not the table's whole-dollar currency type.
+      render: (value) => (value === null || value === undefined || value === ''
+        ? <span className="text-xs text-gray-400">No price</span>
+        : <span className="whitespace-nowrap tabular-nums">{listPrice.format(Number(value) || 0)}</span>)
     },
     {
       key: 'bom',
@@ -160,14 +165,15 @@ const ProductManagement = () => {
       key: 'router',
       title: 'Routing',
       render: (value) => (value
-        ? <span className="font-mono text-xs text-gray-700">{value}</span>
-        : <span className="text-xs font-medium text-amber-700">No routing</span>)
+        ? <span className="whitespace-nowrap font-mono text-xs text-gray-700">{value}</span>
+        : <span className="whitespace-nowrap text-xs font-medium text-amber-700">No routing</span>)
     },
-    {
+    // Description is optional; its column only shows when a product has one.
+    ...(products.some((p) => p.unit_description && String(p.unit_description).trim()) ? [{
       key: 'unit_description',
       title: 'Description',
       render: (value) => <span className="text-sm text-gray-600">{value || ''}</span>
-    },
+    }] : []),
   ];
 
   if (loading && products.length === 0) {

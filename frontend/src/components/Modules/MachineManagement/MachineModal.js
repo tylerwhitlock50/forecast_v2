@@ -7,6 +7,7 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { Textarea } from '../../ui/textarea';
+import { hoursFieldValue, hoursToMinutes } from './machineHelpers';
 
 const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
   const { data } = useForecast();
@@ -16,7 +17,7 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
     machine_description: '',
     machine_rate: '',
     labor_type: '',
-    available_minutes_per_month: ''
+    available_hours_per_month: ''
   });
   const [errors, setErrors] = useState({});
 
@@ -31,7 +32,8 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
           machine_description: machine.machine_description || '',
           machine_rate: machine.machine_rate || '',
           labor_type: machine.labor_type || '',
-          available_minutes_per_month: machine.available_minutes_per_month || ''
+          // Stored in minutes, edited in hours per month.
+          available_hours_per_month: hoursFieldValue(machine.available_minutes_per_month)
         });
       } else {
         // Creating new machine
@@ -41,7 +43,7 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
           machine_description: '',
           machine_rate: '',
           labor_type: '',
-          available_minutes_per_month: ''
+          available_hours_per_month: ''
         });
       }
       setErrors({});
@@ -65,8 +67,8 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
       newErrors.machine_rate = 'Machine rate must be a valid positive number';
     }
     
-    if (formData.available_minutes_per_month && (isNaN(formData.available_minutes_per_month) || formData.available_minutes_per_month < 0)) {
-      newErrors.available_minutes_per_month = 'Available minutes must be a valid positive number';
+    if (formData.available_hours_per_month !== '' && (isNaN(formData.available_hours_per_month) || Number(formData.available_hours_per_month) < 0)) {
+      newErrors.available_hours_per_month = 'Capacity must be a number of hours, 0 or more';
     }
     
     setErrors(newErrors);
@@ -84,11 +86,13 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
 
     try {
       // Convert numeric fields to appropriate types
+      const { available_hours_per_month: hours, ...rest } = formData;
       const dataToSave = {
-        ...formData,
+        ...rest,
         machine_id: formData.machine_id.trim() || null, // Allow null for auto-generation
-        machine_rate: formData.machine_rate ? parseFloat(formData.machine_rate) : null,
-        available_minutes_per_month: formData.available_minutes_per_month ? parseInt(formData.available_minutes_per_month) : null
+        machine_rate: formData.machine_rate !== '' ? parseFloat(formData.machine_rate) : null,
+        // The API stores capacity in minutes per month.
+        available_minutes_per_month: hoursToMinutes(hours)
       };
       
       await onSave(dataToSave);
@@ -182,7 +186,7 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="labor_type">
-                  Labor Type
+                  Labor Type (optional)
                 </Label>
                 <Select
                   id="labor_type"
@@ -217,24 +221,26 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
               </div>
             </div>
 
-            {/* Available Minutes per Month */}
+            {/* Capacity, hours per month (stored as minutes) */}
             <div>
-              <Label htmlFor="available_minutes_per_month">
-                Available Minutes per Month
+              <Label htmlFor="available_hours_per_month">
+                Capacity (hours per month)
               </Label>
               <Input
-                id="available_minutes_per_month"
+                id="available_hours_per_month"
                 type="number"
-                value={formData.available_minutes_per_month}
-                onChange={(e) => handleInputChange('available_minutes_per_month', e.target.value)}
-                className={errors.available_minutes_per_month ? 'border-red-500' : ''}
-                placeholder="e.g., 12000"
+                step="0.5"
+                min="0"
+                value={formData.available_hours_per_month}
+                onChange={(e) => handleInputChange('available_hours_per_month', e.target.value)}
+                className={errors.available_hours_per_month ? 'border-red-500' : ''}
+                placeholder="e.g., 320"
               />
-              {errors.available_minutes_per_month && (
-                <p className="mt-1 text-sm text-red-600">{errors.available_minutes_per_month}</p>
+              {errors.available_hours_per_month && (
+                <p className="mt-1 text-sm text-red-600">{errors.available_hours_per_month}</p>
               )}
               <p className="mt-1 text-sm text-gray-500">
-                Total available minutes per month for this machine (e.g., 12000 = 200 hours/month)
+                Hours this machine can run in a month (for example 2 shifts × 8 h × 20 days = 320). Used by the machine capacity view.
               </p>
             </div>
           </form>

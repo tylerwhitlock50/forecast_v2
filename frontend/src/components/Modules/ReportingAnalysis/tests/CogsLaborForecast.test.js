@@ -92,7 +92,7 @@ describe('COGS & Labor Forecast page', () => {
     expect(within(kpis).getByText('9.9% of gross sales')).toBeInTheDocument();
     expect(within(kpis).getByText('$1,040')).toBeInTheDocument();
     expect(within(kpis).getByText('520 h')).toBeInTheDocument();
-    expect(within(kpis).getByText('1.5 avg FTE · 2.0 peak')).toBeInTheDocument();
+    expect(within(kpis).getByTestId('fte-subtitle')).toHaveTextContent('1.5 avg FTE · 2.0 peak');
     expect(screen.getByText(/net sales equal gross sales/).closest('[data-level="info"]')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     const bridge = screen.getByTestId('bridge-table');

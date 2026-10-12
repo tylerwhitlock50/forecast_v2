@@ -100,10 +100,23 @@ export const GROUP_COLUMNS = [
   { key: 'product_cogs', label: 'Product COGS', format: 'money', perUnit: 'cost_per_unit', help: 'Materials + direct labor + machine cost from the BOM and routing; the small figure is the cost per unit.' },
   { key: 'cost_per_unit', label: 'Cost / unit', format: 'money2', help: 'Product COGS ÷ units.', inline: true },
   { key: 'contribution_margin', label: 'Contribution', format: 'money', help: 'Net sales − product COGS, before factory overhead and other COGS (those are period costs, shown only in the bridge).' },
-  { key: 'contribution_margin_pct', label: 'CM %', format: 'pct', help: 'Contribution ÷ net sales.' }
+  { key: 'contribution_margin_pct', label: 'CM %', format: 'pct', nowrap: true, help: 'Contribution ÷ net sales.' },
+  {
+    key: 'commissions',
+    label: 'Commissions',
+    format: 'money',
+    only: ['customer', 'customer_type'],
+    help: 'Sales commissions on these sales. They are an operating expense on the income statement, so they are not taken off net sales or contribution.'
+  }
 ];
 
-export const DISPLAY_GROUP_COLUMNS = GROUP_COLUMNS.filter(c => !c.inline);
+/** Summary columns for one grouping (commissions only for customers and customer types). */
+export const groupColumns = (grouping) => GROUP_COLUMNS.filter(c => !c.only || c.only.includes(grouping));
+
+/** On-screen summary columns for one grouping (per-unit figures shown inline). */
+export const displayGroupColumns = (grouping) => groupColumns(grouping).filter(c => !c.inline);
+
+export const DISPLAY_GROUP_COLUMNS = GROUP_COLUMNS.filter(c => !c.inline && !c.only);
 
 const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : parseFloat(v) || 0);
 const ratio = (a, b) => (b ? a / b : 0);
@@ -133,6 +146,7 @@ export const groupRows = (cogs, grouping) => {
       cost_per_unit: t.cost_per_unit !== undefined ? n(t.cost_per_unit) : ratio(cogsAmt, units),
       contribution_margin: cm,
       contribution_margin_pct: t.contribution_margin_pct !== undefined ? n(t.contribution_margin_pct) : ratio(cm, net) * 100,
+      commissions: n(t.commissions),
       by_period: e.by_period || {}
     };
   });
@@ -141,9 +155,9 @@ export const groupRows = (cogs, grouping) => {
 /** Totals row for group rows (ratios recomputed, never summed). */
 export const groupTotals = (rows) => {
   const t = rows.reduce((acc, r) => {
-    ['units', 'gross_sales', 'total_sales_deductions', 'net_sales', 'product_cogs', 'contribution_margin'].forEach(k => { acc[k] += r[k] || 0; });
+    ['units', 'gross_sales', 'total_sales_deductions', 'net_sales', 'product_cogs', 'contribution_margin', 'commissions'].forEach(k => { acc[k] += r[k] || 0; });
     return acc;
-  }, { units: 0, gross_sales: 0, total_sales_deductions: 0, net_sales: 0, product_cogs: 0, contribution_margin: 0 });
+  }, { units: 0, gross_sales: 0, total_sales_deductions: 0, net_sales: 0, product_cogs: 0, contribution_margin: 0, commissions: 0 });
   t.avg_net_price = ratio(t.net_sales, t.units);
   t.cost_per_unit = ratio(t.product_cogs, t.units);
   t.contribution_margin_pct = ratio(t.contribution_margin, t.net_sales) * 100;
@@ -199,10 +213,11 @@ export const groupCsvRows = (rows, grouping, { view = 'summary', periods = [], m
     ];
   }
   const totals = groupTotals(rows);
+  const columns = groupColumns(grouping);
   return [
-    [...lead, ...GROUP_COLUMNS.map(c => c.label)],
-    ...rows.map(r => [...leadCells(r), ...GROUP_COLUMNS.map(c => summaryValue(r, c))]),
-    ['Total', ...blanks, ...GROUP_COLUMNS.map(c => summaryValue(totals, c))]
+    [...lead, ...columns.map(c => c.label)],
+    ...rows.map(r => [...leadCells(r), ...columns.map(c => summaryValue(r, c))]),
+    ['Total', ...blanks, ...columns.map(c => summaryValue(totals, c))]
   ];
 };
 
@@ -303,6 +318,62 @@ export const unitCostCsvRows = (unitCosts) => [
     n(u.labor_minutes_per_unit), n(u.machine_minutes_per_unit), (u.warnings || []).join('; ')
   ])
 ];
+
+// ---------------------------------------------------------------------------
+// Warnings
+// ---------------------------------------------------------------------------
+
+/** Busiest month of a labor-forecast machine entry: { period, pct } or null. */
+export const machinePeak = (machine) => {
+  let best = null;
+  Object.entries(machine?.by_period || {}).forEach(([period, b]) => {
+    const u = b?.utilization_pct;
+    if (typeof u === 'number' && (!best || u > best.pct)) best = { period, pct: u };
+  });
+  if (!best && typeof machine?.totals?.peak_utilization_pct === 'number') {
+    best = { period: null, pct: machine.totals.peak_utilization_pct };
+  }
+  return best;
+};
+
+/**
+ * Warnings for the page: the COGS forecast's, then the labor forecast's.
+ * A labor warning is dropped only when the COGS forecast already raised the
+ * same code (both report incomplete product costs); per-machine warnings
+ * (one per machine, same code) are all kept, and each machine warning gets
+ * the machine's name and busiest month from by_machine.
+ */
+export const mergeReportWarnings = (cogs, labor) => {
+  const cogsWarnings = cogs?.warnings || [];
+  const cogsCodes = new Set(cogsWarnings.map(w => w?.code));
+  const machines = Object.fromEntries((labor?.by_machine || []).map(m => [m.machine_id, m]));
+  const seen = new Set();
+  const out = [];
+  const add = (w) => {
+    if (!w) return;
+    const key = [w.code, w.machine_id || '', w.message || ''].join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(w);
+  };
+  cogsWarnings.forEach(add);
+  (labor?.warnings || []).forEach(w => {
+    if (!w || cogsCodes.has(w.code)) return;
+    if (w.code === 'machine_over_capacity' && w.machine_id && machines[w.machine_id]) {
+      const m = machines[w.machine_id];
+      const peak = machinePeak(m);
+      add({
+        ...w,
+        machine_name: w.machine_name || m.machine_name || w.machine_id,
+        peak_utilization_pct: peak ? peak.pct : undefined,
+        peak_period: peak ? peak.period : undefined
+      });
+    } else {
+      add(w);
+    }
+  });
+  return out;
+};
 
 // ---------------------------------------------------------------------------
 // Headline figures

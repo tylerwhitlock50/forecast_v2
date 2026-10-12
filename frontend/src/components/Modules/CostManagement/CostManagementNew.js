@@ -4,6 +4,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import api from '../../../lib/apiClient';
 import { defaultWindowForScenario } from '../../../lib/scenarioWindow';
 import { cn } from '../../../lib/utils';
+import { formatMoney } from '../../../lib/money';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
@@ -30,8 +31,9 @@ const REPORTS = {
   labor: '/products/labor/utilization',
 };
 
-const formatCurrency = (value) =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value || 0);
+// Shared money rounding (lib/money): per-unit costs read the same here as on
+// the COGS & Labor Unit costs tab and the product screens.
+const formatCurrency = (value) => formatMoney(value || 0);
 
 const formatPercent = (value) => `${(value || 0).toFixed(1)}%`;
 

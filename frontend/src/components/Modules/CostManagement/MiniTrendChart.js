@@ -6,6 +6,9 @@ const COLOR_CLASSES = {
   orange: 'bg-orange-500',
 };
 
+// Capacity line: 6px near-black dashes with 4px white gaps.
+export const THRESHOLD_DASHES = 'repeating-linear-gradient(90deg, #111827 0 6px, #ffffff 6px 10px)';
+
 const HEIGHT = 48; // px; bar heights are computed in px so they never collapse to 0
 const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
@@ -37,13 +40,6 @@ const MiniTrendChart = ({ data, color = 'blue', threshold = null, highlight = nu
   return (
     <div>
       <div className="relative flex items-end gap-0.5" style={{ height: HEIGHT }} role="img" aria-label="Monthly trend">
-        {thresholdTop !== null && (
-          <div
-            className="pointer-events-none absolute inset-x-0 border-t border-dashed border-red-400"
-            style={{ top: thresholdTop }}
-            aria-hidden="true"
-          />
-        )}
         {data.map((item, index) => {
           const value = values[index];
           const height = scaleMax > 0 ? Math.max(2, Math.round((value / scaleMax) * HEIGHT)) : 2;
@@ -59,6 +55,16 @@ const MiniTrendChart = ({ data, color = 'blue', threshold = null, highlight = nu
             />
           );
         })}
+        {thresholdTop !== null && (
+          // Drawn after the bars, on top, as alternating dark / white dashes so
+          // the capacity line stays visible across red, orange and empty space.
+          <div
+            data-testid="trend-threshold"
+            className="pointer-events-none absolute inset-x-0 z-10"
+            style={{ top: Math.max(0, thresholdTop - 1), height: 2, backgroundImage: THRESHOLD_DASHES }}
+            aria-hidden="true"
+          />
+        )}
       </div>
       <div className="mt-0.5 flex gap-0.5 text-center text-[10px] leading-3 text-gray-400" aria-hidden="true">
         {data.map((item, index) => (

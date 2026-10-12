@@ -14,6 +14,7 @@ import { DataTable } from '../../ui/data-table';
 import MachineModal from './MachineModal';
 import MachineSummary from './MachineSummary';
 import MachineValidation from './MachineValidation';
+import { formatCapacityHours } from './machineHelpers';
 
 const MachineManagement = () => {
   const { data, actions, loading } = useForecast();
@@ -189,48 +190,49 @@ const MachineManagement = () => {
     }).format(amount);
   };
 
+  // Labor type and description are optional on a machine; their columns only show when used.
+  const anyTyped = (Array.isArray(data.machines) ? data.machines : []).some(m => m.labor_type && String(m.labor_type).trim());
+  const anyDescribed = (Array.isArray(data.machines) ? data.machines : []).some(m => m.machine_description && String(m.machine_description).trim());
+
   // Define columns for DataTable
   const machineColumns = [
     {
       key: 'machine_name',
-      title: 'Machine Name',
+      title: 'Machine',
       render: (value, row) => (
-        <div className="space-y-1">
+        <div className="min-w-[12rem] space-y-0.5">
           <div className="font-semibold">{value}</div>
-          <div className="text-sm text-muted-foreground">ID: {row.machine_id}</div>
+          <div className="font-mono text-xs text-muted-foreground">{row.machine_id}</div>
         </div>
       )
     },
-    {
+    ...(anyTyped ? [{
       key: 'labor_type',
-      title: 'Type/Category',
-      render: (value) => {
-        const type = value || 'General';
-        const variants = {
-          'CNC': 'success',
-          'Manual': 'warning',
-          'Assembly': 'info',
-          'Inspection': 'secondary',
-          'General': 'default'
-        };
-        return <Badge variant={variants[type] || 'default'}>{type}</Badge>;
-      }
-    },
-    {
-      key: 'machine_description',
-      title: 'Description',
-      render: (value) => value || 'N/A'
-    },
+      title: 'Type',
+      render: (value) => (value ? <Badge variant="outline">{value}</Badge> : <span className="text-xs text-gray-400">—</span>)
+    }] : []),
     {
       key: 'machine_rate',
-      title: 'Hourly Rate',
-      render: (value) => formatCurrency(value)
+      title: 'Hourly rate',
+      render: (value) => (value === null || value === undefined || value === ''
+        ? <span className="text-xs font-medium text-amber-700">Not set</span>
+        : <span className="whitespace-nowrap tabular-nums">{formatCurrency(value)}</span>)
     },
     {
       key: 'available_minutes_per_month',
-      title: 'Available (min/month)',
-      render: (value) => value ? value.toLocaleString() : 'N/A'
+      title: 'Capacity (h / month)',
+      render: (value) => {
+        const hours = formatCapacityHours(value);
+        return hours === null || !Number(value)
+          ? <span className="text-xs font-medium text-amber-700">Not set</span>
+          : <span className="whitespace-nowrap tabular-nums" title={`${Number(value).toLocaleString('en-US')} minutes per month`}>{hours}</span>;
+      }
     },
+    ...(anyDescribed ? [{
+      key: 'machine_description',
+      title: 'Description',
+      render: (value) => <span className="text-sm text-gray-600">{value || ''}</span>
+    }] : []),
     {
       key: 'used_in',
       title: 'Used In',
@@ -321,15 +323,17 @@ const MachineManagement = () => {
           />
         </div>
         
-        <div className="flex items-center gap-2">
-          <Label>Type:</Label>
-          <Select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            <SelectOption value="all">All Types</SelectOption>
-            {machineTypes.map(type => (
-              <SelectOption key={type} value={type}>{type}</SelectOption>
-            ))}
-          </Select>
-        </div>
+        {anyTyped && (
+          <div className="flex items-center gap-2">
+            <Label>Type:</Label>
+            <Select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+              <SelectOption value="all">All Types</SelectOption>
+              {machineTypes.map(type => (
+                <SelectOption key={type} value={type}>{type}</SelectOption>
+              ))}
+            </Select>
+          </div>
+        )}
 
         {selectedMachines.length > 0 && (
           <div className="flex items-center gap-2">

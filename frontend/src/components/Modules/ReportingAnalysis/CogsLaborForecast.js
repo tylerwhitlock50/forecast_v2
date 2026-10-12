@@ -20,7 +20,7 @@ import { formatCurrency, formatPct, formatPeriod, formatNumber } from './utils/f
 import { downloadCsv, slug } from './utils/csv';
 import {
   BRIDGE_ROWS, bridgeColumns, statementCsvRows, hasSalesInWindow, groupRows, sortRows, groupCsvRows,
-  MONTHLY_METRICS, laborCsvRows, machineCsvRows, unitCostCsvRows, headline
+  MONTHLY_METRICS, laborCsvRows, machineCsvRows, unitCostCsvRows, headline, mergeReportWarnings
 } from './utils/cogsLabor';
 
 const TABS = [
@@ -41,6 +41,8 @@ const GROUP_INTRO = {
 };
 
 const ORANGE = 'bg-orange-600 text-white hover:bg-orange-700';
+
+const fte1 = (v) => formatNumber(v, { maximumFractionDigits: 1, minimumFractionDigits: 1 });
 
 const money0 = (v) => formatCurrency(v, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 
@@ -73,7 +75,12 @@ const KpiRow = ({ h, laborLoading }) => (
     <Kpi
       title="Direct labor"
       value={h.laborHours === null ? (laborLoading ? '…' : '—') : `${formatNumber(h.laborHours, { maximumFractionDigits: 0 })} h`}
-      subtitle={h.avgFte === null ? 'Labor forecast unavailable' : `${formatNumber(h.avgFte, { maximumFractionDigits: 1, minimumFractionDigits: 1 })} avg FTE · ${formatNumber(h.peakFte, { maximumFractionDigits: 1, minimumFractionDigits: 1 })} peak`}
+      subtitle={h.avgFte === null ? 'Labor forecast unavailable' : (
+        // Each half stays on one line so a narrow card never leaves "peak" on its own.
+        <span data-testid="fte-subtitle">
+          <span className="whitespace-nowrap">{fte1(h.avgFte)} avg FTE</span> · <span className="whitespace-nowrap">{fte1(h.peakFte)} peak</span>
+        </span>
+      )}
       help="Routing labor hours to build the forecast; FTE = hours ÷ hours per FTE"
     />
   </div>
@@ -148,13 +155,9 @@ const CogsLaborForecast = () => {
     [cogs, grouping, isGroupTab, sort.key, sort.direction]
   );
 
-  const warnings = useMemo(() => {
-    const all = [...(cogs?.warnings || [])];
-    (labor?.warnings || []).forEach(w => {
-      if (!all.some(x => x.code === w.code)) all.push(w);
-    });
-    return all;
-  }, [cogs, labor]);
+  // Every machine_over_capacity warning is kept (one per machine); only a
+  // labor warning repeating a COGS warning's code is dropped.
+  const warnings = useMemo(() => mergeReportWarnings(cogs, labor), [cogs, labor]);
   const warningsKey = `${cogs?.generated_at}|${labor?.generated_at}`;
   const visibleWarnings = dismissedKey === warningsKey ? warnings.filter(w => w.level === 'info') : warnings;
 
@@ -361,7 +364,10 @@ const CogsLaborForecast = () => {
                     testId={`group-table-${grouping}`}
                   />
                   {groupView === 'summary' && (
-                    <p className="mt-2 text-xs text-gray-500">Click a column header to sort. Factory overhead and other COGS are period costs and appear only in the gross margin bridge.</p>
+                    <p className="mt-2 text-xs text-gray-500">
+                      Click a column header to sort. Factory overhead and other COGS are period costs and appear only in the gross margin bridge.
+                      {(grouping === 'customer' || grouping === 'customer_type') && ' Commissions are an operating expense, so they are not deducted from contribution.'}
+                    </p>
                   )}
                 </TabsContent>
               )}

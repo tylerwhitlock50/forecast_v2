@@ -35,27 +35,33 @@ export const fmt = (value, format = 'money') => {
   }
 };
 
-/** Sortable column header. */
-export const SortHeader = ({ label, sortKey, sort, onSort, help, align = 'right', className }) => {
+/**
+ * Sortable column header. Numeric (right-aligned) headers may wrap onto two
+ * lines when the table is short of room (e.g. "Product / COGS" at 1280px),
+ * so every column fits without scrolling sideways.
+ */
+export const SortHeader = ({ label, sortKey, sort, onSort, help, align = 'right', nowrap = false, className }) => {
   const active = sort?.key === sortKey;
   const ariaSort = active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+  const left = align === 'left';
   return (
     <th
       scope="col"
       aria-sort={ariaSort}
-      className={cn('px-2.5 py-2 font-medium whitespace-nowrap', align === 'left' ? 'text-left' : 'text-right', className)}
+      className={cn('py-2 font-medium align-bottom', left ? 'px-3 text-left whitespace-nowrap' : 'px-2 text-right', nowrap && 'whitespace-nowrap', className)}
     >
       <button
         type="button"
         onClick={() => onSort(sortKey)}
         title={help}
         className={cn(
-          'inline-flex items-center gap-1 hover:text-gray-900',
+          'inline-flex items-end gap-1 hover:text-gray-900',
+          left ? 'text-left' : 'text-right',
           active ? 'text-gray-900' : 'text-gray-600',
           help && 'cursor-help'
         )}
       >
-        <span className={help ? 'border-b border-dotted border-gray-400' : undefined}>{label}</span>
+        <span className={cn('leading-tight', help && 'border-b border-dotted border-gray-400')}>{label}</span>
         <span className="w-2 text-[10px] text-gray-400" aria-hidden="true">{active ? (sort.direction === 'asc' ? '▲' : '▼') : ''}</span>
       </button>
     </th>

@@ -5,6 +5,7 @@
 export const IMPORT_STEPS = [
   {
     kind: 'customers',
+    hint: 'Dealer, Distributor, Direct… drives prices and discounts.',
     rowNoun: ['customer', 'customers'],
     title: 'Customers',
     noun: ['customer', 'customers'],
@@ -21,6 +22,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'products',
+    hint: 'List price, product type, BOM and routing.',
     rowNoun: ['product', 'products'],
     title: 'Products',
     noun: ['product', 'products'],
@@ -37,6 +39,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'machines',
+    hint: 'Hourly rate and monthly capacity.',
     rowNoun: ['machine', 'machines'],
     title: 'Machines',
     noun: ['machine', 'machines'],
@@ -47,12 +50,13 @@ export const IMPORT_STEPS = [
       { value: 'upsert', label: 'Add new and update existing', help: 'Machines already in the system are updated from the file; new ones are added.' },
       { value: 'skip', label: 'Add new only', help: 'Machines already in the system are left exactly as they are.' },
     ],
-    required: ['machine_name'],
-    optional: ['machine_id', 'machine_rate', 'available_minutes_per_month', 'machine_description'],
+    required: ['machine_id', 'machine_name', 'machine_rate'],
+    optional: ['available_hours_per_month', 'machine_description'],
     manageLink: { to: '/machines', label: 'Open machines' },
   },
   {
     kind: 'labor_rates',
+    hint: 'Hourly cost of each kind of labor.',
     rowNoun: ['labor rate', 'labor rates'],
     title: 'Labor rates',
     noun: ['labor rate', 'labor rates'],
@@ -69,6 +73,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'routings',
+    hint: 'Machine and labor minutes per unit.',
     rowNoun: ['operation', 'operations'],
     title: 'Routings',
     noun: ['routing', 'routings'],
@@ -87,6 +92,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'boms',
+    hint: 'Parts and material cost per unit.',
     rowNoun: ['BOM line', 'BOM lines'],
     title: 'Bills of materials',
     noun: ['BOM', 'BOMs'],
@@ -105,6 +111,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'prices',
+    hint: 'Price or discount by customer type or customer.',
     rowNoun: ['price rule', 'price rules'],
     title: 'Prices',
     noun: ['price', 'prices'],
@@ -124,6 +131,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'deductions',
+    hint: 'Terms, chargebacks, excise tax, commissions.',
     rowNoun: ['rule', 'rules'],
     title: 'Discounts & allowances',
     noun: ['rule', 'rules'],
@@ -143,6 +151,7 @@ export const IMPORT_STEPS = [
   },
   {
     kind: 'sales',
+    hint: 'Units by customer, product and month.',
     rowNoun: ['sales row', 'sales rows'],
     title: 'Sales forecast',
     noun: ['sales row', 'sales rows'],
@@ -206,6 +215,7 @@ export const normalizeTemplateDocs = (payload) => {
     const required = [];
     const optional = [];
     const docs = {};
+    const aliases = {};
     const columns = asArray(entry.columns);
     if (columns.length > 0) {
       columns.forEach((col) => {
@@ -216,6 +226,7 @@ export const normalizeTemplateDocs = (payload) => {
         const desc = typeof col === 'object' ? (col.description || col.doc || col.help) : null;
         if (desc) docs[name] = desc;
         if (typeof col === 'object' && Array.isArray(col.aliases) && col.aliases.length) {
+          aliases[name] = col.aliases.filter((a) => typeof a === 'string');
           docs[name] = `${docs[name] ? `${docs[name]} ` : ''}Also accepted: ${col.aliases.join(', ')}.`;
         }
       });
@@ -224,7 +235,7 @@ export const normalizeTemplateDocs = (payload) => {
       asArray(entry.optional).forEach((c) => optional.push(typeof c === 'string' ? c : c?.name));
     }
     if (required.length || optional.length) {
-      out[kind] = { required: required.filter(Boolean), optional: optional.filter(Boolean), docs, description: entry.description || null };
+      out[kind] = { required: required.filter(Boolean), optional: optional.filter(Boolean), docs, aliases, description: entry.description || null };
     }
   });
   return out;
@@ -251,6 +262,25 @@ const toError = (e) => {
     error: e.error || e.message || e.detail || JSON.stringify(e),
     field: e.field || e.column || null,
   };
+};
+
+/**
+ * A column map from the server, if it sends one, -> [{column, field}].
+ * Accepts {file column: field} or a list of {column|source|file, field|target}.
+ */
+export const normalizeColumnMap = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  const out = [];
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      const column = entry?.column ?? entry?.source ?? entry?.file_column ?? entry?.header;
+      const field = entry?.field ?? entry?.target ?? entry?.canonical;
+      if (column !== undefined && column !== null) out.push({ column: String(column), field: field ? String(field) : null });
+    });
+  } else {
+    Object.entries(value).forEach(([column, field]) => out.push({ column, field: field ? String(field) : null }));
+  }
+  return out.length ? out : null;
 };
 
 /**
@@ -312,6 +342,8 @@ export const summarizeImportResult = (payload) => {
     mode: pick('mode') || null,
     deleted: num(pick('deleted')),
     replaceBlocked: Boolean(pick('replace_blocked')),
+    // How the server read the file's columns, when it says so.
+    columnMap: normalizeColumnMap(pick('column_map') ?? pick('columns_used') ?? pick('mapped_columns') ?? pick('column_mapping')),
     message: payload?.message || null,
   };
 };
@@ -353,4 +385,248 @@ export const errorMessage = (err, fallback = 'Something went wrong') => {
   if (typeof data?.message === 'string' && data.message) return data.message;
   if (err?.response?.status === 404) return 'This import is not available on the server yet (404).';
   return err?.userMessage || err?.message || fallback;
+};
+
+// ---------------------------------------------------------------------------
+// Column mapping: which file column feeds which field
+// ---------------------------------------------------------------------------
+
+/** Comparable column name, as the server compares them: lower case, letters and digits only. */
+export const headerKey = (name) => String(name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const FIELD_LABELS = {
+  customer_id: 'customer id',
+  customer_name: 'customer name',
+  customer_type: 'customer type',
+  region: 'region',
+  unit_id: 'product id',
+  unit_name: 'product name',
+  unit_type: 'product type',
+  unit_description: 'product description',
+  base_price: 'list price',
+  bom_id: 'BOM id',
+  bom_version: 'BOM version',
+  router_id: 'routing id',
+  machine_id: 'machine id',
+  machine_name: 'machine name',
+  machine_rate: 'hourly rate',
+  machine_description: 'description',
+  available_hours_per_month: 'capacity (hours / month)',
+  available_minutes_per_month: 'capacity (minutes / month)',
+  rate_id: 'labor type id',
+  rate_name: 'labor type name',
+  rate_amount: 'hourly rate',
+  rate_type: 'pay type',
+  router_name: 'routing name',
+  sequence: 'operation number',
+  machine_minutes: 'machine minutes / unit',
+  labor_minutes: 'labor minutes / unit',
+  labor_type_id: 'labor type',
+  operation_description: 'operation description',
+  bom_name: 'BOM name',
+  version: 'BOM version',
+  bom_line: 'line number',
+  part_number: 'part number',
+  material_description: 'material description',
+  qty: 'quantity per unit',
+  unit: 'unit of measure',
+  material_cost: 'extended cost',
+  unit_price: 'price',
+  discount_pct: 'discount % off list',
+  start_period: 'start month',
+  end_period: 'end month',
+  forecast_id: 'scenario',
+  notes: 'notes',
+  deduction_type: 'deduction type',
+  name: 'rule name',
+  method: 'method',
+  rate: 'rate',
+  amount_per_unit: 'amount per unit',
+  period: 'month',
+  quantity: 'quantity',
+};
+
+const KIND_FIELD_LABELS = {
+  boms: { unit_price: 'unit cost', unit_id: 'product (links the BOM)' },
+  routings: { unit_id: 'product (links the routing)' },
+  sales: { unit_price: 'unit price' },
+};
+
+/** 'customer_type' -> 'customer type' (per import kind where the words differ). */
+export const fieldLabel = (kind, field) => {
+  if (!field) return '';
+  return KIND_FIELD_LABELS[kind]?.[field] || FIELD_LABELS[field] || String(field).replace(/_/g, ' ');
+};
+
+/** Columns named in the server's "Ignored columns (not recognised): a, b" warning. */
+export const ignoredColumnsFromWarnings = (warnings) => {
+  const out = [];
+  (warnings || []).forEach((w) => {
+    const text = typeof w === 'string' ? w : w?.message;
+    const m = /^Ignored columns[^:]*:\s*(.+)$/i.exec(String(text || ''));
+    if (m) m[1].split(',').map((c) => c.trim()).filter(Boolean).forEach((c) => out.push(c));
+  });
+  return out;
+};
+
+/**
+ * Template columns (from GET /import/templates) -> lookup of headerKey ->
+ * {field, rank}. Like the server: the field's own name ranks first, then its
+ * aliases in order; the first field to claim a spelling keeps it.
+ */
+const templateLookup = (columns, aliases) => {
+  const lookup = {};
+  (columns || []).forEach((field) => {
+    [field, ...((aliases && aliases[field]) || [])].forEach((alias, rank) => {
+      const key = headerKey(alias);
+      if (key && !lookup[key]) lookup[key] = { field, rank };
+    });
+  });
+  return lookup;
+};
+
+/**
+ * Which file column went to which field, for the import preview.
+ *
+ * - `serverMap` (the import response's own column map) wins when present.
+ * - Otherwise the columns are matched client-side the way the server does
+ *   (case, spaces, underscores and dashes ignored; template aliases), with
+ *   the same tie-break: when two columns feed one field, the field's own
+ *   name wins, then the alias listed first; the other column is unused.
+ * - Sales files are first read by the page itself (prepareSalesRows): month
+ *   columns become monthly quantities and a row total is dropped.
+ * - A column the client cannot place but the server did not report as
+ *   ignored is shown as used ("read by the server").
+ *
+ * Returns {mapped: [{column, field, label}], months: {count, first, last} | null,
+ *          dropped: [column], ignored: [column]}.
+ */
+export const describeColumnMapping = ({ kind, headers, template = null, serverMap = null, ignoredByServer = null, sales = null }) => {
+  const list = (headers || []).filter((h) => h && !/^__EMPTY/.test(h));
+  const mapped = [];
+  const ignored = [];
+  const dropped = [];
+  let months = null;
+
+  if (serverMap && serverMap.length) {
+    serverMap.forEach(({ column, field }) => {
+      if (field) mapped.push({ column, field, label: fieldLabel(kind, field) });
+      else ignored.push(column);
+    });
+    return { mapped, months, dropped, ignored };
+  }
+
+  const columns = template ? [...(template.required || []), ...(template.optional || [])] : [];
+  const lookup = templateLookup(columns, template?.aliases);
+  const claimed = {}; // field -> {column, rank}
+  const pending = [];
+
+  let candidates = list;
+  if (kind === 'sales' && sales) {
+    const monthHeaders = new Set((sales.monthColumns || []).map((c) => c.header));
+    if (monthHeaders.size) {
+      const periods = sales.monthColumns.map((c) => c.period).sort();
+      months = { count: monthHeaders.size, first: periods[0], last: periods[periods.length - 1], columns: sales.monthColumns.map((c) => c.header) };
+    }
+    candidates = list.filter((h) => !monthHeaders.has(h));
+    if (sales.layout === 'wide') {
+      const totals = candidates.filter((h) => sales.isTotal && sales.isTotal(h));
+      totals.forEach((h) => dropped.push(h));
+      candidates = candidates.filter((h) => !totals.includes(h));
+    }
+  }
+
+  candidates.forEach((column) => {
+    let hit = null;
+    if (kind === 'sales' && sales && sales.fieldFor) {
+      const field = sales.fieldFor(column);
+      if (field) hit = { field, rank: -1 };
+    }
+    if (!hit) hit = lookup[headerKey(column)] || null;
+    if (!hit) {
+      pending.push(column);
+      return;
+    }
+    const prior = claimed[hit.field];
+    if (!prior || hit.rank < prior.rank) {
+      if (prior) pending.push(prior.column);
+      claimed[hit.field] = { column, rank: hit.rank };
+    } else {
+      pending.push(column);
+    }
+  });
+
+  list.forEach((column) => {
+    const entry = Object.entries(claimed).find(([, c]) => c.column === column);
+    if (entry) mapped.push({ column, field: entry[0], label: fieldLabel(kind, entry[0]) });
+  });
+
+  const serverIgnored = ignoredByServer ? new Set(ignoredByServer.map(headerKey)) : null;
+  pending.forEach((column) => {
+    if (serverIgnored && !serverIgnored.has(headerKey(column))) {
+      mapped.push({ column, field: null, label: 'read by the server' });
+    } else {
+      ignored.push(column);
+    }
+  });
+  return { mapped, months, dropped, ignored };
+};
+
+// ---------------------------------------------------------------------------
+// Setup progress: one list, used by the Import data page, the sidebar's
+// "Get started" badge and the Sales Forecast checklist
+// ---------------------------------------------------------------------------
+
+const distinct = (rows, field) => new Set((rows || []).map((r) => r?.[field]).filter(Boolean)).size;
+
+/**
+ * Each import step (IMPORT_STEPS order) with what is already loaded:
+ * [{kind, title, count, label, done, warning}], plus {done, total}.
+ *
+ * `data` is the forecast context's data, `scenario` the active scenario
+ * (its sales_rows), `ruleCounts` {prices, deductions} from the pricing API
+ * (null while unknown).
+ */
+export const setupProgress = ({ data = {}, scenario = null, ruleCounts = {} } = {}) => {
+  const d = data || {};
+  const list = (value) => (Array.isArray(value) ? value : []);
+  const customers = list(d.customers);
+  const products = list(d.products);
+  const bomLines = list(d.bom).length;
+  const bomCount = distinct(d.bom, 'bom_id');
+  const routers = list(d.router_definitions).length;
+  const ops = list(d.router_operations).length;
+  const salesRows = scenario ? (scenario.sales_rows ?? list(d.sales_forecast).length) : null;
+  const untyped = customers.filter((c) => !String(c?.customer_type || '').trim()).length;
+  const unlinked = products.filter((p) => !(p?.bom ?? p?.bom_id) || !(p?.router ?? p?.router_id)).length;
+
+  const facts = {
+    customers: { count: customers.length, warning: untyped ? `${plural(untyped, ['customer has', 'customers have'])} no type` : null },
+    products: { count: products.length, warning: unlinked ? `${plural(unlinked, ['product is', 'products are'])} missing a BOM or routing` : null },
+    machines: { count: list(d.machines).length },
+    labor_rates: { count: list(d.labor_rates).length },
+    routings: { count: routers, label: routers ? `${plural(routers, ['routing', 'routings'])} · ${plural(ops, ['operation', 'operations'])}` : null },
+    boms: { count: bomCount, label: bomCount ? `${plural(bomCount, ['BOM', 'BOMs'])} · ${plural(bomLines, ['line', 'lines'])}` : null },
+    prices: { count: ruleCounts?.prices ?? null },
+    deductions: { count: ruleCounts?.deductions ?? null },
+    sales: { count: salesRows, label: salesRows ? `${plural(salesRows, ['sales row', 'sales rows'])}${scenario?.name ? ` in ${scenario.name}` : ''}` : null },
+  };
+
+  const steps = IMPORT_STEPS.map((step, index) => {
+    const fact = facts[step.kind] || {};
+    const count = typeof fact.count === 'number' ? fact.count : null;
+    const done = (count || 0) > 0;
+    return {
+      kind: step.kind,
+      number: index + 1,
+      title: step.title,
+      hint: step.hint,
+      count,
+      done,
+      label: done ? (fact.label || plural(count, step.noun)) : null,
+      warning: done ? fact.warning || null : null,
+    };
+  });
+  const done = steps.filter((s) => s.done).length;
+  return { steps, done, total: steps.length, byKind: Object.fromEntries(steps.map((s) => [s.kind, s])) };
 };

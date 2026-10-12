@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 import MiniTrendChart from './MiniTrendChart';
 import { ALL, machineView, periodLabel } from './costViews';
+import { formatPeriodRanges } from '../ReportingAnalysis/utils/formatters';
 
 const Row = ({ label, children, help, className = '' }) => (
   <div className="flex items-baseline justify-between gap-3">
@@ -58,7 +59,7 @@ const MachineUtilizationTab = ({
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <CardTitle className="truncate text-lg" title={machine.machine_name}>{machine.machine_name || machine.machine_id}</CardTitle>
+                        <CardTitle className="break-words text-lg leading-snug">{machine.machine_name || machine.machine_id}</CardTitle>
                         <div className="font-mono text-xs text-gray-500">{machine.machine_id}</div>
                       </div>
                       {noCapacity ? (
@@ -107,7 +108,7 @@ const MachineUtilizationTab = ({
                       <div className="rounded border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
                         {view.overPeriods.length >= periods.length && periods.length > 1
                           ? 'Over capacity in every month of the window.'
-                          : `Over capacity in ${view.overPeriods.map(periodLabel).join(', ')}.`}
+                          : `Over capacity in ${formatPeriodRanges(view.overPeriods)}.`}
                       </div>
                     )}
                   </CardContent>

@@ -1,4 +1,4 @@
-import { nextBomId, linesOf, cloneRows, bomDeleteImpact, versionOf } from './bomHelpers';
+import { nextBomId, linesOf, cloneRows, bomDeleteImpact, versionOf, validateBoms } from './bomHelpers';
 
 const lines = [
   { bom_id: 'B-RIDGE', version: '1.0', bom_line: 2, material_description: 'Stock', qty: 1, unit: 'each', unit_price: 200, material_cost: 200 },
@@ -39,5 +39,45 @@ describe('bomHelpers', () => {
     ];
     expect(bomDeleteImpact('B-RIDGE', lines, products)).toEqual({ lineCount: 3, versions: ['1.0', '2.0'], products: ['Ridgeline'] });
     expect(bomDeleteImpact('B-NONE', lines, products)).toEqual({ lineCount: 0, versions: [], products: [] });
+  });
+});
+
+describe('validateBoms', () => {
+  const headers = [
+    { bom_id: 'BOM-RF100', version: 'A', bom_name: 'RF-100 assembly' },
+    { bom_id: 'BOM-AC200', version: 'A', bom_name: 'AC-200 assembly' },
+  ];
+  const good = [
+    { bom_id: 'BOM-RF100', version: 'A', bom_line: 10, material_description: 'Barrel blank', qty: 1, unit_price: 118, material_cost: 118 },
+    { bom_id: 'BOM-RF100', version: 'A', bom_line: 20, material_description: 'Receiver', qty: 1, unit_price: 142.5, material_cost: 142.5 },
+    { bom_id: 'BOM-AC200', version: 'A', bom_line: 10, material_description: 'Mount', qty: 1, unit_price: 31.25, material_cost: 31.25 },
+  ];
+
+  it('finds the lines of every BOM version (no false "BOMs without lines")', () => {
+    const r = validateBoms(headers, good);
+    expect(r.issues).toEqual([]);
+    expect(r.warnings).toEqual([]);
+    expect(r).toMatchObject({ checkedBoms: 2, bomsWithProblems: 0, totalLines: 3, completeLines: 3 });
+  });
+
+  it('does not ask for target costs when none are set', () => {
+    const r = validateBoms(headers, good.map((l) => ({ ...l, target_cost: null })));
+    expect(r.warnings.map((w) => w.title)).toEqual([]);
+  });
+
+  it('reports an empty BOM version, a $0 line and a cost that is not qty x price', () => {
+    const r = validateBoms(
+      [...headers, { bom_id: 'BOM-RF100', version: 'B' }],
+      [
+        ...good,
+        { bom_id: 'BOM-AC200', version: 'A', bom_line: 20, material_description: 'Screws', qty: 4, unit_price: 0, material_cost: 0 },
+        { bom_id: 'BOM-AC200', version: 'A', bom_line: 30, material_description: 'Rings', qty: 2, unit_price: 1250, material_cost: 1000 },
+      ],
+    );
+    expect(r.issues.map((i) => i.title)).toEqual(['BOMs without lines']);
+    expect(r.issues[0].items).toEqual(['BOM-RF100 vB']);
+    expect(r.warnings.map((w) => w.title)).toEqual(['Lines without a unit cost', 'Extended cost is not quantity × unit cost']);
+    expect(r.warnings[1].items[0]).toBe('BOM-AC200 vA line 30: expected $2,500.00, stored $1,000.00');
+    expect(r.bomsWithProblems).toBe(2);
   });
 });

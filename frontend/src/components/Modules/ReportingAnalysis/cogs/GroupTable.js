@@ -1,15 +1,15 @@
 import React from 'react';
 import { cn } from '../../../../lib/utils';
 import { formatPeriod } from '../utils/formatters';
-import { GROUPINGS, DISPLAY_GROUP_COLUMNS, MONTHLY_METRICS, groupTotals, monthTotals, monthValue } from '../utils/cogsLabor';
+import { GROUPINGS, MONTHLY_METRICS, displayGroupColumns, groupTotals, monthTotals, monthValue } from '../utils/cogsLabor';
 import { SortHeader, fmt, tableWrap, tableClass, theadRow, stickyName } from './parts';
 
 const NameCell = ({ row, className }) => {
   const second = [row.sub, row.type].filter(Boolean).join(' · ');
   return (
-    <td className={cn('px-3 py-1 text-left whitespace-nowrap bg-white', stickyName, className)}>
-      <div className="font-medium text-gray-900">{row.name}</div>
-      {second && <div className="text-[10px] leading-tight text-gray-400">{second}</div>}
+    <td className={cn('px-3 py-1 text-left bg-white', stickyName, className)}>
+      <div className="font-medium leading-tight text-gray-900">{row.name}</div>
+      {second && <div className="whitespace-nowrap text-[10px] leading-tight text-gray-400">{second}</div>}
     </td>
   );
 };
@@ -35,7 +35,7 @@ const GroupTable = ({ rows, grouping, view = 'summary', metric = 'net_sales', pe
         <table data-testid={testId} className={tableClass}>
           <thead>
             <tr className={theadRow}>
-              <SortHeader label={g.nameHeader} sortKey="name" sort={sort} onSort={onSort} align="left" className={cn(stickyName, 'bg-gray-100 min-w-[180px]')} />
+              <SortHeader label={g.nameHeader} sortKey="name" sort={sort} onSort={onSort} align="left" className={cn(stickyName, 'bg-gray-100 min-w-[150px]')} />
               {periods.map(p => <th key={p} scope="col" className="px-2 py-2 text-right font-medium whitespace-nowrap min-w-[72px]">{formatPeriod(p)}</th>)}
               <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap bg-gray-200 text-gray-800">Total</th>
             </tr>
@@ -67,14 +67,15 @@ const GroupTable = ({ rows, grouping, view = 'summary', metric = 'net_sales', pe
   }
 
   const totals = groupTotals(rows);
+  const columns = displayGroupColumns(grouping);
   return (
     <div className={tableWrap}>
       <table data-testid={testId} className={tableClass}>
         <thead>
           <tr className={theadRow}>
-            <SortHeader label={g.nameHeader} sortKey="name" sort={sort} onSort={onSort} align="left" className={cn(stickyName, 'bg-gray-100 min-w-[180px]')} />
-            {DISPLAY_GROUP_COLUMNS.map(c => (
-              <SortHeader key={c.key} label={c.label} sortKey={c.key} sort={sort} onSort={onSort} help={c.help} />
+            <SortHeader label={g.nameHeader} sortKey="name" sort={sort} onSort={onSort} align="left" className={cn(stickyName, 'bg-gray-100 min-w-[150px]')} />
+            {columns.map(c => (
+              <SortHeader key={c.key} label={c.label} sortKey={c.key} sort={sort} onSort={onSort} help={c.help} nowrap={c.nowrap} />
             ))}
           </tr>
         </thead>
@@ -82,12 +83,12 @@ const GroupTable = ({ rows, grouping, view = 'summary', metric = 'net_sales', pe
           {rows.map(r => (
             <tr key={r.key} className="border-t border-gray-100 hover:bg-orange-50/40">
               <NameCell row={r} />
-              {DISPLAY_GROUP_COLUMNS.map(c => (
+              {columns.map(c => (
                 <td
                   key={c.key}
                   className={cn(
-                    'px-2.5 py-1 text-right whitespace-nowrap',
-                    c.format === 'deduction' && 'text-gray-600',
+                    'px-2 py-1 text-right whitespace-nowrap',
+                    (c.format === 'deduction' || c.key === 'commissions') && 'text-gray-600',
                     c.key === 'contribution_margin_pct' && r[c.key] < 0 && 'text-red-600',
                     c.key === 'contribution_margin' && r[c.key] < 0 && 'text-red-600'
                   )}
@@ -102,8 +103,8 @@ const GroupTable = ({ rows, grouping, view = 'summary', metric = 'net_sales', pe
         <tfoot>
           <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
             <td className={cn('px-3 py-1.5 text-left bg-gray-50', stickyName)}>Total ({rows.length})</td>
-            {DISPLAY_GROUP_COLUMNS.map(c => (
-              <td key={c.key} className={cn('px-2.5 py-1 text-right whitespace-nowrap', c.format === 'deduction' && 'text-gray-600')}>
+            {columns.map(c => (
+              <td key={c.key} className={cn('px-2 py-1 text-right whitespace-nowrap', c.format === 'deduction' && 'text-gray-600')}>
                 <div>{fmt(totals[c.key], c.format)}</div>
                 {c.perUnit && <div className="text-[10px] font-normal leading-tight text-gray-500">{fmt(totals[c.perUnit], 'money2')} / unit</div>}
               </td>

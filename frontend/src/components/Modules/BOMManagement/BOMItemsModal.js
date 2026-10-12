@@ -193,9 +193,9 @@ const BOMItemsModal = ({ isOpen, onClose, bom, bomItems, bomDefinitions = [], on
     }
   };
 
-  const formatCurrency = (value) => {
-    return `$${Number(value || 0).toFixed(2)}`;
-  };
+  const formatCurrency = (value) => new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(value || 0));
 
   // BOM.material_cost is stored per unit of finished good, so summing
   // across lines gives the material cost contributed by this BOM to one

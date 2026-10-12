@@ -390,21 +390,21 @@ const RouterManagement = () => {
         )}
 
         {activeTab === 'summary' && (
-          <RouterSummary 
-            routers={data.router_definitions || []} 
+          <RouterSummary
+            routers={data.router_definitions || []}
             routerOperations={data.router_operations || []}
             machines={data.machines || []}
-            units={data.units || []}
+            products={data.products || []}
             laborRates={data.labor_rates || []}
           />
         )}
 
         {activeTab === 'validation' && (
-          <RouterValidation 
-            routers={data.router_definitions || []} 
+          <RouterValidation
+            routers={data.router_definitions || []}
             routerOperations={data.router_operations || []}
             machines={data.machines || []}
-            units={data.units || []}
+            products={data.products || []}
             laborRates={data.labor_rates || []}
           />
         )}

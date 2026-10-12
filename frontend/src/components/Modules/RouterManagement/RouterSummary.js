@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 
-const RouterSummary = ({ routers, routerOperations, machines, units, laborRates }) => {
+const RouterSummary = ({ routers, routerOperations, machines, products = [], laborRates }) => {
   const summaryData = useMemo(() => {
     // Use router operations for analysis since that's where the actual data is
     const operations = Array.isArray(routerOperations) ? routerOperations : [];
@@ -43,16 +43,19 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
     const avgMachineMinutes = totalOperations > 0 ? totalMachineMinutes / totalOperations : 0;
     const avgLaborMinutes = totalOperations > 0 ? totalLaborMinutes / totalOperations : 0;
     
-    // Sequence analysis from operations
-    const maxSequence = operations.reduce((max, op) => Math.max(max, op.sequence || 0), 0);
-    const avgSequence = totalOperations > 0 ? 
-      operations.reduce((sum, op) => sum + (op.sequence || 0), 0) / totalOperations : 0;
+    // Per routing (= per finished unit of a product using it)
+    const routingCount = routerDefs.length;
+    const avgMachinePerRouting = routingCount > 0 ? totalMachineMinutes / routingCount : 0;
+    const avgLaborPerRouting = routingCount > 0 ? totalLaborMinutes / routingCount : 0;
+    const avgOpsPerRouting = routingCount > 0 ? totalOperations / routingCount : 0;
+    const usedRoutings = routerDefs.filter(r => (products || []).some(p => (p.router ?? p.router_id) === r.router_id)).length;
     
     // Data completeness from operations
     const withMachine = operations.filter(op => op.machine_id).length;
     const withLaborRate = operations.filter(op => op.labor_type_id).length;
     const withMachineMinutes = operations.filter(op => op.machine_minutes && op.machine_minutes > 0).length;
     const withLaborMinutes = operations.filter(op => op.labor_minutes && op.labor_minutes > 0).length;
+    const withAnyTime = operations.filter(op => (op.machine_minutes > 0) || (op.labor_minutes > 0)).length;
     const withDescription = operations.filter(op => op.operation_description).length;
     
     // Complete operation profiles
@@ -74,15 +77,18 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
         avgMachineMinutes,
         avgLaborMinutes
       },
-      sequenceStats: {
-        maxSequence,
-        avgSequence
+      routingStats: {
+        avgMachinePerRouting,
+        avgLaborPerRouting,
+        avgOpsPerRouting,
+        usedRoutings
       },
       completeness: {
         withMachine,
         withLaborRate,
         withMachineMinutes,
         withLaborMinutes,
+        withAnyTime,
         withDescription
       },
       dataQuality: {
@@ -90,7 +96,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
         incompleteProfiles: totalOperations - completeProfiles
       }
     };
-  }, [routers, routerOperations]);
+  }, [routers, routerOperations, products]);
 
   const topVersions = Object.entries(summaryData.versionBreakdown)
     .sort(([,a], [,b]) => b - a)
@@ -98,7 +104,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
 
   const topRouters = Object.entries(summaryData.routerBreakdown)
     .sort(([,a], [,b]) => b - a)
-    .slice(0, 5);
+    .slice(0, 12);
 
   const topMachines = Object.entries(summaryData.machineUtilization)
     .sort(([,a], [,b]) => b - a)
@@ -131,6 +137,21 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
     return rate ? rate.rate_name : rateId;
   };
 
+  const recommendations = [];
+  if (summaryData.dataQuality.incompleteProfiles > 0) {
+    recommendations.push({
+      key: 'incomplete', icon: '⚠️', tone: 'bg-yellow-50',
+      text: `${summaryData.dataQuality.incompleteProfiles} ${summaryData.dataQuality.incompleteProfiles === 1 ? 'operation is' : 'operations are'} missing a machine, a labor type or minutes. See Data Validation.`,
+    });
+  }
+  if (summaryData.totalRouters > 0 && summaryData.routingStats.usedRoutings < summaryData.totalRouters) {
+    const unused = summaryData.totalRouters - summaryData.routingStats.usedRoutings;
+    recommendations.push({
+      key: 'unused', icon: '🔗', tone: 'bg-blue-50',
+      text: `${unused} ${unused === 1 ? 'routing is' : 'routings are'} not linked to a product, so ${unused === 1 ? 'its' : 'their'} labor and machine cost does not reach COGS.`,
+    });
+  }
+
   return (
     <div className="space-y-6">
       {/* Key Metrics */}
@@ -140,8 +161,8 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="flex items-center space-x-4">
               <div className="text-3xl">🔄</div>
               <div>
-                <p className="text-2xl font-bold">{summaryData.totalOperations}</p>
-                <p className="text-sm text-muted-foreground">Total Operations</p>
+                <p className="text-2xl font-bold">{summaryData.totalRouters}</p>
+                <p className="text-sm text-muted-foreground">Routings · {summaryData.routingStats.usedRoutings} used by products</p>
               </div>
             </div>
           </CardContent>
@@ -152,8 +173,8 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="flex items-center space-x-4">
               <div className="text-3xl">✅</div>
               <div>
-                <p className="text-2xl font-bold">{summaryData.dataQuality.completeProfiles}</p>
-                <p className="text-sm text-muted-foreground">Complete Operations</p>
+                <p className="text-2xl font-bold">{summaryData.totalOperations}</p>
+                <p className="text-sm text-muted-foreground">Operations · {summaryData.dataQuality.completeProfiles} complete</p>
               </div>
             </div>
           </CardContent>
@@ -164,8 +185,8 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="flex items-center space-x-4">
               <div className="text-3xl">🏭</div>
               <div>
-                <p className="text-2xl font-bold">{formatMinutes(summaryData.timeStats.totalMachineMinutes)}</p>
-                <p className="text-sm text-muted-foreground">Total Machine Time</p>
+                <p className="text-2xl font-bold">{formatMinutes(summaryData.routingStats.avgMachinePerRouting)}</p>
+                <p className="text-sm text-muted-foreground" title="Machine minutes per finished unit, averaged over the routings">Avg machine time / unit</p>
               </div>
             </div>
           </CardContent>
@@ -176,8 +197,8 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             <div className="flex items-center space-x-4">
               <div className="text-3xl">👷</div>
               <div>
-                <p className="text-2xl font-bold">{formatMinutes(summaryData.timeStats.totalLaborMinutes)}</p>
-                <p className="text-sm text-muted-foreground">Total Labor Time</p>
+                <p className="text-2xl font-bold">{formatMinutes(summaryData.routingStats.avgLaborPerRouting)}</p>
+                <p className="text-sm text-muted-foreground" title="Labor minutes per finished unit, averaged over the routings">Avg labor time / unit</p>
               </div>
             </div>
           </CardContent>
@@ -197,7 +218,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
                   <Badge variant="outline" className="bg-blue-100 text-blue-800">
                     {version}
                   </Badge>
-                  <span className="text-sm text-muted-foreground">{count} operations</span>
+                  <span className="text-sm text-muted-foreground">{count} {count === 1 ? 'routing' : 'routings'}</span>
                 </div>
                 <div className="flex-1 mx-4">
                   <div className="w-full bg-gray-200 rounded-full h-2">
@@ -219,7 +240,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
       {/* Router Distribution */}
       <Card>
         <CardHeader>
-          <CardTitle>Router Distribution</CardTitle>
+          <CardTitle>Operations per Routing</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
@@ -251,7 +272,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
       {/* Machine Utilization */}
       <Card>
         <CardHeader>
-          <CardTitle>Machine Utilization (Minutes)</CardTitle>
+          <CardTitle>Machine Minutes per Unit, by Machine <span className="text-sm font-normal text-gray-500">(all routings)</span></CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
@@ -283,7 +304,7 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
       {/* Labor Utilization */}
       <Card>
         <CardHeader>
-          <CardTitle>Labor Utilization (Minutes)</CardTitle>
+          <CardTitle>Labor Minutes per Unit, by Labor Type <span className="text-sm font-normal text-gray-500">(all routings)</span></CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
@@ -320,20 +341,20 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm font-medium">Avg Machine Time</span>
+              <span className="text-sm font-medium">Average machine minutes per operation</span>
               <span className="text-lg font-bold text-blue-600">{summaryData.timeStats.avgMachineMinutes.toFixed(1)} min</span>
             </div>
             <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm font-medium">Avg Labor Time</span>
+              <span className="text-sm font-medium">Average labor minutes per operation</span>
               <span className="text-lg font-bold text-green-600">{summaryData.timeStats.avgLaborMinutes.toFixed(1)} min</span>
             </div>
             <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm font-medium">Max Sequence</span>
-              <span className="text-lg font-bold text-orange-600">{summaryData.sequenceStats.maxSequence}</span>
+              <span className="text-sm font-medium">Average operations per routing</span>
+              <span className="text-lg font-bold text-orange-600">{summaryData.routingStats.avgOpsPerRouting.toFixed(1)}</span>
             </div>
             <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm font-medium">Avg Sequence</span>
-              <span className="text-lg font-bold text-purple-600">{summaryData.sequenceStats.avgSequence.toFixed(1)}</span>
+              <span className="text-sm font-medium">Routings used by a product</span>
+              <span className="text-lg font-bold text-purple-600">{summaryData.routingStats.usedRoutings} of {summaryData.totalRouters}</span>
             </div>
           </div>
         </CardContent>
@@ -400,13 +421,13 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
             
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
-                <span>With Time Data</span>
-                <span className="font-medium">{summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes} of {summaryData.totalOperations * 2}</span>
+                <span>With Machine or Labor Minutes</span>
+                <span className="font-medium">{summaryData.completeness.withAnyTime} of {summaryData.totalOperations}</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
                   className="bg-purple-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${((summaryData.completeness.withMachineMinutes + summaryData.completeness.withLaborMinutes) / (summaryData.totalOperations * 2)) * 100}%` }}
+                  style={{ width: `${(summaryData.completeness.withAnyTime / summaryData.totalOperations) * 100}%` }}
                 ></div>
               </div>
             </div>
@@ -414,64 +435,24 @@ const RouterSummary = ({ routers, routerOperations, machines, units, laborRates 
         </CardContent>
       </Card>
 
-      {/* Recommendations */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Recommendations</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-3">
-            {summaryData.dataQuality.incompleteProfiles > 0 && (
-              <div className="flex items-start space-x-3 p-3 bg-yellow-50 rounded-lg">
-                <span className="text-xl">⚠️</span>
-                <span className="text-sm">
-                  {summaryData.dataQuality.incompleteProfiles} router operations have incomplete data. 
-                  Consider adding missing machine assignments or time estimates.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.completeness.withMachineMinutes < summaryData.totalOperations * 0.8 && (
-              <div className="flex items-start space-x-3 p-3 bg-blue-50 rounded-lg">
-                <span className="text-xl">⏰</span>
-                <span className="text-sm">
-                  Only {Math.round((summaryData.completeness.withMachineMinutes / summaryData.totalOperations) * 100)}% of operations have machine time data. 
-                  Machine time is crucial for capacity planning.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.completeness.withLaborMinutes < summaryData.totalOperations * 0.8 && (
-              <div className="flex items-start space-x-3 p-3 bg-green-50 rounded-lg">
-                <span className="text-xl">👷</span>
-                <span className="text-sm">
-                  Only {Math.round((summaryData.completeness.withLaborMinutes / summaryData.totalOperations) * 100)}% of operations have labor time data. 
-                  Labor time is essential for cost calculations.
-                </span>
-              </div>
-            )}
-            
-            {summaryData.sequenceStats.maxSequence > 10 && (
-              <div className="flex items-start space-x-3 p-3 bg-orange-50 rounded-lg">
-                <span className="text-xl">🔄</span>
-                <span className="text-sm">
-                  Some routers have long sequences (max: {summaryData.sequenceStats.maxSequence}). 
-                  Consider breaking down complex operations for better tracking.
-                </span>
-              </div>
-            )}
-            
-            {Object.keys(summaryData.versionBreakdown).length > 5 && (
-              <div className="flex items-start space-x-3 p-3 bg-purple-50 rounded-lg">
-                <span className="text-xl">🏷️</span>
-                <span className="text-sm">
-                  Multiple router versions detected. Consider consolidating or archiving older versions.
-                </span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Recommendations (only when there is something to do) */}
+      {recommendations.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Recommendations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {recommendations.map((r) => (
+                <div key={r.key} className={`flex items-start space-x-3 p-3 rounded-lg ${r.tone}`}>
+                  <span className="text-xl">{r.icon}</span>
+                  <span className="text-sm">{r.text}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

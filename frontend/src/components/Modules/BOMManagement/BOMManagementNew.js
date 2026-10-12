@@ -411,7 +411,7 @@ const BOMManagement = () => {
         {activeTab === 'validation' && (
           <BOMValidation 
             boms={bomDefinitions} 
-            bomLines={data.bom || []}
+            bomItems={data.bom || []}
           />
         )}
       </div>

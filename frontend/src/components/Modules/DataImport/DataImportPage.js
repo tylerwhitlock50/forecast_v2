@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import api from '../../../lib/apiClient';
 import { useForecast } from '../../../context/ForecastContext';
 import { Card } from '../../ui/card';
 import ImportStepCard from './ImportStepCard';
-import { IMPORT_STEPS, normalizeTemplateDocs, plural } from './importSteps';
-import { extractList } from '../Pricing/pricingUtils';
+import { IMPORT_STEPS, normalizeTemplateDocs } from './importSteps';
+import useSetupProgress, { refreshRuleCounts } from './useSetupProgress';
 import { scrollToImportStep, stepFromHash } from '../../Common/importLink';
 
 const NEXT_STEPS = [
@@ -17,18 +17,17 @@ const NEXT_STEPS = [
 
 const HIGHLIGHT_MS = 2500;
 
-const distinctCount = (rows, field) => new Set((rows || []).map((r) => r?.[field]).filter(Boolean)).size;
-
 /**
  * Get started: load every kind of data in dependency order. Each step checks
  * the file with the server first (dry run) and only saves on confirm.
  */
 const DataImportPage = () => {
-  const { data, scenarios, activeScenario, actions } = useForecast();
+  const { scenarios, activeScenario, actions } = useForecast();
   const location = useLocation();
   const [docs, setDocs] = useState({});
-  const [ruleCounts, setRuleCounts] = useState({ prices: null, deductions: null });
   const [highlighted, setHighlighted] = useState(null);
+  // The same steps and counts as the sidebar badge and the Sales Forecast checklist.
+  const progress = useSetupProgress();
 
   // Deep links (/import#sales, #boms, #labor_rates ...): on load and on every
   // navigation to a hash, even the same one again, scroll to that step and
@@ -56,43 +55,13 @@ const DataImportPage = () => {
     return () => { cancelled = true; };
   }, []);
 
-  const loadRuleCounts = useCallback(async () => {
-    const fid = activeScenario ? `?forecast_id=${encodeURIComponent(activeScenario)}` : '';
-    const [prices, deductions] = await Promise.all([
-      api.get(`/pricing/prices${fid}`, { suppressErrorToast: true }).then((r) => extractList(r, ['prices', 'rules']).length).catch(() => null),
-      api.get(`/pricing/deductions${fid}`, { suppressErrorToast: true }).then((r) => extractList(r, ['rules', 'deductions']).length).catch(() => null),
-    ]);
-    setRuleCounts({ prices, deductions });
-  }, [activeScenario]);
-
-  useEffect(() => { loadRuleCounts(); }, [loadRuleCounts]);
-
-  const counts = useMemo(() => {
-    const bomLines = (data?.bom || []).length;
-    const bomCount = distinctCount(data?.bom, 'bom_id');
-    const routers = (data?.router_definitions || []).length;
-    const ops = (data?.router_operations || []).length;
-    const salesRows = scenario ? (scenario.sales_rows ?? (data?.sales_forecast || []).length) : null;
-    return {
-      customers: { count: (data?.customers || []).length },
-      products: { count: (data?.products || []).length },
-      machines: { count: (data?.machines || []).length },
-      labor_rates: { count: (data?.labor_rates || []).length },
-      routings: { count: routers, label: routers ? `${plural(routers, ['routing', 'routings'])} · ${plural(ops, ['operation', 'operations'])}` : null },
-      boms: { count: bomCount, label: bomCount ? `${plural(bomCount, ['BOM', 'BOMs'])} · ${plural(bomLines, ['line', 'lines'])}` : null },
-      prices: { count: ruleCounts.prices },
-      deductions: { count: ruleCounts.deductions },
-      sales: { count: salesRows },
-    };
-  }, [data, scenario, ruleCounts]);
-
-  const doneSteps = IMPORT_STEPS.filter((s) => (counts[s.kind]?.count || 0) > 0).length;
-  const pct = Math.round((doneSteps / IMPORT_STEPS.length) * 100);
+  const doneSteps = progress.done;
+  const pct = Math.round((doneSteps / progress.total) * 100);
   const isEmpty = doneSteps === 0;
 
   const handleImported = async (step) => {
     await actions.fetchAllData();
-    if (step.kind === 'prices' || step.kind === 'deductions') await loadRuleCounts();
+    if (step.kind === 'prices' || step.kind === 'deductions') await refreshRuleCounts(activeScenario, { force: true });
   };
 
   return (
@@ -108,7 +77,7 @@ const DataImportPage = () => {
         <div className="w-full max-w-xs" aria-label="Setup progress">
           <div className="flex items-baseline justify-between text-sm">
             <span className="font-medium text-gray-700">Setup progress</span>
-            <span className="tabular-nums text-gray-500">{doneSteps} of {IMPORT_STEPS.length} steps have data</span>
+            <span className="tabular-nums text-gray-500">{doneSteps} of {progress.total} steps have data</span>
           </div>
           <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-gray-200">
             <div className="h-full rounded-full bg-orange-500 transition-all" style={{ width: `${pct}%` }} />
@@ -133,8 +102,8 @@ const DataImportPage = () => {
             key={step.kind}
             step={step}
             number={index + 1}
-            count={counts[step.kind]?.count ?? null}
-            countLabel={counts[step.kind]?.label || null}
+            count={progress.byKind[step.kind]?.count ?? null}
+            countLabel={progress.byKind[step.kind]?.label || null}
             docs={docs[step.kind] || (step.table ? docs[step.table] : null) || null}
             scenario={scenario}
             noScenarios={noScenarios}

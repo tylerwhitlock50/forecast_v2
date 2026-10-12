@@ -1,12 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, Download, FileSpreadsheet, Loader2, Upload, X } from 'lucide-react';
+import { CheckCircle2, Download, FileSpreadsheet, Info, Loader2, Upload, X } from 'lucide-react';
 import api, { apiClient } from '../../../lib/apiClient';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import ImportPreview from './ImportPreview';
-import { readImportFile, prepareSalesRows } from './fileParsing';
-import { errorMessage, plural, summarizeImportResult } from './importSteps';
+import ColumnMapping from './ColumnMapping';
+import { describeHeaderRow, isTotalHeader, prepareSalesRows, readImportFile, salesFieldFor } from './fileParsing';
+import { describeColumnMapping, errorMessage, ignoredColumnsFromWarnings, plural, summarizeImportResult } from './importSteps';
 import { formatPeriod } from '../ReportingAnalysis/utils/formatters';
 
 const IMPORT_TIMEOUT_MS = 180000;
@@ -48,7 +49,10 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
 
   const isSales = step.kind === 'sales';
   const blocked = isSales && !scenario;
-  const columns = docs || { required: step.required, optional: step.optional, docs: {} };
+  const columns = useMemo(
+    () => docs || { required: step.required, optional: step.optional, docs: {} },
+    [docs, step.required, step.optional],
+  );
   const hasData = typeof count === 'number' && count > 0;
 
   const reset = () => {
@@ -198,6 +202,24 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
   const toRemove = isSales && preview && !replaceBlocked ? preview.deleted : 0;
   const busy = phase === 'reading' || phase === 'checking' || phase === 'importing';
   const modeInfo = step.modes?.find((m) => m.value === mode);
+  const headerNote = describeHeaderRow(parsed?.header);
+
+  // Which file column went to which field: the server's own map when the
+  // response has one, else matched here with the template aliases.
+  const checked = phase === 'done' ? result : preview;
+  const mapping = useMemo(() => {
+    if (!parsed || !checked) return null;
+    return describeColumnMapping({
+      kind: step.kind,
+      headers: parsed.columns || parsed.headers,
+      template: columns,
+      serverMap: checked.columnMap,
+      ignoredByServer: ignoredColumnsFromWarnings(checked.warnings),
+      sales: isSales && parsed.sales
+        ? { layout: parsed.sales.layout, monthColumns: parsed.sales.monthColumns, fieldFor: salesFieldFor, isTotal: isTotalHeader }
+        : null,
+    });
+  }, [parsed, checked, step.kind, columns, isSales]);
 
   return (
     <Card
@@ -310,6 +332,13 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                 )}
               </div>
 
+              {headerNote && (
+                <p className="flex items-start gap-2 rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-900" data-testid="header-row-note">
+                  <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <span>{headerNote}. The rows above it are treated as a title and not imported.</span>
+                </p>
+              )}
+
               {isSales && parsed?.sales?.layout === 'wide' && (
                 <p className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-900">
                   One column per month detected ({formatPeriod(parsed.sales.monthColumns[0].period)} – {formatPeriod(parsed.sales.monthColumns[parsed.sales.monthColumns.length - 1].period)}).
@@ -392,6 +421,8 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
                   {phase === 'reading' ? 'Reading the file…' : 'Checking every row with the server…'}
                 </div>
               )}
+
+              {(phase === 'preview' || phase === 'done') && <ColumnMapping mapping={mapping} />}
 
               {phase === 'preview' && preview && (
                 <>

@@ -7,6 +7,8 @@
 // shows the average month and the busiest (peak) month, never the window
 // total over one month of capacity.
 
+import { roundHalfAwayFromZero } from '../../../lib/money';
+
 export const ALL = 'all';
 export const DEFAULT_HOURS_PER_FTE = 173.33;
 
@@ -169,10 +171,11 @@ export const formatCompactCurrency = (value) => {
   const v = num(value);
   const abs = Math.abs(v);
   const sign = v < 0 ? '-' : '';
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
-  if (abs >= 1e4) return `${sign}$${Math.round(abs / 1e3).toLocaleString('en-US')}K`;
-  return `${sign}$${Math.round(abs).toLocaleString('en-US')}`;
+  const r = (x, dp) => roundHalfAwayFromZero(x, dp);
+  if (abs >= 1e9) return `${sign}$${r(abs / 1e9, 2).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${r(abs / 1e6, 2).toFixed(2)}M`;
+  if (abs >= 1e4) return `${sign}$${r(abs / 1e3, 0).toLocaleString('en-US')}K`;
+  return `${sign}$${r(abs, 0).toLocaleString('en-US')}`;
 };
 
 /** 'YYYY-MM' -> 'Jan 2027'. */

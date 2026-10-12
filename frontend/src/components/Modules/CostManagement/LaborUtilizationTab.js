@@ -54,7 +54,7 @@ const LaborUtilizationTab = ({
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <CardTitle className="truncate text-lg" title={item.labor_type_name}>{item.labor_type_name || item.labor_type_id}</CardTitle>
+                      <CardTitle className="break-words text-lg leading-snug">{item.labor_type_name || item.labor_type_id}</CardTitle>
                       <div className="font-mono text-xs text-gray-500">{item.labor_type_id}</div>
                     </div>
                     <Badge variant="outline" className="flex-none whitespace-nowrap">
