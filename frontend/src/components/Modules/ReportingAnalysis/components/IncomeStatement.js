@@ -184,7 +184,7 @@ const IncomeStatement = ({ data, periods = [], detail }) => {
               <div>
                 <DetailTable
                   title="Sales by product"
-                  subtitle="Gross profit here is before factory overhead and other COGS, which are period costs on the statement."
+                  subtitle="Gross profit here is net sales − product COGS, before the direct labor variance, indirect labor, factory overhead and other COGS, which are period costs on the statement."
                   testId="revenue-by-product"
                   headers={['Product', 'Units', 'Gross sales', 'Deductions', 'Net sales', 'Product COGS', 'Gross profit', 'GP %']}
                   rows={byProduct.map(p => {

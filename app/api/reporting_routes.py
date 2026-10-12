@@ -269,8 +269,9 @@ async def get_sales_detail(
     gross_sales). Totals cover every matching row, not just the page:
 
     * ``totals``: sums of the rows as shown (= SUM of the column in Excel);
-    * ``report_totals``: sums of the unrounded lines; without filters they
-      equal the income statement and the COGS forecast for the window;
+    * ``report_totals``: sums of the unrounded lines, added month by month
+      as the statements add them; without filters they equal the income
+      statement and the COGS forecast for the window to the cent;
     * ``rounding``: ``report_totals - totals`` (per-line cent rounding).
     """
     ids = _parse_forecast_ids(forecast_ids)

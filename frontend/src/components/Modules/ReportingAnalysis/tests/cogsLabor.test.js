@@ -50,6 +50,9 @@ describe('gross margin bridge', () => {
     expect(BRIDGE_ROWS.find(r => r.key === 'labor_variance').label).toBe('Direct labor variance (payroll vs standard)');
     expect(BRIDGE_ROWS.find(r => r.key === 'indirect_labor').label).toBe('Indirect labor (factory)');
     expect(BRIDGE_ROWS.find(r => r.key === 'labor_variance').help).toMatch(/classed Direct/);
+    // Gross profit's stated formula names every COGS line (README-GP-DEFINITION).
+    expect(BRIDGE_ROWS.find(r => r.key === 'gross_profit').help)
+      .toMatch(/product COGS .*\+ direct labor variance \+ indirect labor \+ factory overhead \+ other COGS/);
     expect(BRIDGE_ROWS.filter(r => r.deduction).map(r => r.key)).toEqual(['terms_allowance', 'chargebacks', 'other_allowances', 'excise_tax', 'total_sales_deductions']);
   });
 

@@ -100,6 +100,17 @@ describe('COGS & Labor Forecast page', () => {
     expect(fet.textContent).toContain('(110)');
   });
 
+  it('says which COGS lines are only in the bridge, labor variance and indirect labor included (README-GP-DEFINITION)', async () => {
+    respond();
+    renderPage();
+    await screen.findByTestId('cogs-kpis');
+    fireEvent.click(screen.getByRole('tab', { name: 'By customer type' }));
+    const note = screen.getByText(/appear only in the gross margin bridge/);
+    expect(note).toHaveTextContent(/direct labor variance, indirect labor, factory overhead and other COGS/);
+    expect(within(screen.getByTestId('cogs-kpis')).getByText('Gross profit').parentElement)
+      .toHaveAttribute('title', expect.stringMatching(/direct labor variance \+ indirect labor \+ factory overhead/));
+  });
+
   it('switches to the labor tab with the payroll note', async () => {
     respond();
     renderPage();

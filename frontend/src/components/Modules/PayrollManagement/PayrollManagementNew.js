@@ -714,7 +714,8 @@ const PayrollManagement = () => {
           config={config}
           onSave={async (newConfig) => {
             try {
-              await api.post('/payroll/config', formConfigToServer(newConfig));
+              // One toast per refused save: the catch below names the action, so the client stays quiet.
+              await api.post('/payroll/config', formConfigToServer(newConfig), { suppressErrorToast: true });
               // A new pay frequency means a new year of runs: drop a hand-picked horizon.
               if (newConfig.payFrequency !== config.payFrequency) setForecastHorizon(null);
               setConfig(newConfig);

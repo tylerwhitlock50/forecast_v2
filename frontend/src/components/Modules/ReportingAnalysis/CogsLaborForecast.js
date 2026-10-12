@@ -20,7 +20,8 @@ import { formatCurrency, formatPct, formatPeriod, formatNumber } from './utils/f
 import { downloadCsv, slug } from './utils/csv';
 import {
   BRIDGE_ROWS, bridgeColumns, statementCsvRows, hasSalesInWindow, groupRows, sortRows, groupCsvRows,
-  MONTHLY_METRICS, laborCsvRows, machineCsvRows, unitCostCsvRows, headline, mergeReportWarnings
+  MONTHLY_METRICS, laborCsvRows, machineCsvRows, unitCostCsvRows, headline, mergeReportWarnings, PERIOD_COSTS_NOTE,
+  GROSS_PROFIT_HELP
 } from './utils/cogsLabor';
 
 const TABS = [
@@ -34,8 +35,8 @@ const TABS = [
 ];
 
 const GROUP_INTRO = {
-  product: 'Sales and contribution margin by product. Contribution = net sales − product COGS (materials, direct labor, machine), before factory overhead.',
-  product_type: 'Sales and contribution margin by product type. Contribution = net sales − product COGS, before factory overhead.',
+  product: 'Sales and contribution margin by product. Contribution = net sales − product COGS (materials, direct labor, machine), before the period costs in the gross margin bridge.',
+  product_type: 'Sales and contribution margin by product type. Contribution = net sales − product COGS, before the period costs in the gross margin bridge.',
   customer: 'Sales and contribution margin by customer. Prices, terms, chargebacks and excise vary by customer and customer type, so margins differ too.',
   customer_type: 'Sales and contribution margin by customer type (dealer, distributor, direct, government …).'
 };
@@ -71,6 +72,7 @@ const KpiRow = ({ h, laborLoading }) => (
       value={money0(h.grossProfit)}
       subtitle={h.grossMarginPct === null ? '—' : `${formatPct(h.grossMarginPct)} gross margin`}
       tone={h.grossProfit >= 0 ? 'success' : 'danger'}
+      help={GROSS_PROFIT_HELP}
     />
     <Kpi
       title="Direct labor"
@@ -365,7 +367,7 @@ const CogsLaborForecast = () => {
                   />
                   {groupView === 'summary' && (
                     <p className="mt-2 text-xs text-gray-500">
-                      Click a column header to sort. Factory overhead and other COGS are period costs and appear only in the gross margin bridge.
+                      Click a column header to sort. {PERIOD_COSTS_NOTE}
                       {(grouping === 'customer' || grouping === 'customer_type') && ' Commissions are an operating expense, so they are not deducted from contribution.'}
                     </p>
                   )}

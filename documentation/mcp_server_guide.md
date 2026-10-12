@@ -310,16 +310,22 @@ return the API's confirmation.
   `*_pct` fields are percentages) and the warnings. `group_by="summary"` adds the monthly
   bridge as a `{columns, rows}` table that ties to the income statement: each month's
   `product_cogs + labor_variance + indirect_labor + factory_overhead + other_cogs = total_cogs`; the dimension
-  groups show contribution margin before factory overhead, largest first, `top_n` of them
-  with the rest summed in `others`.
+  groups show contribution margin (net sales - product COGS, before the labor variance, indirect
+  labor, factory overhead and other COGS), largest first, `top_n` of them with the rest summed in
+  `others`.
 * `forecast_labor_forecast`: `periods` plus arrays per labor type (`hours`, `cost`, `fte`),
   per machine (`hours`, `utilization_pct`, `over_capacity_periods`). Labor cost is the routing
   standard (the income statement's standard direct labor). `standard_vs_payroll` sets it against
   employees classed Direct: standard vs paid hours, `utilization_pct`, and `labor_variance`
-  (direct payroll - standard, booked in COGS, so nobody is counted twice). `payroll_note` splits
-  payroll into direct, indirect (COGS) and admin (operating expense) and lists unclassified
-  employees (treated as admin until classed).
+  (direct payroll - standard, booked in COGS, so nobody is counted twice), with every monthly
+  column of the API as an array. `payroll_note` carries every field of the API's note: payroll
+  split into direct, indirect (COGS) and admin (operating expense), `cogs_direct_labor`
+  (standard + variance), `months_with_direct_pay`, `standard_only_months` /
+  `standard_only_labor`, the unclassified employees (treated as admin until classed) and the
+  policy message.
 * `forecast_sales_detail`: 50 rows per page by default; `totals` cover every matching row.
+  `report_totals` add up the unrounded lines month by month, exactly as the statements do, so
+  every column equals the income statement to the cent (quote them, not `totals`).
 * `forecast_export_workbook`: sheets Read Me, Gross Margin, Income Statement, By Product, By
   Customer, By Customer Type, Labor Forecast, Machine Hours, Unit Costs, Sales Detail,
   Deduction Rules, Price List, Cash Flow, Balance Sheet. The web UI's "Export Excel workbook"

@@ -108,8 +108,10 @@ Claude takes a snapshot before sweeping changes. "Restore my last save" undoes t
   the standard plus a *direct labor variance* line, so nobody is counted twice. The COGS & Labor
   Forecast's labor tab compares standard hours with paid hours (utilization). Employees with no
   class are treated as Admin and listed until you class them.
-* **Overhead.** Per-product and per-customer margins are before factory overhead. The
-  monthly bridge and the income statement include it.
+* **Overhead and period costs.** Per-product and per-customer margins are contribution margins:
+  net sales - product COGS, before the direct labor variance, indirect labor, factory overhead
+  and other COGS. The monthly bridge and the income statement include them: gross profit = net
+  sales - (product COGS + direct labor variance + indirect labor + factory overhead + other COGS).
 * **Payroll.** Salaried employees are entered at their annual salary. Burden is the
   employer cost only (FICA, unemployment, workers comp, benefits); income-tax withholding
   is not a company cost. The statements spread pay evenly over each month; Payroll ->

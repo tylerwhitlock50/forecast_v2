@@ -101,7 +101,8 @@ async def cogs_forecast(
                     "machine (product COGS) -> direct labor variance (pay of employees classed direct - routing "
                     "standard) -> indirect labor (employees classed indirect) -> factory overhead -> other COGS -> "
                     "total COGS -> gross profit; every month adds up and ties to the income statement. product / "
-                    "customer / customer_type / product_type: contribution margin (before overhead) per group, "
+                    "customer / customer_type / product_type: contribution margin (before the labor variance, "
+                    "indirect labor and overhead) per group, "
                     "largest net sales first. unit_costs: per-unit material / labor / machine cost and minutes "
                     "per product sold, with cost-data warnings.")] = "summary",
     include_periods: Annotated[bool, Field(
@@ -115,7 +116,8 @@ async def cogs_forecast(
     margin) and warnings; group_by picks the breakdown. Tables are
     {columns, rows}. Amounts in dollars, *_pct in percent. Gross profit
     and COGS equal forecast_financial_statements for the same window;
-    per-group figures are contribution margin before factory overhead."""
+    per-group figures are contribution margin before the labor variance,
+    indirect labor, factory overhead and other COGS."""
     ids = clean_ids(forecast_ids, "forecast_ids")
     start, end, sales_window = await scenario_window(ids, start_period, end_period)
     body = await call("GET", "/reporting/cogs-forecast", params=_query(ids, start, end))
@@ -169,9 +171,11 @@ async def labor_forecast(
     the income statement's standard direct labor (cogs_labor).
     standard_vs_payroll compares it with employees classed Direct in payroll
     (standard vs paid hours, utilization %, labor variance = direct payroll -
-    standard cost, booked in COGS); payroll_note splits payroll into direct,
-    indirect (factory overhead in COGS) and admin (operating expense) and
-    lists unclassified employees."""
+    standard cost, booked in COGS); payroll_note carries every field of the
+    API's note: payroll split into direct, indirect (COGS) and admin
+    (operating expense), cogs_direct_labor (standard + variance), the months
+    with direct pay and the standard-only months, unclassified employees and
+    the policy message."""
     ids = clean_ids(forecast_ids, "forecast_ids")
     start, end, sales_window = await scenario_window(ids, start_period, end_period)
     body = await call("GET", "/reporting/labor-forecast", params=_query(ids, start, end, hours_per_fte=hours_per_fte))
@@ -211,18 +215,19 @@ async def labor_forecast(
                                              "labor_cost", "machine_hours"))
         if omitted:
             result["by_product_omitted"] = omitted
+    # Every field of the API's note, as the API names it (empty month lists say "none", so they stay).
     note = body.get("payroll_note") or {}
-    result["payroll_note"] = drop_empty({k: note.get(k) for k in (
-        "direct_labor_cost", "payroll_cost", "direct_payroll_cost", "indirect_payroll_cost", "admin_payroll_cost",
-        "labor_variance", "unclassified_employees", "message")})
+    result["payroll_note"] = {k: v for k, v in note.items() if v is not None and v != ""}
     svp = body.get("standard_vs_payroll") or {}
     if svp:
-        rows = {r.get("period"): r for r in svp.get("by_period") or []}
+        by_period_rows = svp.get("by_period") or []
+        rows = {r.get("period"): r for r in by_period_rows}
+        # Every monthly column the API returns, as arrays aligned with 'periods'.
+        metrics = [m for m in (by_period_rows[0] if by_period_rows else {}) if m != "period"]
         result["standard_vs_payroll"] = {
             "totals": svp.get("totals"),
             "direct_employee_count": svp.get("direct_employee_count"),
-            **{m: series(rows, m) for m in ("standard_hours", "paid_hours", "utilization_pct", "standard_cost",
-                                            "direct_payroll_cost", "labor_variance")},
+            **{m: series(rows, m) for m in metrics},
             "basis": svp.get("basis"),
         }
     warnings = compact_warnings(body.get("warnings"))

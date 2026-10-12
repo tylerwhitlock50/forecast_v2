@@ -35,6 +35,7 @@ from services.financial_statements import (
     validate_period,
     window_total,
 )
+from services.pricing import CONTRA_REVENUE_TYPES
 
 DEFAULT_HOURS_PER_FTE = round(40 * 52 / 12, 2)  # 173.33 paid hours per month
 
@@ -557,6 +558,35 @@ def _unrounded_values(line: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
+#: Sales detail keys of the deductions that reduce gross sales to net sales, in statement order.
+_CONTRA_DETAIL_KEYS = tuple(_LINE_TO_REPORT[t] for t in CONTRA_REVENUE_TYPES)
+
+
+def _statement_sums(lines: Iterable[Dict[str, Any]], periods: Sequence[str]) -> Dict[str, float]:
+    """
+    Window totals of the engine's unrounded lines, added the way the
+    statements add them: each line into its month in load order
+    (revenue_and_cogs_by_period, build_cogs_forecast), then the months in
+    order (window_total, the statements' totals). One running sum over all
+    the lines is the same maths in another order and can land on the other
+    side of a half cent: the 2027 sample's direct labor is 449,997.575 to
+    the float, .57 month by month and .58 line by line. Total sales
+    deductions is, as on the income statement, each month's terms +
+    chargebacks + other allowances + excise tax.
+    """
+    by_period: Dict[str, Dict[str, float]] = {}
+    for line in lines:
+        p = line["period"]
+        for key, value in _unrounded_values(line).items():
+            month = by_period.setdefault(key, {})
+            month[p] = month.get(p, 0.0) + float(value or 0)
+    deductions = by_period.get("total_sales_deductions")
+    if deductions is not None:
+        for p in deductions:
+            deductions[p] = sum(by_period[k].get(p, 0.0) for k in _CONTRA_DETAIL_KEYS)
+    return {key: window_total(months, periods) for key, months in by_period.items()}
+
+
 def _finish_sums(sums: Dict[str, float]) -> Dict[str, float]:
     """Money to the cent; quantities and hours to 4 decimals."""
     return {k: (round(v, 2) if k in DETAIL_MONEY_COLUMNS else round(v, 4)) + 0.0 for k, v in sums.items()}
@@ -599,9 +629,12 @@ def sales_detail_report(cursor, forecast_ids: Sequence[str], start_period: str, 
       decimals.
     * ``totals``: the sums of the rows as shown, so they equal a SUM of the
       column in Excel.
-    * ``report_totals``: the sums of the engine's unrounded lines, rounded
-      once. Without filters they equal the income statement and the COGS
-      forecast for the window to the cent.
+    * ``report_totals``: the sums of the engine's unrounded lines, added
+      month by month as the statements add them (see _statement_sums) and
+      rounded once. Without filters every column equals the income
+      statement for the window to the cent (product COGS and contribution
+      margin equal the COGS forecast); with only a ``period`` filter they
+      equal that month's.
     * ``rounding``: ``report_totals - totals`` per column: what rounding
       every line to the cent moved the column total (usually a few cents).
 
@@ -623,17 +656,10 @@ def sales_detail_report(cursor, forecast_ids: Sequence[str], start_period: str, 
             raise ValueError(f"period {active['period']} is outside the window {periods[0]} to {periods[-1]}")
     loaded = load_sales_lines(cursor, forecast_ids, periods)
 
-    rows: List[Dict[str, Any]] = []
-    unrounded: Dict[str, float] = {}
-    for line in loaded["lines"]:
-        if active and not _matches(line, active):
-            continue
-        rows.append(_detail_row(line))
-        for key, value in _unrounded_values(line).items():
-            unrounded[key] = unrounded.get(key, 0.0) + float(value or 0)
-
+    matched = [line for line in loaded["lines"] if not active or _matches(line, active)]
+    rows = [_detail_row(line) for line in matched]
     totals = detail_totals(rows)
-    report_totals = _finish_sums(unrounded) if rows else {}
+    report_totals = _finish_sums(_statement_sums(matched, periods)) if rows else {}
     rounding = {k: round(report_totals[k] - totals.get(k, 0.0), 2) + 0.0
                 for k in DETAIL_MONEY_COLUMNS if k in report_totals}
     return {
