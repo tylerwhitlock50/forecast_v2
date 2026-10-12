@@ -714,6 +714,18 @@ class TestPrincipalChangeIsKept:
         assert _final_debt(db_path) == pytest.approx(0, abs=0.05)
         assert loan_id not in audit(client)[1]
 
+    def test_a_principal_cut_to_what_is_repaid_previews_nothing_owed(self, env):
+        client, db_path = env
+        loan_id = create(client, principal_amount=100000, interest_rate=6, loan_term_months=12, start_date="2027-01-15")
+        mark_paid(db_path, loan_id, 1, 2)
+        repaid = sum(r["principal_payment"] for r in schedule(db_path, loan_id)[:2])
+        data = put(client, loan_id, {"principal_amount": round(repaid, 2)})["data"]
+        assert data["after"]["final_balance"] == pytest.approx(0, abs=0.01)
+        assert data["after"]["payoff_date"] == data["after"]["last_payment_date"]
+        later = put(client, loan_id, {"interest_rate": 5}, preview="true")["data"]
+        assert later["after"]["final_balance"] == pytest.approx(0, abs=0.01)
+        assert later["after"]["payoff_date"] is not None
+
     def test_a_later_frequency_change_keeps_the_difference(self, env):
         client, db_path = env
         loan_id = _principal_changed_loan(client, db_path)

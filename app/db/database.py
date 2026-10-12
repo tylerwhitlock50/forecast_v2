@@ -67,7 +67,8 @@ GOVERNANCE_TOKEN = 'SCENARIO_GOVERNED'
 #: (services.governance.GOVERNED_TABLES: change history, approvals, actuals and their batches / close), the
 #: approve / unlock switch and the internal log / cache tables.
 REPLAY_PROTECTED_TABLES = frozenset({
-    'audit_log', 'scenario_approvals', 'actuals', 'actuals_batches', 'actuals_batch_changes', 'actuals_periods',
+    'audit_log', 'scenario_approvals', 'actuals', 'actuals_batches', 'actuals_batch_changes', 'actuals_batch_entries',
+    'actuals_periods',
     GOVERNANCE_GUARD_TABLE, 'execution_log', 'forecast_results',
 })
 #: forecast columns a replay may never change: they move only through approve / unlock

@@ -350,3 +350,28 @@ def test_mcp_labor_forecast_passes_every_payroll_note_field(env, reports):
     for metric in (k for k in rows[0] if k != "period"):
         assert svp[metric] == [r[metric] for r in rows], metric
     assert "indirect_payroll_cost" in svp
+
+
+def test_a_product_customer_or_type_filter_equals_that_group_of_the_cogs_forecast(env):
+    # Filtered totals are added line by line, as the COGS forecast adds a group, so they tie to the group.
+    client, _mgr, fid = env
+    cogs = _data(client.get("/reporting/cogs-forecast", params=_params(fid)))
+    cases = [("unit_id", "by_product", "unit_id"), ("customer_id", "by_customer", "customer_id"),
+             ("customer_type", "by_customer_type", "customer_type"), ("unit_type", "by_product_type", "unit_type")]
+    for param, group_key, field in cases:
+        for group in cogs[group_key][:3]:
+            detail = _data(client.get("/reporting/sales-detail", params=_params(fid, limit=1, **{param: group[field]})))
+            for key in ("gross_sales", "net_sales", "materials", "labor", "machine", "product_cogs"):
+                assert detail["report_totals"][key] == group["totals"][key], (param, group[field], key)
+
+
+def test_revenue_summary_totals_equal_the_income_statement(env, reports):
+    client, _mgr, fid = env
+    res = client.get("/source-data/revenue-summary",
+                     params={"forecast_id": fid, "start_period": WINDOW[0], "end_period": WINDOW[1], "group_by": "period"})
+    assert res.status_code == 200, res.text
+    data = _data(res)
+    income = reports["income"]
+    assert data["totals"]["labor"] == income["cogs_labor"]
+    assert data["totals"]["net_sales"] == income["revenue"]
+    assert "direct labor variance" in data["notes"]

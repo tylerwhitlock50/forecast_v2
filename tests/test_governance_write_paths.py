@@ -17,6 +17,8 @@ Governance on the remaining write paths (review round 13).
 * LAB9-LOADER: the raw payroll writers apply the employee endpoints' pay,
   hours and date rules.
 """
+import sqlite3
+
 import pytest
 
 from tests.test_governance_api import approve, env, log, q  # noqa: F401  (env is a fixture)
@@ -428,3 +430,19 @@ def test_the_generic_writers_refuse_negative_pay_hours_and_reversed_dates(env):
     assert res.status_code == 200, res.text
     assert q(mgr, "SELECT end_date, weekly_hours, hourly_rate FROM payroll WHERE employee_id = 'E1'") == [
         ("2027-12-31", 30, 30.0)]
+
+
+def test_moving_a_row_into_a_locked_scenario_is_filed_under_that_scenario_when_several_are_locked(env):
+    client, mgr = env
+    draft = client.post("/forecast/scenario", json={"name": "Draft C"}).json()["data"]["forecast_id"]
+    conn = sqlite3.connect(mgr.database_path)
+    conn.execute("INSERT INTO sales VALUES ('W1', 'C1', 'P1', '2027-01', 1, 1000, 1000, ?)", (draft,))
+    conn.commit()
+    conn.close()
+    approve(client, "F001")
+    approve(client, "F002", note="Upside approved")
+    res = client.post("/forecast/update", json={"table": "sales", "id": "W1", "updates": {"forecast_id": "F002"}})
+    assert res.status_code == 409, res.text
+    assert res.json()["forecast_id"] == "F002" and "Upside" in res.json()["detail"]
+    assert latest(client)["forecast_id"] == "F002"
+    assert q(mgr, "SELECT forecast_id FROM sales WHERE sale_id = 'W1'") == [(draft,)]

@@ -53,6 +53,7 @@ from services.governance import (
     legacy_checks,
     loan_schedule_issue,
     locked_message,
+    locked_forecast_in_body,
     locked_scenario_name,
     parse_json_body,
     query_audit_log,
@@ -197,6 +198,9 @@ class GovernanceMiddleware:
                         hint = _body_forecast_id(original)
                         if not hint or locked_scenario_name(hint)[0] != hint:
                             hint = request_forecast_id()
+                            if not hint or locked_scenario_name(hint)[0] != hint:
+                                # e.g. a row of an unlocked scenario moved INTO a locked one: the body names it.
+                                hint = locked_forecast_in_body(self._parsed_body(headers, state)) or hint
                         new_body = json.dumps(lock_response_body(hint)).encode()
                         new_headers = [(k, v) for k, v in start.get("headers") or []
                                        if k.decode("latin-1").lower() != "content-length"]

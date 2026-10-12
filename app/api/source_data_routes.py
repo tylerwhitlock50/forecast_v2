@@ -14,6 +14,7 @@ from datetime import datetime
 
 from db.database import db_manager
 from db.models import ForecastResponse
+from services.financial_statements import window_total
 from utils.cost_rollup import (
     calculate_unit_costs,
     load_bom_lines,
@@ -349,8 +350,11 @@ async def get_revenue_summary_from_source(
     Built on services.financial_statements.load_sales_lines (the rows and
     numbers the income statement uses). Every group carries quantity, gross
     sales (`total_revenue` = gross sales, as before), each sales deduction,
-    net sales, commissions, product COGS (materials, labor, machine) and
-    gross margin = net sales - product COGS (before factory overhead).
+    net sales, commissions, product COGS (materials, standard labor,
+    machine) and gross margin = net sales - product COGS: the contribution
+    margin, before the direct labor variance, indirect labor and factory
+    overhead that the income statement's gross profit also deducts. The
+    totals equal the income statement's lines for the window to the cent.
     `avg_unit_price` is quantity-weighted: gross sales / quantity.
     """
     if group_by not in REVENUE_GROUP_BY:
@@ -369,17 +373,25 @@ async def get_revenue_summary_from_source(
 
         groups: Dict[tuple, Dict[str, Any]] = {}
         totals = _empty({})
+        # The window totals are added month by month, as the statements add them, so they equal the
+        # income statement to the cent (one running sum over the lines can land a half cent the other way).
+        monthly: Dict[str, Dict[str, float]] = {field: {} for field in _REVENUE_METRICS.values()}
         for line in lines:
             header = _revenue_group_header(group_by, line)
             entry = groups.get(tuple(header.values()))
             if entry is None:
                 entry = groups[tuple(header.values())] = _empty(header)
+            for line_key, field in _REVENUE_METRICS.items():
+                entry[field] += line[line_key]
+                month = monthly[field]
+                month[line["period"]] = month.get(line["period"], 0.0) + line[line_key]
             for target in (entry, totals):
-                for line_key, field in _REVENUE_METRICS.items():
-                    target[field] += line[line_key]
                 target["customers"].add(line["customer_id"])
                 target["products"].add(line["unit_id"])
                 target["periods"].add(line["period"])
+        window = sorted(totals["periods"])
+        for field, months in monthly.items():
+            totals[field] = window_total(months, window)
 
         summary_data = []
         for entry in groups.values():
@@ -410,7 +422,9 @@ async def get_revenue_summary_from_source(
                 "group_by": group_by,
                 **scope_metadata(scope),
                 "notes": "total_revenue = gross sales; net_sales = gross sales - sales deductions; "
-                         "gross_margin = net sales - product COGS (before factory overhead); "
+                         "gross_margin = net sales - product COGS (materials + standard labor + machine): the "
+                         "contribution margin, before the direct labor variance, indirect labor and factory overhead "
+                         "that gross profit on the income statement also deducts; "
                          "avg_unit_price = gross sales / quantity.",
                 "warnings": scope_warnings(cursor, scope, loaded),
             },

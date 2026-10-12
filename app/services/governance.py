@@ -714,6 +714,24 @@ def _record_forecast_id(obj: Any) -> Optional[str]:
     return found
 
 
+def locked_forecast_in_body(parsed_body: Any) -> Optional[str]:
+    """
+    The first scenario id a request body names, at its top or in its rows /
+    ``updates`` (e.g. a row moved INTO a scenario), that is locked; None
+    when the body names no locked scenario. For the 409 of a refused write
+    whose target row belongs to an unlocked scenario. Never raises.
+    """
+    def locked(fid: Any) -> bool:
+        return bool(fid) and locked_scenario_name(str(fid))[0] == str(fid)
+
+    top = _own_forecast_id(parsed_body)
+    if top and locked(top):
+        return top
+    if isinstance(parsed_body, (dict, list)):
+        return _nested_forecast_id(parsed_body, locked)
+    return None
+
+
 def _scenario_checker() -> Any:
     """``accept(forecast_id)``: True when that scenario exists (memoised per call; never raises)."""
     seen: Dict[str, bool] = {}

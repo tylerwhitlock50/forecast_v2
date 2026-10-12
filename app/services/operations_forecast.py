@@ -634,7 +634,9 @@ def sales_detail_report(cursor, forecast_ids: Sequence[str], start_period: str, 
       rounded once. Without filters every column equals the income
       statement for the window to the cent (product COGS and contribution
       margin equal the COGS forecast); with only a ``period`` filter they
-      equal that month's.
+      equal that month's. With a product / customer / type filter they are
+      added line by line, as the COGS forecast adds its groups, so they
+      equal that group (by_product, by_customer, ...) to the cent.
     * ``rounding``: ``report_totals - totals`` per column: what rounding
       every line to the cent moved the column total (usually a few cents).
 
@@ -659,7 +661,16 @@ def sales_detail_report(cursor, forecast_ids: Sequence[str], start_period: str, 
     matched = [line for line in loaded["lines"] if not active or _matches(line, active)]
     rows = [_detail_row(line) for line in matched]
     totals = detail_totals(rows)
-    report_totals = _finish_sums(_statement_sums(matched, periods)) if rows else {}
+    if any(key != "period" for key in active):
+        # A product / customer / type filter: added line by line, as the COGS forecast's group views add a
+        # group (by_product, by_customer, ...), so the filtered totals equal that group to the cent.
+        sums: Dict[str, float] = {}
+        for line in matched:
+            for key, value in _unrounded_values(line).items():
+                sums[key] = sums.get(key, 0.0) + float(value or 0)
+    else:
+        sums = _statement_sums(matched, periods)
+    report_totals = _finish_sums(sums) if rows else {}
     rounding = {k: round(report_totals[k] - totals.get(k, 0.0), 2) + 0.0
                 for k in DETAIL_MONEY_COLUMNS if k in report_totals}
     return {

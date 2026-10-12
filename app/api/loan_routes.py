@@ -847,11 +847,18 @@ def _schedule_counts(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 def _plan_payload(rows: List[Dict[str, Any]], plan: Dict[str, Any]) -> Dict[str, Any]:
     """The before / after preview shared by updates and repairs."""
+    after = _summary(plan['final_rows'])
+    opening = plan.get('opening_balance')
+    if plan['action'] == 'regenerate' and not plan['new'] and opening is not None and plan['final_rows']:
+        # Nothing is left to schedule after the kept history: what is owed is the derived opening (principal
+        # less the kept principal), not the last kept row's balance, which may be stated on an old principal.
+        after['final_balance'] = round(float(opening), 2) + 0.0
+        after['payoff_date'] = after['last_payment_date'] if opening <= 0.01 else None
     return {
         'action': plan['action'],
         'schedule': _schedule_counts(plan),
         'before': _summary(rows),
-        'after': _summary(plan['final_rows']),
+        'after': after,
         'kept_rows': [_public_row(r) for r in plan['kept']],
         'removed_rows': [_public_row(r) for r in plan['removed']],
         'new_rows': [_public_row(r) for r in plan['new']],
