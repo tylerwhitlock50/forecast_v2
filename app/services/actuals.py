@@ -43,15 +43,20 @@ Actual screen, the MCP tools) runs the same steps:
              would happen.
 
 Every write records an ``actuals_batches`` row (batch_id 'ACT-xxxxxxxx')
-and stamps ``actuals.batch_id`` on the rows it inserted or changed. Rows a
-batch inserted get the actual_id '<batch_id>-<n>', so undo can tell rows it
-added from rows it changed; the values a batch overwrote, and the rows it
-removed with replace_lines, are kept in ``actuals_batch_changes``. Undoing a
-batch deletes the rows it added, puts back the rows it removed and returns
-the rows it changed to the value of the latest earlier batch that is not
-undone (an undone batch's value never comes back), but only rows still
-stamped with it (a row changed again later belongs to the later batch and
-is kept). Undoing a set of batches in any order leaves the same rows.
+and stamps ``actuals.batch_id`` on the rows it inserted or changed (a row it
+found unchanged keeps the batch that stored it). Rows a batch inserted get
+the actual_id '<batch_id>-<n>'. What the batch asked for is kept in
+``actuals_batch_entries`` (each row written or found unchanged as sent, the
+other references a replace_lines request named, a deletion's filter) and the
+rows it overwrote, removed with replace_lines, found unchanged or deleted in
+``actuals_batch_changes``. Undoing a batch leaves every month + line it
+touched exactly as replaying, in their original order, the batches still in
+place (not undone; deletions included) on top of the rows that predate them
+would: rows it added go, rows it changed go back to the latest earlier batch
+still in place (an undone batch's value never comes back), rows it replaced
+come back unless a batch still in place wrote, replaced or deleted them since,
+a later correction is kept and a row a later batch found unchanged stays with
+that batch. Undoing a set of batches in any order leaves the same rows.
 
 HTTP outcome (the routes and the MCP tools rely on it):
 
@@ -783,6 +788,27 @@ _RECORD_CHANGE = """INSERT OR IGNORE INTO actuals_batch_changes (batch_id, actua
     SELECT ?, actual_id, amount, notes, source, batch_id, updated_at, ?, period, line_item, reference_id, created_at
     FROM actuals WHERE actual_id = ?"""
 
+_LOG_ENTRY = """INSERT INTO actuals_batch_entries (batch_id, seq, action, period, line_item, reference_id, amount,
+        notes, source, actual_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+
+
+def _log_request(cursor, batch_id: str, planned: List[Dict[str, Any]], parsed: List[Dict[str, Any]],
+                 replace_lines: bool) -> None:
+    """
+    Keep what the batch asked for, so undo can replay it: every row it wrote or found unchanged (amount,
+    notes and source as sent, the row id) and, with replace_lines, the other references the request
+    named for a month + line it wrote (a rejected row's reference is not replaced away).
+    """
+    entries = [(item["action"], item["period"], item["line_item"], item["reference_id"], item["amount"],
+                item["notes"], item["source"], item["actual_id"]) for item in planned]
+    if replace_lines:
+        pairs = {(i["period"], i["line_item"]) for i in planned}
+        written = {(i["period"], i["line_item"], i["reference_id"]) for i in planned}
+        named = {(p["period"], p["line_item"], p["reference_id"]) for p in parsed
+                 if p["period"] and p["line_item"] and (p["period"], p["line_item"]) in pairs}
+        entries.extend(("keep", *key, None, None, None, None) for key in sorted(named - written))
+    cursor.executemany(_LOG_ENTRY, [(batch_id, seq, *entry) for seq, entry in enumerate(entries)])
+
 
 def _refs_text(rows: Sequence[Dict[str, Any]], limit: int = 3) -> str:
     shown = "; ".join(f"{r['reference_id'] or '(no reference)'} {_money(r['amount'])}" for r in rows[:limit])
@@ -1105,16 +1131,22 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
                 notes_for_batch.append(f"Added up duplicate rows for {_plural(len(combined), 'line')}")
             cursor.execute(
                 """INSERT INTO actuals_batches (batch_id, created_at, source, filename, rows_in_file, inserted, updated,
-                       unchanged, rejected, file_total, control_total, status, note, replaced)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       unchanged, rejected, file_total, control_total, status, note, replaced, replace_lines,
+                       entries_logged)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
                 (batch_id, now, source, filename, len(parsed) + len(skipped), counts["inserted"], counts["updated"],
                  counts["unchanged"], counts["rejected"], totals["grand_total"], control_total,
                  "partial" if outcome == "partial" else "imported", " | ".join(notes_for_batch) or None,
-                 counts["replaced"]))
+                 counts["replaced"], 1 if replace_lines else 0))
             # replace_lines: rows under other references go, recorded so undo puts them back exactly.
             for row in to_remove:
                 cursor.execute(_RECORD_CHANGE, (batch_id, "removed", row["actual_id"]))
                 cursor.execute("DELETE FROM actuals WHERE actual_id = ?", (row["actual_id"],))
+            # A row this import found already stored is its write too (undoing the import that stored it
+            # first leaves it with this one): recorded, the row itself is not touched.
+            for item in planned:
+                if item["action"] == "unchanged":
+                    cursor.execute(_RECORD_CHANGE, (batch_id, "confirmed", item["actual_id"]))
             sequence = 0
             for item in to_write:
                 if item["action"] == "insert":
@@ -1135,6 +1167,7 @@ def run_import(conn, rows: List[Tuple[int, Dict[str, Any]]], *, dry_run: bool = 
                                updated_at = ?, batch_id = ?
                            WHERE actual_id = ?""",
                         (item["amount"], item["notes"], item["source"], now, batch_id, item["actual_id"]))
+            _log_request(cursor, batch_id, planned, parsed, replace_lines)
             conn.commit()
             written = True
         elif not dry_run:
@@ -1242,7 +1275,12 @@ def _import_message(report: Dict[str, Any], refused_reason: Optional[str]) -> st
 
 def delete_actuals(conn, *, period: Optional[str] = None, line_item: Optional[str] = None,
                    actual_id: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
-    """Delete actuals by id, period and / or line item; refused (409) when a matching row is in a closed month."""
+    """
+    Delete actuals by id, period and / or line item; refused (409) when a matching row is in a closed month.
+    The deletion is a batch (status 'deleted', never undone): the rows it deleted are kept in
+    actuals_batch_changes ('deleted') and its filter in actuals_batch_entries, so undoing an earlier
+    import never brings a deleted row back.
+    """
     clauses, params = [], []
     line_key_value = None
     if actual_id:
@@ -1269,11 +1307,25 @@ def delete_actuals(conn, *, period: Optional[str] = None, line_item: Optional[st
         closed = closed_periods(cursor, [r[0] for r in found])
         if closed:
             raise ActualsError(closed_message(closed, "deleted"), status=409, data={"closed_periods": closed})
+        batch_id = _new_batch_id(cursor) if found else None
+        if batch_id:
+            cursor.execute(f"SELECT period, line_item, COALESCE(reference_id, '') FROM actuals WHERE {where}", params)
+            keys = sorted(set(cursor.fetchall()))
+            cursor.execute(
+                f"""INSERT OR IGNORE INTO actuals_batch_changes (batch_id, actual_id, previous_amount, previous_notes,
+                        previous_source, previous_batch_id, previous_updated_at, change_type, previous_period,
+                        previous_line_item, previous_reference_id, previous_created_at)
+                    SELECT ?, actual_id, amount, notes, source, batch_id, updated_at, 'deleted', period, line_item,
+                           COALESCE(reference_id, ''), created_at
+                    FROM actuals WHERE {where}""", (batch_id, *params))
+            # The filter: a row id is its month, line and reference; otherwise every reference of the
+            # month and / or line (NULL = any).
+            filters = keys if actual_id else [(period, line_key_value, None)]
+            cursor.executemany(_LOG_ENTRY, [(batch_id, seq, "delete", p, li, ref, None, None, None, None)
+                                            for seq, (p, li, ref) in enumerate(filters)])
         cursor.execute(f"DELETE FROM actuals WHERE {where}", params)
         deleted = cursor.rowcount
-        batch_id = None
         if deleted:
-            batch_id = _new_batch_id(cursor)
             what = []
             if period:
                 what.append(month_label(period))
@@ -1283,8 +1335,8 @@ def delete_actuals(conn, *, period: Optional[str] = None, line_item: Optional[st
                 what.append(f"row {actual_id}")
             cursor.execute(
                 """INSERT INTO actuals_batches (batch_id, created_at, source, filename, rows_in_file, inserted, updated,
-                       unchanged, rejected, file_total, control_total, status, note)
-                   VALUES (?, ?, ?, NULL, 0, 0, 0, 0, 0, NULL, NULL, 'deleted', ?)""",
+                       unchanged, rejected, file_total, control_total, status, note, entries_logged)
+                   VALUES (?, ?, ?, NULL, 0, 0, 0, 0, 0, NULL, NULL, 'deleted', ?, 1)""",
                 (batch_id, utc_now(), source or "delete",
                  f"Deleted {_plural(deleted, 'row')} ({', '.join(what)}; total {_money(sum(r[2] for r in found))})"))
         conn.commit()
@@ -1303,6 +1355,12 @@ BATCH_COLUMNS = ("batch_id", "created_at", "source", "filename", "rows_in_file",
 CHANGE_COLUMNS = ("batch_id", "actual_id", "previous_amount", "previous_notes", "previous_source", "previous_batch_id",
                   "previous_updated_at", "change_type", "previous_period", "previous_line_item",
                   "previous_reference_id", "previous_created_at")
+_ROW_COLUMNS = ("actual_id", "period", "line_item", "reference_id", "amount", "notes", "source", "batch_id",
+                "created_at", "updated_at")
+_ENTRY_COLUMNS = ("batch_id", "seq", "action", "period", "line_item", "reference_id", "amount", "notes", "source",
+                  "actual_id")
+#: Entry actions that write a row (or find it already stored, which counts as the batch's write too).
+_WRITE_ACTIONS = ("insert", "update", "unchanged")
 
 
 def _batch_rows(cursor, batch_id: str) -> List[Dict[str, Any]]:
@@ -1323,19 +1381,20 @@ def _change_records(cursor, where: str, params: Sequence[Any]) -> List[Dict[str,
     return out
 
 
-def _batch_statuses(cursor) -> Dict[str, str]:
-    cursor.execute("SELECT batch_id, status FROM actuals_batches")
-    return {r[0]: r[1] for r in cursor.fetchall()}
+def _batch_info(cursor) -> Dict[str, Dict[str, Any]]:
+    """Every batch in the order it ran (rowid): position, status, time, replace_lines, entries logged or not."""
+    cursor.execute("SELECT batch_id, status, created_at, COALESCE(replace_lines, 0), COALESCE(entries_logged, 0) "
+                   "FROM actuals_batches ORDER BY rowid")
+    return {r[0]: {"pos": i, "status": r[1], "created_at": r[2], "replace_lines": bool(r[3]), "logged": bool(r[4])}
+            for i, r in enumerate(cursor.fetchall())}
 
 
 def _resolve_earlier(cursor, actual_id: str, change: Dict[str, Any],
                      statuses: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """
-    What a row goes back to when the import that recorded ``change`` is undone: the value the
-    latest earlier import that is NOT undone wrote. Walks back through undone imports (their own
-    change records), so an undone import's value never comes back. None: no live import wrote
-    the row before (an undone import added it, or there is no earlier value on record), so the
-    row is removed. Returns (state, undone imports skipped).
+    The state a change record holds, walked back past undone imports (their own change records): an
+    undone import's value never comes back. None: an undone import added the row, or there is no earlier
+    value on record. Returns (state, undone imports skipped).
     """
     skipped: List[str] = []
     state = change
@@ -1352,26 +1411,262 @@ def _resolve_earlier(cursor, actual_id: str, change: Dict[str, Any],
         state = earlier[0]
 
 
-def _row_exists(cursor, actual_id: str) -> bool:
-    cursor.execute("SELECT 1 FROM actuals WHERE actual_id = ?", (actual_id,))
-    return cursor.fetchone() is not None
+def _record_state(change: Dict[str, Any]) -> Dict[str, Any]:
+    """The row a change record kept (its state before the batch changed, removed, found or deleted it)."""
+    return {"actual_id": change["actual_id"], "amount": change["previous_amount"], "notes": change["previous_notes"],
+            "source": change["previous_source"], "batch_id": change["previous_batch_id"],
+            "created_at": change["previous_created_at"], "updated_at": change["previous_updated_at"]}
 
 
-def _key_taken(cursor, change: Dict[str, Any]) -> bool:
-    cursor.execute("SELECT 1 FROM actuals WHERE period = ? AND line_item = ? AND COALESCE(reference_id, '') = ?",
-                   (change["previous_period"], change["previous_line_item"], change["previous_reference_id"] or ""))
-    return cursor.fetchone() is not None
+def _row_state(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: row.get(k) for k in ("actual_id", "amount", "notes", "source", "batch_id", "created_at", "updated_at")}
 
 
-def _latest_removal_at(cursor, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The newest replace_lines removal recorded for this row's month, line and reference (another row)."""
-    found = _change_records(
-        cursor,
-        "c.change_type = 'removed' AND c.previous_period = ? AND c.previous_line_item = ? "
-        "AND COALESCE(c.previous_reference_id, '') = ? AND c.actual_id <> ? "
-        "ORDER BY (SELECT b.rowid FROM actuals_batches b WHERE b.batch_id = c.batch_id) DESC LIMIT 1",
-        (row["period"], row["line_item"], row["reference_id"] or "", row["actual_id"]))
-    return found[0] if found else None
+def _same_amount(a: Any, b: Any, tolerance: float = 1e-9) -> bool:
+    return abs(float(a or 0) - float(b or 0)) <= tolerance
+
+
+def _same_content(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    return _same_amount(a["amount"], b["amount"]) and (a["notes"] or "") == (b["notes"] or "")
+
+
+def _same_state(a: Optional[Dict[str, Any]], b: Optional[Dict[str, Any]]) -> bool:
+    """Same row as far as anyone can tell: presence, amount, notes, source and the batch that owns it."""
+    if a is None or b is None:
+        return a is None and b is None
+    return (_same_content(a, b) and (a["source"] or "") == (b["source"] or "")
+            and (a["batch_id"] or "") == (b["batch_id"] or ""))
+
+
+def _undo_pairs(cursor, batch_id: str, rows: List[Dict[str, Any]],
+                records: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """Every month + line a batch acted on: what it asked for, the rows it owns, changed, removed or added."""
+    prefix = f"{batch_id}-"
+    pairs = {(r["period"], r["line_item"]) for r in rows}
+    pairs |= {(c["previous_period"], c["previous_line_item"]) for c in records if c.get("previous_period")}
+    cursor.execute("SELECT DISTINCT period, line_item FROM actuals_batch_entries WHERE batch_id = ? "
+                   "AND period IS NOT NULL AND line_item IS NOT NULL", (batch_id,))
+    pairs |= set(cursor.fetchall())
+    cursor.execute("SELECT DISTINCT period, line_item FROM actuals WHERE substr(actual_id, 1, ?) = ?",
+                   (len(prefix), prefix))
+    pairs |= set(cursor.fetchall())
+    cursor.execute("SELECT DISTINCT previous_period, previous_line_item FROM actuals_batch_changes "
+                   "WHERE substr(actual_id, 1, ?) = ? AND previous_period IS NOT NULL", (len(prefix), prefix))
+    pairs |= set(cursor.fetchall())
+    return sorted(p for p in pairs if p[0] and p[1])
+
+
+def _load_pairs(cursor, pairs: Sequence[Tuple[str, str]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """For each month + line: the rows stored now, every change record and every logged entry (deletions included)."""
+    models: Dict[Tuple[str, str], Dict[str, Any]] = {pair: {"rows": {}, "records": [], "entries": []}
+                                                     for pair in pairs}
+    by_period: Dict[str, List[Tuple[str, str]]] = {}
+    for pair in models:
+        by_period.setdefault(pair[0], []).append(pair)
+    periods = sorted(by_period)
+    for start in range(0, len(periods), 500):
+        chunk = periods[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        cursor.execute(f"SELECT {', '.join(_ROW_COLUMNS)} FROM actuals WHERE period IN ({marks})", chunk)
+        for record in cursor.fetchall():
+            row = dict(zip(_ROW_COLUMNS, record))
+            model = models.get((row["period"], row["line_item"]))
+            if model is not None:
+                model["rows"][row["reference_id"] or ""] = _row_state(row)
+        for change in _change_records(cursor, f"c.previous_period IN ({marks})", chunk):
+            model = models.get((change["previous_period"], change["previous_line_item"]))
+            if model is not None:
+                model["records"].append(change)
+        cursor.execute(f"SELECT {', '.join(_ENTRY_COLUMNS)} FROM actuals_batch_entries WHERE period IN ({marks})",
+                       chunk)
+        for record in cursor.fetchall():
+            entry = dict(zip(_ENTRY_COLUMNS, record))
+            if entry["line_item"] is None:          # a deletion of a whole month
+                for pair in by_period.get(entry["period"], []):
+                    models[pair]["entries"].append(entry)
+            elif (entry["period"], entry["line_item"]) in models:
+                models[(entry["period"], entry["line_item"])]["entries"].append(entry)
+    cursor.execute(f"SELECT {', '.join(_ENTRY_COLUMNS)} FROM actuals_batch_entries "
+                   f"WHERE action = 'delete' AND period IS NULL")
+    for record in cursor.fetchall():                # a deletion of a line in every month
+        entry = dict(zip(_ENTRY_COLUMNS, record))
+        for pair, model in models.items():
+            if entry["line_item"] is None or entry["line_item"] == pair[1]:
+                model["entries"].append(entry)
+    return models
+
+
+def _pair_program(model: Dict[str, Any], info: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    One month + line as a program: ``ops`` = [(batch, op)] in the order the batches ran, and what
+    ``_pair_base`` needs to tell each touched reference's state before the first batch touched it. An op
+    holds the batch's writes there (reference, amount / notes / source as sent, row id, times, action),
+    the references a replace_lines batch kept (None: it replaced nothing), references it removed one by
+    one (a deletion; a batch from before the entries were logged) and ``clear`` (a deletion of the line).
+    References no batch touched are not part of it and are never changed by undo.
+    """
+    def pos(b: Optional[str]) -> int:
+        return info[b]["pos"] if b in info else -1
+
+    ops: Dict[str, Dict[str, Any]] = {}
+    inserted_at: Dict[str, int] = {}
+    keeps: Dict[str, set] = {}
+
+    def op_for(b: str) -> Dict[str, Any]:
+        return ops.setdefault(b, {"writes": [], "keep": None, "remove": [], "clear": False})
+
+    for entry in sorted(model["entries"], key=lambda e: (pos(e["batch_id"]), e["seq"])):
+        b = entry["batch_id"]
+        if b not in info or not info[b]["logged"]:
+            continue
+        action = entry["action"]
+        if action in _WRITE_ACTIONS:
+            ref = entry["reference_id"] or ""
+            when = info[b]["created_at"]
+            op_for(b)["writes"].append((ref, {"amount": entry["amount"], "notes": entry["notes"],
+                                              "source": entry["source"]}, entry["actual_id"], when, when, action))
+            if action == "insert":
+                inserted_at.setdefault(ref, info[b]["pos"])
+        elif action == "keep":
+            keeps.setdefault(b, set()).add(entry["reference_id"] or "")
+        elif action == "delete":
+            if entry["reference_id"] is None:
+                op_for(b)["clear"] = True
+            else:
+                op_for(b)["remove"].append(entry["reference_id"] or "")
+    for b, op in ops.items():
+        if info[b]["replace_lines"] and op["writes"]:
+            op["keep"] = {w[0] for w in op["writes"]} | keeps.get(b, set())
+
+    rows, records = model["rows"], model["records"]
+    legacy = {b for b, i in info.items() if not i["logged"]}
+    if legacy:
+        _legacy_ops(rows, records, legacy, info, op_for, inserted_at)
+
+    first_record: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+    for change in records:
+        ref = change["previous_reference_id"] or ""
+        at = pos(change["batch_id"])
+        if ref not in first_record or at < first_record[ref][0]:
+            first_record[ref] = (at, change)
+    tracked = set(first_record) | set(inserted_at) | {w[0] for op in ops.values() for w in op["writes"]}
+    return {"ops": sorted(ops.items(), key=lambda kv: pos(kv[0])), "tracked": tracked,
+            "first_record": first_record, "inserted_at": inserted_at}
+
+
+def _pair_base(cursor, program: Dict[str, Any], statuses: Dict[str, str]) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Each touched reference's state before the first batch touched it (None = no row): what the earliest
+    change record there kept, or no row when a batch inserted it first. A state an undone batch wrote
+    (one from before change tracking) walks back past it.
+    """
+    base: Dict[str, Optional[Dict[str, Any]]] = {}
+    for ref in program["tracked"]:
+        found = program["first_record"].get(ref)
+        inserted = program["inserted_at"].get(ref)
+        if found is None or (inserted is not None and inserted < found[0]):
+            base[ref] = None
+            continue
+        state, _skipped = _resolve_earlier(cursor, found[1]["actual_id"], found[1], statuses)
+        base[ref] = None if state is None else _record_state(state)
+    return base
+
+
+def _legacy_ops(rows: Dict[str, Dict[str, Any]], records: List[Dict[str, Any]], legacy: set,
+                info: Dict[str, Dict[str, Any]], op_for, inserted_at: Dict[str, int]) -> None:
+    """
+    Batches imported before their entries were logged: their writes come from the rows they still own and
+    from the change records later batches kept of them (a row id '<batch>-n' = a row the batch added), and
+    the rows they replaced away from their own 'removed' records.
+    """
+    def owner_of_id(actual_id: Any) -> Optional[str]:
+        text = str(actual_id or "")
+        head = text.rsplit("-", 1)[0] if "-" in text else ""
+        return head if head in legacy else None
+
+    def written_by(b: str, ref: str) -> Optional[Dict[str, Any]]:
+        row = rows.get(ref)
+        if row is not None and row["batch_id"] == b:
+            return row
+        for change in records:
+            if (change["previous_reference_id"] or "") == ref and change["previous_batch_id"] == b:
+                return _record_state(change)
+        return None
+
+    writes: Dict[str, Dict[str, Tuple]] = {}
+    ids: Dict[str, str] = {}
+    for ref, row in rows.items():
+        ids.setdefault(row["actual_id"], ref)
+    for change in records:
+        ids.setdefault(change["actual_id"], change["previous_reference_id"] or "")
+    for actual_id, ref in ids.items():
+        b = owner_of_id(actual_id)
+        if b is None:
+            continue
+        inserted_at[ref] = min(inserted_at.get(ref, info[b]["pos"]), info[b]["pos"])
+        state = written_by(b, ref)
+        if state is not None:
+            writes.setdefault(b, {})[ref] = (state, actual_id, "insert")
+    own_updates = {(c["batch_id"], c["previous_reference_id"] or "") for c in records
+                   if c["batch_id"] in legacy and c["change_type"] == "updated"}
+    for b, ref in own_updates:
+        state = written_by(b, ref)
+        if state is not None:
+            writes.setdefault(b, {}).setdefault(ref, (state, state["actual_id"], "update"))
+    for ref, row in rows.items():
+        b = row["batch_id"]
+        if b in legacy and owner_of_id(row["actual_id"]) != b and (b, ref) not in own_updates:
+            # Changed before change tracking: no earlier amount on record, so it counts as added.
+            inserted_at[ref] = min(inserted_at.get(ref, info[b]["pos"]), info[b]["pos"])
+            writes.setdefault(b, {}).setdefault(ref, (row, row["actual_id"], "insert"))
+    for b, by_ref in writes.items():
+        op = op_for(b)
+        for ref in sorted(by_ref):
+            state, actual_id, action = by_ref[ref]
+            op["writes"].append((ref, {"amount": state["amount"], "notes": state["notes"], "source": state["source"]},
+                                 actual_id, state["created_at"], state["updated_at"], action))
+    for change in records:
+        if change["batch_id"] in legacy and change["change_type"] == "removed":
+            op_for(change["batch_id"])["remove"].append(change["previous_reference_id"] or "")
+
+
+def _replay(base: Dict[str, Optional[Dict[str, Any]]], ordered: List[Tuple[str, Dict[str, Any]]],
+            info: Dict[str, Dict[str, Any]], skip: Optional[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """
+    Run a month + line's batches that are not undone (and not ``skip``) in order on top of ``base``, with
+    the import's own rules: a new reference is inserted; a stored one is updated when the amount or the
+    notes differ (notes / source left blank keep the stored ones) and otherwise left with the batch that
+    stored it; replace_lines removes the references the batch did not name. Returns (state by reference,
+    the batch that last removed each reference that is gone).
+    """
+    state = {ref: dict(s) for ref, s in base.items() if s is not None}
+    removed_by: Dict[str, str] = {}
+    for b, op in ordered:
+        if b == skip or info.get(b, {}).get("status") == "undone":
+            continue
+        for ref, value, actual_id, created_at, updated_at, _action in op["writes"]:
+            current = state.get(ref)
+            if current is None:
+                state[ref] = {"actual_id": actual_id, "amount": value["amount"], "notes": value["notes"],
+                              "source": value["source"], "batch_id": b, "created_at": created_at,
+                              "updated_at": updated_at}
+                removed_by.pop(ref, None)
+            elif (not _same_amount(current["amount"], value["amount"], TOLERANCE)
+                  or (value["notes"] is not None and (value["notes"] or "") != (current["notes"] or ""))):
+                current.update(amount=value["amount"], batch_id=b, updated_at=updated_at)
+                if value["notes"] is not None:
+                    current["notes"] = value["notes"]
+                if value["source"] is not None:
+                    current["source"] = value["source"]
+        if op["clear"]:
+            gone = list(state)
+        else:
+            gone = [ref for ref in state if op["keep"] is not None and ref not in op["keep"]]
+            gone += [ref for ref in op["remove"] if ref in state and ref not in gone]
+        for ref in gone:
+            state.pop(ref, None)
+            removed_by[ref] = b
+    return state, removed_by
 
 
 def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -1390,13 +1685,14 @@ def list_batches(conn, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         per_period = cursor.fetchall()
         batch["rows_current"] = sum(r[1] for r in per_period)
         batch["rows_added_current"] = sum(r[2] or 0 for r in per_period)
-        batch["periods"] = [r[0] for r in per_period]
         replaced_periods = []
         if batch["replaced"] and batch["status"] not in ("undone", "deleted"):
             cursor.execute("SELECT DISTINCT previous_period FROM actuals_batch_changes WHERE batch_id = ? "
                            "AND change_type = 'removed'", (batch["batch_id"],))
             replaced_periods = [r[0] for r in cursor.fetchall() if r[0]]
-        batch["closed_periods"] = sorted({p for p in batch["periods"] + replaced_periods if p in closed})
+        # The months the batch changed: the rows it owns and the months it replaced rows in (undo puts them back).
+        batch["periods"] = sorted({r[0] for r in per_period} | set(replaced_periods))
+        batch["closed_periods"] = [p for p in batch["periods"] if p in closed]
         if batch["status"] in ("undone", "deleted"):
             batch["can_undo"] = False
             batch["undo_blocked_reason"] = ("Already undone" if batch["status"] == "undone"
@@ -1414,24 +1710,29 @@ def _rows_word(n: int, singular: str, plural_: str) -> str:
     return singular if n == 1 else plural_
 
 
+def _imports_text(ids: Sequence[str]) -> str:
+    return f"{'import' if len(ids) == 1 else 'imports'} {', '.join(ids)}"
+
+
 def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
     """
-    Undo an import, as if it had never run:
+    Undo an import, as if it had never run: every month + line it touched ends up exactly as replaying,
+    in their original order, the batches still in place (not undone; deletions included) on top of the
+    rows that predate them would leave it. So, for the common cases:
 
     * rows it added are deleted;
-    * rows it changed go back to the value the latest earlier import that is NOT undone wrote
-      (recorded in actuals_batch_changes when the import ran). An earlier import that was
-      already undone is skipped, so its value never comes back; when no live import wrote the
-      row before, it is removed. Undoing a set of imports in any order therefore leaves the
-      same rows as undoing them newest first;
-    * rows it removed with replace_lines are put back exactly (same id, key, value and owner),
-      unless the same reference has been written again since;
-    * a row it added where an import that is already undone had removed (replaced) a row brings
-      that row back.
+    * rows it changed go back to the value of the latest earlier import still in place (an import
+      already undone is skipped, so its value never comes back); with none, they are removed;
+    * rows it removed with replace_lines come back, unless a batch still in place wrote, replaced or
+      deleted them since;
+    * a row it stored that a later import still in place found unchanged stays, owned by that import
+      (the later import would have stored it); a later correction is kept.
 
-    Only rows still stamped with the batch are touched, so a later correction is kept. Rows
-    changed by an import made before change tracking existed have no earlier amount on record and
-    are removed. Refused for closed months.
+    Undoing a set of imports in any order therefore leaves the same rows. Each batch's request is kept in
+    actuals_batch_entries (what it wrote, found unchanged, kept and deleted) and the rows it overwrote,
+    removed, found or deleted in actuals_batch_changes; batches from before the request was logged are
+    replayed from those change records. Only the months + lines the batch touched are recomputed, and
+    only rows whose outcome depends on the batch change. Refused for closed months.
     """
     if not dry_run:
         conn.execute("BEGIN IMMEDIATE")
@@ -1447,7 +1748,8 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
             raise ActualsError(f"Batch {batch_id} was already undone", status=409)
         if batch["status"] == "deleted":
             raise ActualsError(f"Batch {batch_id} records a deletion; a deletion cannot be undone", status=409)
-        statuses = _batch_statuses(cursor)
+        info = _batch_info(cursor)
+        statuses = {b: i["status"] for b, i in info.items()}
         prefix = f"{batch_id}-"
         rows = _batch_rows(cursor, batch_id)
         added = [r for r in rows if str(r["actual_id"]).startswith(prefix)]
@@ -1455,48 +1757,70 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
         records = _change_records(cursor, "c.batch_id = ?", (batch_id,))
         updates = {c["actual_id"]: c for c in records if c["change_type"] == "updated"}
         removals = [c for c in records if c["change_type"] == "removed"]
+        untracked = [] if info[batch_id]["logged"] else [r for r in changed if r["actual_id"] not in updates]
 
-        # Rows this import changed: back to the latest live earlier value, or removed.
-        restore: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-        removed_back: List[Dict[str, Any]] = []        # changed rows whose earlier writer was undone too
-        untracked: List[Dict[str, Any]] = []
+        # Replay every month + line the batch touched with and without it; change only what differs.
+        pairs = _undo_pairs(cursor, batch_id, rows, records)
+        models = _load_pairs(cursor, pairs)
+        undone_with = {**statuses}
+        undone_without = {**statuses, batch_id: "undone"}
+        here = info[batch_id]["pos"]
+        changes: List[Dict[str, Any]] = []
+        targets: Dict[Tuple[str, str, str], Optional[Dict[str, Any]]] = {}
         past_undone: List[Tuple[List[str], bool]] = []
-        targets: Dict[str, Optional[Dict[str, Any]]] = {}
+        blocked = 0
+        removed_again: List[str] = []
+        dropped: List[str] = []
+        changed_by_pair: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         for r in changed:
-            change = updates.get(r["actual_id"])
-            if change is None:
-                untracked.append(r)
-                continue
-            state, skipped = _resolve_earlier(cursor, r["actual_id"], change, statuses)
-            targets[r["actual_id"]] = state
-            if skipped:
-                past_undone.append((skipped, state is None))
-            if state is None:
-                removed_back.append(r)
-            else:
-                restore.append((r, state))
-
-        # Rows to put back: what this import replaced away, and rows an undone import had replaced
-        # where this import then added a row with the same reference.
-        put_back: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-        blocked: List[Dict[str, Any]] = []
-        dropped: List[Tuple[Dict[str, Any], List[str]]] = []
+            changed_by_pair.setdefault((r["period"], r["line_item"]), []).append(r)
+        removals_by_pair: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         for change in removals:
-            if _row_exists(cursor, change["actual_id"]) or _key_taken(cursor, change):
-                blocked.append(change)
-                continue
-            state, skipped = _resolve_earlier(cursor, change["actual_id"], change, statuses)
-            if state is None:
-                dropped.append((change, skipped))
-            else:
-                put_back.append((change, state))
-        for r in added:
-            change = _latest_removal_at(cursor, r)
-            if not change or statuses.get(change["batch_id"]) != "undone" or _row_exists(cursor, change["actual_id"]):
-                continue
-            state, _skipped = _resolve_earlier(cursor, change["actual_id"], change, statuses)
-            if state is not None:
-                put_back.append((change, state))
+            removals_by_pair.setdefault((change["previous_period"], change["previous_line_item"]), []).append(change)
+        for period, line_item in pairs:
+            model = models[(period, line_item)]
+            program = _pair_program(model, info)
+            ordered = program["ops"]
+            with_state, _ = _replay(_pair_base(cursor, program, undone_with), ordered, info, None)
+            without_state, removed_by = _replay(_pair_base(cursor, program, undone_without), ordered, info, batch_id)
+            pair_changes: Dict[str, Dict[str, Any]] = {}
+            for ref in sorted(set(with_state) | set(without_state)):
+                target = without_state.get(ref)
+                current = model["rows"].get(ref)
+                if _same_state(with_state.get(ref), target) or _same_state(current, target):
+                    continue
+                kind = ("put_back" if current is None else "remove" if target is None
+                        else "restore" if not _same_content(current, target) else "reassign")
+                pair_changes[ref] = {"kind": kind, "period": period, "line_item": line_item, "reference_id": ref,
+                                     "current": current, "target": target}
+            changes.extend(pair_changes.values())
+            # What the notes say: rows that go back past undone imports, replaced rows not put back.
+            for r in changed_by_pair.get((period, line_item), []):
+                ref = r["reference_id"] or ""
+                target = without_state.get(ref)
+                targets[(period, line_item, ref)] = target
+                after = info[target["batch_id"]]["pos"] if target and target.get("batch_id") in info else -1
+                skipped = sorted({b for b, op in ordered if statuses.get(b) == "undone" and b != batch_id
+                                  and after < info[b]["pos"] < here
+                                  and any(w[0] == ref and w[5] in ("insert", "update") for w in op["writes"])},
+                                 key=lambda b: info[b]["pos"])
+                if skipped:
+                    past_undone.append((skipped, target is None))
+            for change in removals_by_pair.get((period, line_item), []):
+                ref = change["previous_reference_id"] or ""
+                if ref in pair_changes:          # put back, or described by the change it gets
+                    continue
+                if ref in without_state:
+                    blocked += 1
+                elif removed_by.get(ref) and removed_by[ref] != batch_id:
+                    removed_again.append(removed_by[ref])
+                else:
+                    dropped.append(change["previous_batch_id"] or "")
+
+        removes = [c for c in changes if c["kind"] == "remove"]
+        restores = [c for c in changes if c["kind"] == "restore"]
+        put_back = [c for c in changes if c["kind"] == "put_back"]
+        reassigns = [c for c in changes if c["kind"] == "reassign"]
 
         # Rows that left this import since (changed by a later entry and kept, or deleted).
         cursor.execute("""SELECT COUNT(*) FROM actuals WHERE COALESCE(batch_id, '') <> ?
@@ -1510,45 +1834,52 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
         deleted_since = gone - changed_since
         legacy = len(updates) + len(untracked) < (batch["updated"] or 0)
 
-        to_remove = added + untracked + removed_back
-        periods = sorted({r["period"] for r in rows} | {c["previous_period"] for c, _s in put_back
-                                                        if c.get("previous_period")})
-        closed = closed_periods(cursor, periods)
+        periods = sorted({r["period"] for r in rows} | {c["period"] for c in changes})
+        # A closed month blocks the undo when a row there would change amount, notes or presence, or when
+        # the batch owns a row there; handing a row to another import with the same amount does not.
+        blocking = {r["period"] for r in rows} | {c["period"] for c in changes if c["kind"] != "reassign"}
+        closed = closed_periods(cursor, sorted(blocking))
+
+        def describe(c: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+            return {"period": c["period"], "line_item": c["line_item"], "label": line_label(c["line_item"]),
+                    "reference_id": c["reference_id"], "amount": state["amount"], "batch_id": state["batch_id"]}
+
         preview = {
             "batch_id": batch_id,
             "batch": batch,
-            "rows_to_remove": len(to_remove),
-            "rows_to_restore": len(restore),
+            "rows_to_remove": len(removes),
+            "rows_to_restore": len(restores),
             "rows_to_put_back": len(put_back),
+            "rows_to_reassign": len(reassigns),
             "added_rows": len(added),
             "changed_rows": len(changed),
             "rows_changed_since": changed_since,
             "rows_deleted_since": deleted_since,
             "periods": periods,
             "closed_periods": closed,
-            "amount_removed": round(sum(float(r["amount"] or 0) for r in to_remove), 2),
+            "amount_removed": round(sum(float(c["current"]["amount"] or 0) for c in removes), 2),
             "changed": [{"period": r["period"], "line_item": r["line_item"], "label": line_label(r["line_item"]),
                          "reference_id": r["reference_id"], "amount": r["amount"],
-                         "restores_to": (targets[r["actual_id"]] or {}).get("previous_amount")
-                         if r["actual_id"] in targets else None,
-                         "action": "restore" if targets.get(r["actual_id"]) is not None else "remove"}
+                         "restores_to": (targets.get((r["period"], r["line_item"], r["reference_id"] or ""))
+                                         or {}).get("amount"),
+                         "action": ("restore" if targets.get((r["period"], r["line_item"], r["reference_id"] or ""))
+                                    is not None else "remove")}
                         for r in changed[:50]],
-            "put_back_rows": [{"period": c["previous_period"], "line_item": c["previous_line_item"],
-                               "label": line_label(c["previous_line_item"]),
-                               "reference_id": c["previous_reference_id"] or "", "amount": s["previous_amount"],
-                               "batch_id": s["previous_batch_id"]} for c, s in put_back[:50]],
+            "put_back_rows": [describe(c, c["target"]) for c in put_back[:50]],
+            "reassigned_rows": [{**describe(c, c["target"]), "from_batch_id": c["current"]["batch_id"]}
+                                for c in reassigns[:50]],
             "dry_run": dry_run,
         }
         notes = []
-        if restore:
-            notes.append(f"{_plural(len(restore), 'row')} existed before this import and "
-                         f"{_rows_word(len(restore), 'goes', 'go')} back to the earlier amount.")
+        if restores:
+            notes.append(f"{_plural(len(restores), 'row')} existed before this import and "
+                         f"{_rows_word(len(restores), 'goes', 'go')} back to the earlier amount.")
         back_to = [s for s, gone_too in past_undone if not gone_too]
         if back_to:
             ids = sorted({b for skipped in back_to for b in skipped})
             notes.append(f"{_plural(len(back_to), 'row')} {_rows_word(len(back_to), 'goes', 'go')} back past "
-                         f"{'import' if len(ids) == 1 else 'imports'} {', '.join(ids)} (already undone) to the "
-                         f"amount before {_rows_word(len(ids), 'it', 'them')}.")
+                         f"{_imports_text(ids)} (already undone) to the amount before "
+                         f"{_rows_word(len(ids), 'it', 'them')}.")
         gone_with = [s for s, gone_too in past_undone if gone_too]
         if gone_with:
             ids = sorted({b for skipped in gone_with for b in skipped})
@@ -1562,14 +1893,27 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
         if put_back:
             notes.append(f"{_plural(len(put_back), 'row')} replaced under other references "
                          f"{_rows_word(len(put_back), 'is', 'are')} put back.")
+        if reassigns:
+            owners = sorted({c["target"]["batch_id"] for c in reassigns if c["target"]["batch_id"]})
+            whose = (f"{_imports_text(owners)}, still in place, {_rows_word(len(owners), 'has', 'have')} the same "
+                     f"amount and {_rows_word(len(owners), 'keeps', 'keep')} {_rows_word(len(reassigns), 'it', 'them')}"
+                     if owners else f"{_rows_word(len(reassigns), 'it was', 'they were')} stored before any import")
+            notes.append(f"{_plural(len(reassigns), 'row')} {_rows_word(len(reassigns), 'keeps its', 'keep their')} "
+                         f"amount: {whose}.")
         if blocked:
-            notes.append(f"{_plural(len(blocked), 'row')} this import replaced {_rows_word(len(blocked), 'is', 'are')} "
-                         f"not put back: the same month, line and reference has been written again since.")
+            notes.append(f"{_plural(blocked, 'row')} this import replaced {_rows_word(blocked, 'is', 'are')} not put "
+                         f"back: the same month, line and reference has been written again since.")
+        if removed_again:
+            ids = sorted(set(removed_again), key=lambda b: info.get(b, {}).get("pos", -1))
+            notes.append(f"{_plural(len(removed_again), 'row')} this import replaced "
+                         f"{_rows_word(len(removed_again), 'is', 'are')} not put back: {_imports_text(ids)}, still in "
+                         f"place, {_rows_word(len(ids), 'removes', 'remove')} "
+                         f"{_rows_word(len(removed_again), 'it', 'them')} as well.")
         if dropped:
-            ids = sorted({b for _c, skipped in dropped for b in skipped})
+            ids = sorted({b for b in dropped if b})
             notes.append(f"{_plural(len(dropped), 'row')} this import replaced {_rows_word(len(dropped), 'is', 'are')} "
-                         f"not put back: the import that wrote {_rows_word(len(dropped), 'it', 'them')} "
-                         f"({', '.join(ids)}) was undone.")
+                         f"not put back: the import that wrote {_rows_word(len(dropped), 'it', 'them')}"
+                         + (f" ({', '.join(ids)})" if ids else "") + " was undone.")
         if legacy and gone:
             notes.append(f"{_plural(gone, 'row')} from this import {_rows_word(gone, 'has', 'have')} been changed or "
                          f"deleted since by later entries; undo leaves {_rows_word(gone, 'it', 'them')} as "
@@ -1591,34 +1935,43 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
                 return preview
             raise ActualsError(closed_message(closed, "removed"), status=409, data=preview)
         preview["can_undo"] = True
-        put_back_text = (f" and put back {_plural(len(put_back), 'replaced row')}" if put_back else "")
+        extra_text = ((f" and put back {_plural(len(put_back), 'replaced row')}" if put_back else "")
+                      + (f"; {_plural(len(reassigns), 'row')} {_rows_word(len(reassigns), 'stays', 'stay')} with "
+                         f"the import still in place that has the same amount" if reassigns else ""))
         if dry_run:
-            preview["message"] = (f"Undo would remove {_plural(len(to_remove), 'row')}, restore "
-                                  f"{_plural(len(restore), 'row')} to the earlier amounts{put_back_text}"
+            preview["message"] = (f"Undo would remove {_plural(len(removes), 'row')}, restore "
+                                  f"{_plural(len(restores), 'row')} to the earlier amounts{extra_text}"
                                   + (f" in {_months_text(periods)}" if periods else "") + ".")
             return preview
-        for r, state in restore:
+        for c in removes:
+            cursor.execute("DELETE FROM actuals WHERE actual_id = ?", (c["current"]["actual_id"],))
+        for c in restores + reassigns:
+            t = c["target"]
             cursor.execute(
-                """UPDATE actuals SET amount = ?, notes = ?, source = ?, batch_id = ?, updated_at = ?
-                   WHERE actual_id = ? AND batch_id = ?""",
-                (state["previous_amount"], state["previous_notes"], state["previous_source"],
-                 state["previous_batch_id"], state["previous_updated_at"], r["actual_id"], batch_id))
-        restored = len(restore)
-        cursor.execute("DELETE FROM actuals WHERE batch_id = ?", (batch_id,))
-        removed = cursor.rowcount
-        for change, state in put_back:
+                """UPDATE actuals SET amount = ?, notes = ?, source = ?, batch_id = ?,
+                       created_at = COALESCE(?, created_at), updated_at = COALESCE(?, updated_at)
+                   WHERE actual_id = ?""",
+                (t["amount"], t["notes"], t["source"], t["batch_id"], t["created_at"], t["updated_at"],
+                 c["current"]["actual_id"]))
+        for c in put_back:
+            t = c["target"]
+            actual_id = t["actual_id"]
+            cursor.execute("SELECT 1 FROM actuals WHERE actual_id = ?", (actual_id,))
+            if not actual_id or cursor.fetchone():
+                actual_id = f"PUT-{uuid.uuid4().hex[:12]}"
             cursor.execute(
                 """INSERT INTO actuals (actual_id, period, line_item, amount, reference_id, source, notes,
                        created_at, updated_at, batch_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (change["actual_id"], change["previous_period"], change["previous_line_item"],
-                 state["previous_amount"], change["previous_reference_id"] or "", state["previous_source"],
-                 state["previous_notes"], change["previous_created_at"] or state["previous_updated_at"],
-                 state["previous_updated_at"], state["previous_batch_id"]))
+                (actual_id, c["period"], c["line_item"], t["amount"], c["reference_id"], t["source"], t["notes"],
+                 t["created_at"] or t["updated_at"] or utc_now(), t["updated_at"] or t["created_at"] or utc_now(),
+                 t["batch_id"]))
+        removed, restored = len(removes), len(restores)
         stamp = utc_now()
         undo_note = (f"Undone {stamp[:10]} {stamp[11:16]} UTC: removed {_plural(removed, 'row')}, "
                      f"restored {_plural(restored, 'row')}"
-                     + (f", put back {_plural(len(put_back), 'replaced row')}" if put_back else ""))
+                     + (f", put back {_plural(len(put_back), 'replaced row')}" if put_back else "")
+                     + (f", kept {_plural(len(reassigns), 'row')} with the import still in place" if reassigns else ""))
         cursor.execute("UPDATE actuals_batches SET status = 'undone', note = CASE WHEN note IS NULL OR note = '' "
                        "THEN ? ELSE note || ' | ' || ? END WHERE batch_id = ?", (undo_note, undo_note, batch_id))
         conn.commit()
@@ -1629,8 +1982,9 @@ def undo_batch(conn, batch_id: str, dry_run: bool = False) -> Dict[str, Any]:
     preview["removed"] = removed
     preview["restored"] = restored
     preview["put_back"] = len(put_back)
+    preview["reassigned"] = len(reassigns)
     preview["message"] = (f"Undid import {batch_id}: removed {_plural(removed, 'row')}, restored "
-                          f"{_plural(restored, 'row')} to the earlier amounts{put_back_text}"
+                          f"{_plural(restored, 'row')} to the earlier amounts{extra_text}"
                           + (f" in {_months_text(periods)}" if periods else "") + ".")
     return preview
 

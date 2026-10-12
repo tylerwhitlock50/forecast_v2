@@ -462,9 +462,10 @@ async def list_actuals_batches(
     offset: Annotated[int, Field(ge=0)] = 0,
 ) -> Dict[str, Any]:
     """The actuals import history, newest first: each batch's source / file,
-    rows inserted / updated / unchanged / rejected, file and control totals,
-    status (imported, partial, undone, deleted), the rows it still owns and
-    whether it can be undone."""
+    rows inserted / updated / unchanged / rejected / replaced, file and
+    control totals, status (imported, partial, undone, deleted), the rows it
+    still owns, the months it changed (periods: the rows it owns and the
+    months it replaced rows in) and whether it can be undone."""
     body = await call("GET", "/reporting/actuals/batches", params={"limit": limit, "offset": offset})
     batches = body.get("batches") or []
     body["batches"] = as_table(batches) if batches else []
@@ -476,13 +477,18 @@ async def undo_actuals_batch(
     batch_id: Annotated[str, Field(description="ACT-xxxxxxxx from forecast_list_actuals_batches or an import result")],
     dry_run: Annotated[bool, Field(description="Report what would be removed; change nothing (default)")] = True,
 ) -> Dict[str, Any]:
-    """Undo an actuals import: rows the batch added are deleted, rows it
-    replaced (replace_lines) are put back (rows_to_put_back / put_back) and
-    rows it overwrote go back to the value of the latest earlier import that
-    is not undone (rows_to_restore / restored; changed[].action says which).
-    Only rows still stamped with the batch: a row changed since by a later
-    entry belongs to that entry and stays. Refused for closed months.
-    dry_run defaults to true: call again with dry_run=false to undo."""
+    """Undo an actuals import, as if it had never run: the months and lines
+    it touched end up as replaying the imports still in place (and the
+    deletions) in their original order would leave them, so any undo order
+    gives the same rows. Rows the batch added are deleted (rows_to_remove),
+    rows it replaced (replace_lines) are put back (rows_to_put_back /
+    put_back), rows it overwrote go back to the value of the latest earlier
+    import that is not undone (rows_to_restore / restored; changed[].action
+    says which), and a row a later import still in place found unchanged
+    stays, owned by that import (rows_to_reassign / reassigned). A row
+    changed since by a later entry belongs to that entry and stays. Refused
+    for closed months. dry_run defaults to true: call again with
+    dry_run=false to undo."""
     return await call("DELETE", f"/reporting/actuals/batches/{require(batch_id, 'batch_id')}",
                       params={"dry_run": dry_run})
 

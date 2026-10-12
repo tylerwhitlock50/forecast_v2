@@ -722,11 +722,35 @@ class DatabaseManager:
                 control_total REAL,
                 status TEXT,
                 note TEXT,
-                replaced INTEGER DEFAULT 0
+                replaced INTEGER DEFAULT 0,
+                replace_lines INTEGER DEFAULT 0,
+                entries_logged INTEGER DEFAULT 0
             )
         ''')
-        # What each import overwrote ('updated') or removed with replace_lines
-        # ('removed'), so undoing it restores the earlier amounts and puts the
+        # What each batch asked for, entry by entry (insert / update /
+        # unchanged with the amount, notes and source as sent; 'keep' for the
+        # other references a replace_lines request named; 'delete' for a
+        # deletion's filter), so undo can replay the batches still in place.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS actuals_batch_entries (
+                batch_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                period TEXT,
+                line_item TEXT,
+                reference_id TEXT,
+                amount REAL,
+                notes TEXT,
+                source TEXT,
+                actual_id TEXT,
+                PRIMARY KEY (batch_id, seq)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_actuals_batch_entries_pair '
+                       'ON actuals_batch_entries (period, line_item)')
+        # What each import overwrote ('updated'), removed with replace_lines
+        # ('removed'), found already stored ('confirmed') or deleted
+        # ('deleted'), so undoing it restores the earlier amounts and puts the
         # removed rows back exactly instead of deleting the rows it changed.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS actuals_batch_changes (
@@ -957,8 +981,12 @@ class DatabaseManager:
     def migrate_actuals_undo_tracking(self):
         """
         Columns undo needs to put back rows an actuals import removed with
-        replace_lines (the row's key and created_at in actuals_batch_changes)
-        and the per-batch count of replaced rows (idempotent).
+        replace_lines (the row's key and created_at in actuals_batch_changes),
+        the per-batch count of replaced rows, whether a batch used
+        replace_lines and whether its entries are logged in
+        actuals_batch_entries (batches from before the log have 0 and are
+        undone from their change records), and the key of change records
+        written before the key columns existed (idempotent).
         """
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -967,7 +995,8 @@ class DatabaseManager:
                 "actuals_batch_changes": (("change_type", "TEXT DEFAULT 'updated'"), ("previous_period", "TEXT"),
                                           ("previous_line_item", "TEXT"), ("previous_reference_id", "TEXT"),
                                           ("previous_created_at", "TEXT")),
-                "actuals_batches": (("replaced", "INTEGER DEFAULT 0"),),
+                "actuals_batches": (("replaced", "INTEGER DEFAULT 0"), ("replace_lines", "INTEGER DEFAULT 0"),
+                                    ("entries_logged", "INTEGER DEFAULT 0")),
             }
             for table, cols in additions.items():
                 cursor.execute(f"PRAGMA table_info({table})")
@@ -981,6 +1010,36 @@ class DatabaseManager:
                         except sqlite3.OperationalError as alter_err:
                             if 'duplicate column name' not in str(alter_err).lower():
                                 raise
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS actuals_batch_entries (
+                    batch_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    period TEXT,
+                    line_item TEXT,
+                    reference_id TEXT,
+                    amount REAL,
+                    notes TEXT,
+                    source TEXT,
+                    actual_id TEXT,
+                    PRIMARY KEY (batch_id, seq)
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_actuals_batch_entries_pair '
+                           'ON actuals_batch_entries (period, line_item)')
+            # Change records from before the key columns: take the key from the row they changed.
+            cursor.execute("PRAGMA table_info(actuals_batch_changes)")
+            if "previous_period" in {col[1] for col in cursor.fetchall()}:
+                cursor.execute("""
+                    UPDATE actuals_batch_changes SET
+                        previous_period = (SELECT a.period FROM actuals a
+                                           WHERE a.actual_id = actuals_batch_changes.actual_id),
+                        previous_line_item = (SELECT a.line_item FROM actuals a
+                                              WHERE a.actual_id = actuals_batch_changes.actual_id),
+                        previous_reference_id = (SELECT COALESCE(a.reference_id, '') FROM actuals a
+                                                 WHERE a.actual_id = actuals_batch_changes.actual_id)
+                    WHERE previous_period IS NULL
+                      AND actual_id IN (SELECT actual_id FROM actuals)""")
             conn.commit()
         except Exception as e:
             print(f"Error migrating actuals undo tracking: {e}")

@@ -231,7 +231,7 @@ describe('VarianceReport', () => {
     // Payroll is unchanged, so it is not sent; each sent line sets its month total (replace_lines).
     expect(body.entries).toEqual([expect.objectContaining({ period: '2026-02', line_item: 'revenue', amount: 99000 })]);
     expect(body.replace_lines).toBe(true);
-    await screen.findByText(/Saved 1 actual\(s\) for Feb 2026 \(1 changed\)/);
+    await screen.findByText(/Saved 1 month total for Feb 2026 \(1 changed\)/);
     expect(body.source).toBe('manual');
   });
 
@@ -342,10 +342,22 @@ describe('VarianceReport', () => {
   });
 
   it('describes a save in plain words', () => {
-    expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 2 }, '2026-02')).toBe('Saved 3 actual(s) for Feb 2026 (1 new, 2 changed).');
+    expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 2 }, '2026-02')).toBe('Saved 3 month totals for Feb 2026 (1 new, 2 changed).');
     expect(saveMessage({ outcome: 'unchanged', inserted: 0, updated: 0, unchanged: 3 }, '2026-02')).toMatch(/Nothing changed for Feb 2026/);
     expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 0, replaced: 2 }, '2026-02'))
-      .toBe('Saved 1 actual(s) for Feb 2026 (1 new, 2 imported amounts replaced). Undo the save under Import history to put the imported amounts back.');
+      .toBe('Saved 1 month total for Feb 2026 (1 new, 2 imported amounts replaced). Undo the save under Import history to put the imported amounts back.');
+  });
+
+  it('counts a month total set only by replacing imported amounts (UI13-2)', () => {
+    // Net Sales held GL-JAN-V2 1,060,000 + EXTRA 5,000 + a manual 7,000; typing 7,000 keeps the manual row
+    // (unchanged) and replaces the two imported amounts: the month total went from 1,072,000 to 7,000.
+    const report = { outcome: 'imported', inserted: 0, updated: 0, unchanged: 1, replaced: 2,
+      line_totals: [{ period: '2027-01', line_item: 'revenue', before: 1072000, file_amount: 7000, after: 7000, replaced: true }] };
+    expect(saveMessage(report, '2027-01'))
+      .toBe('Saved 1 month total for Jan 2027 (2 imported amounts replaced). Undo the save under Import history to put the imported amounts back.');
+    expect(saveMessage({ outcome: 'imported', inserted: 1, updated: 1, replaced: 0, line_totals: [
+      { before: 0, after: 5, replaced: false }, { before: 3, after: 4, replaced: false }, { before: 9, after: 9, replaced: false }] }, '2027-01'))
+      .toBe('Saved 2 month totals for Jan 2027 (1 new, 1 changed).');
   });
 
   it('clears a period after confirmation', async () => {

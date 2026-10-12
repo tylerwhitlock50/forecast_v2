@@ -1,8 +1,8 @@
 import React from 'react';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import ImportActualsDialog from './ImportActualsDialog';
-import ImportHistory, { batchCounts, undoSummary } from './ImportHistory';
+import ImportActualsDialog, { importButtonLabel } from './ImportActualsDialog';
+import ImportHistory, { batchCounts, nothingToUndo, undoSummary } from './ImportHistory';
 import PeriodClosePanel from './PeriodClosePanel';
 import { otherReferenceLines, previewHeadline } from './ImportPreview';
 import { formatWhen, importQuery, reportFromError } from './actualsApi';
@@ -79,6 +79,22 @@ describe('actuals helpers', () => {
     expect(undoSummary({ rows_to_remove: 1, rows_to_restore: 1, rows_to_put_back: 1 }))
       .toBe('This removes 1 amount, puts 1 amount back to its earlier value and puts back 1 amount this import replaced');
     expect(batchCounts({ inserted: 1, replaced: 2 })).toBe('1 new, 2 replaced');
+    expect(undoSummary({ rows_to_remove: 1, rows_to_reassign: 1 }))
+      .toBe('This removes 1 amount and keeps 1 amount another import still in place also entered');
+  });
+
+  it('counts what a file writes apart from the stored amounts it replaces (UI13-2)', () => {
+    expect(importButtonLabel({ inserted: 2, updated: 0, unchanged: 0, replaced: 2 })).toBe('Import 2 amounts, replace 2 stored');
+    expect(importButtonLabel({ inserted: 0, updated: 0, unchanged: 2, replaced: 1 })).toBe('Replace 1 stored amount');
+    expect(importButtonLabel({ inserted: 1, updated: 1, replaced: 0 })).toBe('Import 2 amounts');
+    expect(importButtonLabel({ inserted: 1 })).toBe('Import 1 amount');
+    expect(importButtonLabel(null)).toBe('Import');
+  });
+
+  it('lets a replace-only import be undone (NEW-4)', () => {
+    expect(nothingToUndo({ rows_current: 0, replaced: 1 })).toBe(false);
+    expect(nothingToUndo({ rows_current: 0, replaced: 0 })).toBe(true);
+    expect(nothingToUndo({ rows_current: 2, replaced: 0 })).toBe(false);
   });
 
   it('reads the report out of a refused write', () => {
@@ -142,6 +158,18 @@ describe('ImportActualsDialog', () => {
     const realCall = api.upload.mock.calls.find(([url]) => !url.includes('dry_run'));
     expect(realCall[0]).toBe('/reporting/actuals/import?allow_partial=true&note=April+TB');
     expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ batch_id: 'ACT-1a2b3c4d' }));
+  });
+
+  it('labels a replacing import with what it writes and what it replaces (UI13-2)', async () => {
+    const replacing = { ...partialReport, outcome: 'imported', inserted: 2, updated: 0, unchanged: 0, rejected: 0, replaced: 2, errors: [],
+      rows: partialReport.rows.slice(0, 1) };
+    api.upload.mockResolvedValue({ status: 'success', data: replacing });
+    render(<ImportActualsDialog onClose={jest.fn()} />);
+    fireEvent.click(screen.getByLabelText(/Replace these months/));
+    chooseFile();
+    await waitFor(() => expect(screen.getByTestId('actuals-import-confirm')).not.toBeDisabled());
+    expect(screen.getByTestId('actuals-import-confirm')).toHaveTextContent('Import 2 amounts, replace 2 stored');
+    expect(api.upload.mock.calls.some(([url]) => url.includes('replace_lines=true'))).toBe(true);
   });
 
   it('shows a control total that does not tie', async () => {
@@ -211,6 +239,12 @@ describe('ImportActualsDialog', () => {
   });
 });
 
+const replaceOnly = {
+  batch_id: 'ACT-33333333', created_at: '2026-10-12T16:00:00Z', source: 'manual', filename: null, rows_in_file: 1,
+  inserted: 0, updated: 0, unchanged: 1, rejected: 0, replaced: 1, file_total: 5, control_total: null, status: 'imported',
+  note: null, rows_current: 0, periods: ['2028-02'], closed_periods: [], can_undo: true, undo_blocked_reason: null
+};
+
 const batches = [
   {
     batch_id: 'ACT-22222222', created_at: '2026-10-12T15:00:00Z', source: 'manual', filename: null, rows_in_file: 1,
@@ -257,6 +291,34 @@ describe('ImportHistory', () => {
     fireEvent.click(screen.getByTestId('actuals-undo-confirm'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(api.delete).toHaveBeenCalledWith('/reporting/actuals/batches/ACT-22222222', expect.anything());
+  });
+});
+
+describe('ImportHistory: replace-only imports and rows another import keeps', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    api.get.mockResolvedValue({ status: 'success', data: { batches: [replaceOnly], total_count: 1 } });
+  });
+
+  it('shows the month a replace-only import changed, enables Undo and lists rows that stay', async () => {
+    api.delete.mockResolvedValue({
+      status: 'success',
+      data: { rows_to_remove: 0, rows_to_restore: 0, rows_to_put_back: 1, rows_to_reassign: 1, periods: ['2028-02'], can_undo: true,
+        changed: [], notes: [],
+        put_back_rows: [{ period: '2028-02', line_item: 'revenue', label: 'Net Sales', reference_id: 'R1', amount: 10, batch_id: 'ACT-11111111' }],
+        reassigned_rows: [{ period: '2028-02', line_item: 'payroll', label: 'Payroll', reference_id: '', amount: 60, batch_id: 'ACT-44444444', from_batch_id: 'ACT-33333333' }] }
+    });
+    render(<ImportHistory refreshKey={0} />);
+    const row = await screen.findByTestId('actuals-batch-ACT-33333333');
+    expect(row).toHaveTextContent('Feb 2028');
+    const undoButton = within(row).getByRole('button', { name: /Undo/ });
+    expect(undoButton).not.toBeDisabled();
+    fireEvent.click(undoButton);
+    expect(await screen.findByTestId('actuals-undo-summary'))
+      .toHaveTextContent('This puts back 1 amount this import replaced and keeps 1 amount another import still in place also entered in Feb 2028.');
+    expect(screen.getByTestId('actuals-undo-put-back')).toHaveTextContent('Feb 2028 Net Sales (R1): 10.00');
+    expect(screen.getByTestId('actuals-undo-kept')).toHaveTextContent('Feb 2028 Payroll: 60.00 (now ACT-44444444)');
+    expect(screen.getByTestId('actuals-undo-confirm')).not.toBeDisabled();
   });
 });
 

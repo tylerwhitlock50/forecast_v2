@@ -69,19 +69,24 @@ export const buildActualsTemplate = (lineItems, period) => {
   return `${header}\n${body}\n`;
 };
 
-// "Saved 2 actual(s) for Feb 2026" / why nothing was saved, from the import report.
+// "Saved 2 month totals for Feb 2026 (1 new, 1 changed)" / why nothing was saved, from the import report.
+// Each saved line sets its month total, so the count is the lines whose total changed (report.line_totals):
+// a total set only by replacing imported amounts counts too, although no row was written.
 export const saveMessage = (report, period) => {
   const written = (report?.inserted || 0) + (report?.updated || 0);
   const replaced = report?.replaced || 0;
   if (report?.outcome === 'unchanged' || (written === 0 && replaced === 0)) {
     return `Nothing changed for ${formatPeriod(period)}: the amounts already match what is stored.`;
   }
+  const changedLines = (report.line_totals || [])
+    .filter(t => t.replaced || Math.abs(Number(t.after || 0) - Number(t.before || 0)) >= 0.005).length;
+  const totals = changedLines || written || 1;
   const parts = [];
   if (report.inserted) parts.push(`${report.inserted} new`);
   if (report.updated) parts.push(`${report.updated} changed`);
   if (replaced) parts.push(`${replaced} imported ${replaced === 1 ? 'amount' : 'amounts'} replaced`);
   const undo = replaced ? ' Undo the save under Import history to put the imported amounts back.' : '';
-  return `Saved ${written} actual(s) for ${formatPeriod(period)} (${parts.join(', ')}).${undo}`;
+  return `Saved ${totals} month ${totals === 1 ? 'total' : 'totals'} for ${formatPeriod(period)} (${parts.join(', ')}).${undo}`;
 };
 
 /**
