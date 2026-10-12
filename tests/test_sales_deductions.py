@@ -366,3 +366,49 @@ class TestPriceResolution:
     def test_discount_without_base_price_falls_through(self):
         out = self.resolve(unit_id="PST", customer_id="C-ACME", customer_type="Distributor", base=0)
         assert out["source"] == "none"
+
+
+class TestRegressions:
+    def test_variance_closing_cash_total_is_last_month_not_a_sum(self, db, statements):
+        conn = db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO actuals (actual_id, period, line_item, amount) VALUES ('A1', '2027-01', 'closing_cash', 100)")
+            cur.execute("INSERT INTO actuals (actual_id, period, line_item, amount) VALUES ('A2', '2027-02', 'closing_cash', 200)")
+            conn.commit()
+            variance = fs.build_variance(cur, [F], *WINDOW, statements=statements)
+            cur.execute("DELETE FROM actuals")
+            conn.commit()
+        finally:
+            conn.close()
+        line = next(l for l in variance["line_items"] if l["line_item"] == "closing_cash")
+        march_cash = _row(statements, "balance_sheet", "2027-03")["cash"]
+        feb_cash = _row(statements, "balance_sheet", "2027-02")["cash"]
+        assert line["totals"]["budget_full_period"] == pytest.approx(march_cash, abs=0.01)
+        assert line["totals"]["budget_to_date"] == pytest.approx(feb_cash, abs=0.01)
+        assert line["totals"]["actual_to_date"] == pytest.approx(200)
+        revenue = next(l for l in variance["line_items"] if l["line_item"] == "revenue")
+        assert revenue["totals"]["budget_full_period"] == pytest.approx(
+            statements["income_statement"]["totals"]["revenue"], abs=0.05)
+
+    def test_comparison_carries_gross_sales_deductions_and_commissions(self, db, statements):
+        import app.db.database as dbmod
+        import db.database as dbmod_short
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from api import forecast_routes
+        originals = (dbmod.db_manager, dbmod_short.db_manager)
+        dbmod.db_manager = dbmod_short.db_manager = db
+        try:
+            app = FastAPI()
+            app.include_router(forecast_routes.router)
+            resp = TestClient(app).get("/forecast/comparison", params={"forecast_ids": [F]})
+        finally:
+            dbmod.db_manager, dbmod_short.db_manager = originals
+        assert resp.status_code == 200, resp.text
+        row = resp.json()["data"]["comparison"][0]
+        totals = statements["income_statement"]["totals"]
+        for key in ("gross_sales", "total_sales_deductions", "revenue", "commissions"):
+            assert row[key] == pytest.approx(totals[key], abs=0.05)
+        assert row["gross_profit"] - row["commissions"] - row["payroll"] - row["expenses"] == pytest.approx(
+            row["operating_income"], abs=0.05)

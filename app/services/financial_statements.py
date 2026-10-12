@@ -1402,16 +1402,23 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
     actuals_through = periods_with_actuals[-1] if periods_with_actuals else None
     through_periods = [p for p in periods if actuals_through and p <= actuals_through]
 
+    def _over(values: Dict[str, float], months: Sequence[str], is_balance: bool) -> float:
+        """Flows add up over months; a balance (closing cash) is its value at the last month."""
+        if not months:
+            return 0.0
+        if is_balance:
+            return values.get(months[-1], 0.0)
+        return sum(values.get(p, 0.0) for p in months)
+
     lines_out: List[Dict[str, Any]] = []
     incomplete_lines: List[Dict[str, Any]] = []
     lines_without_actuals: List[str] = []
     for key, meta in VARIANCE_LINE_ITEMS.items():
+        is_balance = meta["statement"] == "balance_sheet"
         by_period = []
-        b_total = 0.0
         for p in periods:
             b = budget[key].get(p, 0.0)
             a = actual[key].get(p)
-            b_total += b
             variance = (a - b) if a is not None else None
             by_period.append({
                 "period": p,
@@ -1432,10 +1439,11 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
             coverage = "complete"
 
         # To-date totals are apples to apples: only months where THIS line has an actual.
-        b_ytd = sum(budget[key].get(p, 0.0) for p in compared)
-        a_ytd = sum(actual[key][p] for p in compared) if compared else None
+        b_total = _over(budget[key], periods, is_balance)
+        b_ytd = _over(budget[key], compared, is_balance)
+        a_ytd = _over(actual[key], compared, is_balance) if compared else None
         v_ytd = (a_ytd - b_ytd) if a_ytd is not None else None
-        b_through = sum(budget[key].get(p, 0.0) for p in through_periods)
+        b_through = _over(budget[key], through_periods, is_balance)
         lines_out.append({
             "line_item": key,
             "label": meta["label"],
