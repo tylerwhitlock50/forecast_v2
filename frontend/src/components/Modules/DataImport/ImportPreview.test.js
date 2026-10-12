@@ -87,4 +87,34 @@ describe('ImportPreview', () => {
     expect(screen.queryByTestId('replace-summary')).not.toBeInTheDocument();
     expect(screen.queryByText(/Will remove/)).not.toBeInTheDocument();
   });
+  const pricesDryRun = (extra) => summarizeImportResult({
+    data: { created: 9, updated: 0, replaced: 15, skipped: 0, dry_run: true, mode: 'replace', warnings: [], errors: [], ...extra },
+  });
+
+  it('says a price "Replace all" first deletes the saved rules', () => {
+    render(<ImportPreview result={pricesDryRun({})} rows={[]} step={stepByKind('prices')} />);
+    expect(screen.getByText('Will first delete 15 price rules already saved')).toBeInTheDocument();
+  });
+
+  it('says nothing changes when a rules replace is blocked, and names the matrix column of each error', () => {
+    const result = pricesDryRun({
+      replace_blocked: true,
+      errors: [{ row: 2, column: 'Distributor', error: "unit_price 'call us' is not a number" }],
+    });
+    const rows = [{ Product: 'RF-100', Dealer: '1110' }, { Product: 'RF-200', Dealer: '1795', Distributor: 'call us' }];
+    render(<ImportPreview result={result} rows={rows} step={stepByKind('prices')} />);
+    expect(screen.getByText('Nothing will be changed')).toBeInTheDocument();
+    expect(screen.getByText(/no price rules are added, updated or deleted until the file is fixed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Will first delete/)).not.toBeInTheDocument();
+    expect(screen.getByText('Row · column')).toBeInTheDocument();
+    expect(screen.getByTestId('error-column')).toHaveTextContent('Distributor column');
+    expect(screen.getByText('Distributor: call us ·', { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/1 row has a problem: fix it to import this file/)).toBeInTheDocument();
+  });
+
+  it('keeps the deductions replace summary to its own noun', () => {
+    render(<ImportPreview result={pricesDryRun({ replace_blocked: true, errors: [{ row: 1, error: 'rate is required' }] })} rows={[]} step={stepByKind('deductions')} />);
+    expect(screen.getByText(/Replacing deletes every existing rule of the/)).toBeInTheDocument();
+    expect(screen.queryByText('Row · column')).not.toBeInTheDocument();
+  });
 });

@@ -421,18 +421,30 @@ export const standardRules = (productTypes = []) => {
 // Price list
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a price comes from, one label per source the engine reports
+ * (services.pricing.price_source, plus base_price and none). Most specific
+ * first: customer > customer type > every customer; product > product type
+ * > every product.
+ */
 export const PRICE_SOURCE_LABELS = {
-  customer_product: 'Customer price',
-  customer_product_type: 'Customer price (product type)',
-  customer_all: 'Customer discount (all products)',
-  type_product: 'Customer-type price',
-  type_product_type: 'Customer-type price (product type)',
-  type_all: 'Customer-type discount (all products)',
-  product: 'Price for all customers',
-  product_type: 'Product-type price for all customers',
-  all: 'All customers, all products',
+  customer_product: 'Customer price for the product',
+  customer_product_type: 'Customer price for the product type',
+  customer_all: 'Customer discount on every product',
+  type_product: 'Customer-type price for the product',
+  type_product_type: 'Customer-type price for the product type',
+  type_all: 'Customer-type discount on every product',
+  product: 'Price for every customer',
+  product_type: 'Product-type price',
+  all: 'Discount for every customer and product',
   base_price: 'List price',
   none: 'No price',
+};
+
+/** Label for a price source; unknown sources read as words ('new_source' -> 'new source'). */
+export const priceSourceLabel = (source, fallback = null) => {
+  if (!source) return fallback || PRICE_SOURCE_LABELS.none;
+  return PRICE_SOURCE_LABELS[source] || fallback || String(source).replace(/_/g, ' ');
 };
 
 /** The engine's source name for a price rule (see services.pricing.price_source). */
@@ -785,4 +797,83 @@ export const normalizeApplyResult = (payload) => {
     unpricedRows: Array.isArray(data.unpriced_rows) ? data.unpriced_rows : [],
     dryRun: Boolean(data.dry_run),
   };
+};
+
+// ---------------------------------------------------------------------------
+// Apply prices to forecast: when re-pricing would undo a scenario's own prices
+// ---------------------------------------------------------------------------
+
+// "price", "prices", "priced", "pricing", "re-price", "ASP": words that say a
+// scenario's prices were changed on purpose (e.g. "Budget 2027 +5% price").
+const PRICE_CHANGE_RE = /\b(?:re-?)?pric(?:e|es|ed|ing)\b|\basp\b/i;
+
+/**
+ * The first of the scenario's name, description and notes that mentions a
+ * price change, as {field, text}; null when none does.
+ */
+export const priceChangeMention = (scenario) => {
+  if (!scenario) return null;
+  for (const field of ['name', 'description', 'notes']) {
+    const text = clean(scenario[field]);
+    if (text && PRICE_CHANGE_RE.test(text)) return { field, text };
+  }
+  return null;
+};
+
+/**
+ * Why "Apply prices to forecast" (replacing every price) may undo prices set
+ * on purpose in this scenario: {branch, mention} when the scenario is not
+ * the base (a branch may carry a price change such as "+5% price") or its
+ * name / description / notes mention a price change; null when neither.
+ */
+export const applyPricesRisk = (scenario) => {
+  if (!scenario) return null;
+  const branch = !scenario.is_base;
+  const mention = priceChangeMention(scenario);
+  if (!branch && !mention) return null;
+  return { branch, mention };
+};
+
+// ---------------------------------------------------------------------------
+// GET /pricing/resolve
+// ---------------------------------------------------------------------------
+
+/**
+ * Query string for GET /pricing/resolve: unit_id (required), customer_id or
+ * customer_type, period (YYYY-MM) and forecast_id when set. Null without a
+ * product (the endpoint needs one).
+ */
+export const resolvePriceQuery = ({ unitId, customerId = null, customerType = null, period = null, forecastId = null }) => {
+  if (!clean(unitId)) return null;
+  const params = new URLSearchParams({ unit_id: clean(unitId) });
+  if (clean(customerId)) params.set('customer_id', clean(customerId));
+  else if (clean(customerType)) params.set('customer_type', clean(customerType));
+  if (clean(period) && PERIOD_RE.test(clean(period))) params.set('period', clean(period));
+  if (clean(forecastId)) params.set('forecast_id', clean(forecastId));
+  return params.toString();
+};
+
+/**
+ * GET /pricing/resolve -> {price, source, label, rule, basePrice}; price is
+ * null when nothing prices the product (source 'none').
+ */
+export const readResolvedPrice = (payload) => {
+  const data = payload?.data ?? payload ?? {};
+  const price = numOrNull(data.price);
+  const source = data.source || (price === null ? 'none' : null);
+  return {
+    price,
+    source,
+    label: priceSourceLabel(source, data.source_label || null),
+    rule: data.rule && typeof data.rule === 'object' ? data.rule : null,
+    basePrice: numOrNull(data.base_price),
+  };
+};
+
+/** Invoice amount for a unit price and a unit count, in cents ('' when either is missing). */
+export const invoiceAmount = (price, quantity) => {
+  const p = numOrNull(price);
+  const q = numOrNull(quantity);
+  if (p === null || q === null || q <= 0) return '';
+  return String(Math.round(p * q * 100) / 100);
 };

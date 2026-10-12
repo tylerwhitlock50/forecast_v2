@@ -120,7 +120,7 @@ export const IMPORT_STEPS = [
     modes: [
       { value: 'upsert', label: 'Add new and update matching', help: 'A rule for the same customer, type, product and months is updated; anything else is added.' },
       { value: 'append', label: 'Add all as new', help: 'Every row becomes a new rule, even if a similar one exists.' },
-      { value: 'replace', label: 'Replace all', help: 'Deletes every existing rule of the same scope (company-wide, or the scenario) first, then adds the file.' },
+      { value: 'replace', label: 'Replace all', help: 'Deletes every existing rule of the same scope (company-wide, or the scenario) first, then adds the file. Runs only when every row is valid; otherwise nothing changes.' },
     ],
     options: [
       { key: 'scenarioOnly', label: 'Only for the active scenario (otherwise company-wide, unless a row has its own forecast_id)', default: false, needsScenario: true },
@@ -140,7 +140,7 @@ export const IMPORT_STEPS = [
     modes: [
       { value: 'upsert', label: 'Add new and update matching', help: 'A rule for the same customer, type, product and months is updated; anything else is added.' },
       { value: 'append', label: 'Add all as new', help: 'Every row becomes a new rule, even if a similar one exists.' },
-      { value: 'replace', label: 'Replace all', help: 'Deletes every existing rule of the same scope (company-wide, or the scenario) first, then adds the file.' },
+      { value: 'replace', label: 'Replace all', help: 'Deletes every existing rule of the same scope (company-wide, or the scenario) first, then adds the file. Runs only when every row is valid; otherwise nothing changes.' },
     ],
     options: [
       { key: 'scenarioOnly', label: 'Only for the active scenario (otherwise company-wide, unless a row has its own forecast_id)', default: false, needsScenario: true },
@@ -256,11 +256,14 @@ const toWarning = (w) => {
 
 const toError = (e) => {
   if (!e) return null;
-  if (typeof e === 'string') return { row: null, error: e };
+  if (typeof e === 'string') return { row: null, error: e, field: null, column: null };
   return {
     row: e.row ?? e.index ?? e.line ?? null,
     error: e.error || e.message || e.detail || JSON.stringify(e),
-    field: e.field || e.column || null,
+    field: e.field || null,
+    // A price matrix (Product | Dealer | Distributor ...) makes one rule per
+    // cell: `column` names the cell's column in the file.
+    column: e.column || null,
   };
 };
 
@@ -337,8 +340,9 @@ export const summarizeImportResult = (payload) => {
     totalRevenue: data.total_revenue ?? null,
     wideFormat: Boolean(data.wide_format),
     dryRun: Boolean(pick('dry_run')),
-    // Sales import modes: rows removed (or that a dry run would remove), and
-    // whether a replace was refused because some rows have errors.
+    // Import modes: rows removed (or that a dry run would remove), and whether
+    // a replace was refused because some rows have errors (sales, prices and
+    // deductions all refuse a replace while any row has an error).
     mode: pick('mode') || null,
     deleted: num(pick('deleted')),
     replaceBlocked: Boolean(pick('replace_blocked')),
@@ -348,16 +352,21 @@ export const summarizeImportResult = (payload) => {
   };
 };
 
-// How each row of a sales import got its price (POST /forecast/smart_import_sales price_sources).
+// How each row of a sales import got its price (POST /forecast/smart_import_sales
+// price_sources): the file, every price-list source services.pricing.price_source
+// reports, the list price, or $0.
 export const PRICE_SOURCE_LABELS = {
   explicit: 'kept the price in your file',
   file: 'kept the price in your file',
   provided: 'kept the price in your file',
-  customer_product: "priced from the customer's own price",
+  customer_product: "priced from the customer's own price for the product",
+  customer_product_type: "priced from the customer's price for the product type",
   customer_all: "priced from the customer's discount off list",
   type_product: 'priced from the customer-type price list',
+  type_product_type: 'priced from the customer-type price for the product type',
   type_all: 'priced from the customer-type discount off list',
   product: 'priced from the all-customers price',
+  product_type: 'priced from the product-type price',
   all: 'priced from the all-customers discount',
   base_price: "priced at the product's list price",
   zero_price: 'had no price and are imported at $0',

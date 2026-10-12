@@ -96,3 +96,39 @@ describe('ImportStepCard: sales import modes', () => {
     expect(screen.getByText(/Replacing is blocked while any row has a problem/)).toBeInTheDocument();
   });
 });
+
+describe('ImportStepCard: price import replace', () => {
+  const priceRows = [{ Product: 'RF-100', Dealer: '1110', Distributor: 'call us' }];
+  const priceResponse = (data) => ({
+    status: 'success',
+    data: {
+      created: 1, updated: 0, replaced: 0, skipped: 0, dry_run: true, mode: 'upsert', replace_blocked: false, warnings: [],
+      errors: [{ row: 1, column: 'Distributor', error: "unit_price 'call us' is not a number" }], ...data,
+    },
+  });
+
+  beforeEach(() => {
+    readImportFile.mockResolvedValue({ rows: priceRows, headers: ['Product', 'Dealer', 'Distributor'], sheetName: null });
+  });
+
+  it('blocks the confirm when a "Replace all" is refused because a row has an error', async () => {
+    api.post
+      .mockResolvedValueOnce(priceResponse({}))
+      .mockResolvedValueOnce(priceResponse({ mode: 'replace', replaced: 15, replace_blocked: true }));
+    render(
+      <MemoryRouter>
+        <ImportStepCard step={stepByKind('prices')} number={7} count={15} scenario={scenario} noScenarios={false} onImported={jest.fn()} />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText('Upload Prices file'), { target: { files: [new File(['x'], 'prices.csv', { type: 'text/csv' })] } });
+    await screen.findByText(/This is a check only/);
+    expect(screen.getByRole('button', { name: 'Import 1 price rule' })).toBeEnabled();
+    expect(screen.getByTestId('error-column')).toHaveTextContent('Distributor column');
+
+    fireEvent.click(screen.getByLabelText('Replace all'));
+    await screen.findByText('Nothing will be changed');
+    expect(api.post.mock.calls[1][1]).toMatchObject({ mode: 'replace', dry_run: true });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import 1 price rule' })).toBeDisabled());
+    expect(screen.getByText(/Replacing is blocked while any row has a problem/)).toHaveTextContent('Add new and update matching');
+  });
+});

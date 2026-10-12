@@ -256,6 +256,26 @@ def _scope_warnings(cursor, clean: Dict[str, Any], label: str) -> List[str]:
     return warnings
 
 
+def _plausibility_warnings(clean: Dict[str, Any], label: str, is_price: bool) -> List[str]:
+    """
+    Non-blocking warnings for JSON create / update: a deduction rate over 25%
+    (excise_tax over 20%) or a discount over 80% off list is probably a
+    fraction-vs-percent slip. Same thresholds and check as the import path
+    (api.import_routes._plausibility_warnings); JSON rates are always
+    fractions, so the hint says which fraction means the smaller percent.
+    """
+    from api.import_routes import _plausibility_warnings as check  # lazy: import_routes imports this module
+
+    found = check(clean, {}, label, is_price)
+    if is_price:  # JSON takes fractions only ('40%' is refused here)
+        found = [w.replace("('40%' or 0.40 = 40% off)", "(discount_pct is a fraction: 0.40 = 40% off)") for w in found]
+    elif found:
+        rate = float(clean.get("rate") or 0)
+        found = [f"{w} (rates are fractions: {rate:g} = {rate * 100:g}%; send {rate / 100:g} for {rate:g}%)"
+                 for w in found]
+    return found
+
+
 def _unknown_keys(data: Dict[str, Any], allowed: Iterable[str]) -> List[str]:
     allowed_set = set(allowed) | _READ_ONLY_KEYS
     return sorted(k for k in data if k not in allowed_set)
@@ -796,6 +816,7 @@ async def create_deduction_rules(payload: Any = Body(...)):
             except RuleValidationError as exc:
                 errors.append(f"{label}: {exc}" if bulk else str(exc))
                 continue
+            rule_warnings.extend(_plausibility_warnings(clean, label, is_price=False))
             unknown = _unknown_keys(item, DEDUCTION_FIELDS)
             if unknown:
                 rule_warnings.append(f"{label}: ignored unknown fields {', '.join(unknown)}")
@@ -1147,6 +1168,7 @@ async def update_deduction(rule_id: str, payload: Dict[str, Any] = Body(...)):
             clean, warnings = clean_deduction_rule(cursor, merged)
         except RuleValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        warnings.extend(_plausibility_warnings(clean, "rule", is_price=False))
         if clean["is_active"]:
             try:
                 check_duplicate_rule(cursor, "deduction", clean, exclude_id=rule_id)
@@ -1259,6 +1281,7 @@ async def create_prices(payload: Any = Body(...)):
             except RuleValidationError as exc:
                 errors.append(f"{label}: {exc}" if bulk else str(exc))
                 continue
+            price_warnings.extend(_plausibility_warnings(clean, label, is_price=True))
             unknown = _unknown_keys(item, PRICE_FIELDS)
             if unknown:
                 price_warnings.append(f"{label}: ignored unknown fields {', '.join(unknown)}")
@@ -1546,6 +1569,7 @@ async def update_price(price_id: str, payload: Dict[str, Any] = Body(...)):
             clean, warnings = clean_price_rule(cursor, merged)
         except RuleValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        warnings.extend(_plausibility_warnings(clean, "price", is_price=True))
         if clean["is_active"]:
             try:
                 check_duplicate_rule(cursor, "price", clean, exclude_id=price_id)

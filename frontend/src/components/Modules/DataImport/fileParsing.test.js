@@ -163,9 +163,29 @@ describe('import responses', () => {
       },
     });
     expect(s).toMatchObject({ created: 3, updated: 1, skipped: 2, imported: 4 });
-    expect(s.errors).toEqual([{ row: 4, error: 'qty must be a number', field: null }]);
+    expect(s.errors).toEqual([{ row: 4, error: 'qty must be a number', field: null, column: null }]);
     expect(s.warnings[0].message).toMatch(/placeholder/);
     expect(s.boms[0]).toMatchObject({ bom_id: 'BOM-R100', lines: 12, material_cost_per_unit: 412.5 });
+  });
+
+  it('keeps the matrix column of a price-import error and reads a blocked replace', () => {
+    const s = summarizeImportResult({
+      data: {
+        mode: 'replace', replace_blocked: true, created: 9, replaced: 15, dry_run: true,
+        errors: [{ row: 3, column: 'Dealer', error: "unit_price 'abc' is not a number" }],
+      },
+    });
+    expect(s.errors).toEqual([{ row: 3, column: 'Dealer', field: null, error: "unit_price 'abc' is not a number" }]);
+    expect(s).toMatchObject({ mode: 'replace', replaceBlocked: true, replaced: 15 });
+  });
+
+  it('labels every price-list source a sales import reports', () => {
+    const sources = describePriceSources({ customer_product_type: 2, type_product_type: 3, product_type: 4 });
+    expect(sources.map((p) => p.label)).toEqual([
+      'priced from the product-type price',
+      'priced from the customer-type price for the product type',
+      "priced from the customer's price for the product type",
+    ]);
   });
 
   it('summarises the sales import response with price sources', () => {

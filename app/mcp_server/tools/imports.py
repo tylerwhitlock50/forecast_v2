@@ -61,7 +61,9 @@ FilePath = Annotated[Optional[str], Field(
                 "FORECAST_ALLOW_ABSOLUTE_PATHS=1.")]
 Sheet = Annotated[Optional[str], Field(description="XLSX sheet (default: the active one)")]
 HeaderRow = Annotated[Optional[int], Field(
-    description="1-based header row (default: first row with 2+ filled cells)", ge=1)]
+    description="1-based header row (default: detected - the first row whose cells are known column names or "
+                "aliases, so a report title above the header is skipped; else the first row with 2+ filled cells)",
+    ge=1)]
 DryRun = Annotated[bool, Field(description="Validate and report without writing anything. Do this first.")]
 Detail = Annotated[bool, Field(description="Full per-row lists instead of counts and a sample")]
 
@@ -207,14 +209,79 @@ def _read_xlsx(path: str, sheet: Optional[str]) -> Tuple[List[List[Any]], str, L
         wb.close()
 
 
+HEADER_SCAN_ROWS = 30
+
+
+def _detect_header_row(grid: List[List[Any]]) -> Optional[int]:
+    """
+    0-based header row: the import API's alias-aware guess_header_row, so a
+    report title above the header ('Costed Bill of Material', 'Run date:
+    10/12/2026') is skipped even when it fills two cells. Header cells are
+    shaped as read_table_file names them first (an Excel date heading is
+    'YYYY-MM', which counts as a month column).
+    """
+    from api.import_routes import guess_header_row  # import_routes holds the header aliases of every import
+
+    sample = [[_cell(v, header=True) for v in (row or [])] for row in grid[:HEADER_SCAN_ROWS]]
+    return guess_header_row(sample, scan=HEADER_SCAN_ROWS)
+
+
+def _header_names(header_cells: List[Any], body: List[List[Any]]) -> Tuple[List[Optional[str]], List[str]]:
+    """
+    Column name per position (None = dropped) and the generated names.
+
+    A column whose header cell is blank but holds data below is kept as
+    'column_<n>' (n = 1-based spreadsheet column), so the import reports it
+    as an ignored column instead of its values vanishing; a blank column
+    without data is dropped. Repeated names get ' (2)', ' (3)'.
+    """
+    width = max([len(header_cells)] + [len(r) for r in body if r])
+    names = [_cell(header_cells[i], header=True) if i < len(header_cells) else None for i in range(width)]
+    pending = {i for i, name in enumerate(names) if _blank(name)}
+    has_data = set()
+    for raw in body:
+        if not pending:
+            break
+        if not raw:
+            continue
+        for i in [i for i in pending if i < len(raw) and not _blank(_cell(raw[i]))]:
+            has_data.add(i)
+            pending.discard(i)
+
+    headers: List[Optional[str]] = []
+    unnamed: List[str] = []
+    seen: Dict[str, int] = {}
+    for i, name in enumerate(names):
+        generated = _blank(name)
+        if generated:
+            if i not in has_data:
+                headers.append(None)
+                continue
+            name = f"column_{i + 1}"
+        name = str(name).strip()
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        if generated:
+            unnamed.append(name)
+        headers.append(name)
+    return headers, unnamed
+
+
 def read_table_file(file_path: str, sheet: Optional[str] = None,
                     header_row: Optional[int] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Parse a CSV / XLSX file into row objects keyed by the header row.
 
     Returns (rows, info) with info = {file, sheet, sheets, header_row, columns,
-    row_count}. Excel dates become 'YYYY-MM-DD' (header cells 'YYYY-MM', so a
-    one-column-per-month sheet keeps its months); blank rows are skipped.
+    row_count, unnamed_columns?}. The header row is ``header_row`` when given,
+    else detected (_detect_header_row: report titles above it are skipped).
+    Columns with a blank header that hold data are kept as 'column_<n>'
+    (listed in unnamed_columns). Excel dates become 'YYYY-MM-DD' (header
+    cells 'YYYY-MM', so a one-column-per-month sheet keeps its months); blank
+    rows are skipped.
     """
     path = resolve_path(file_path)
     sheets: List[str] = []
@@ -231,28 +298,12 @@ def read_table_file(file_path: str, sheet: Optional[str] = None,
             raise ToolError(f"header_row {header_row} is past the end of the file ({len(grid)} rows)")
         header_index = header_row - 1
     else:
-        filled = [sum(1 for v in row if not _blank(v)) for row in grid]
-        header_index = next((i for i, n in enumerate(filled) if n >= 2), None)
-        if header_index is None:
-            header_index = next((i for i, n in enumerate(filled) if n >= 1), None)
+        header_index = _detect_header_row(grid)
         if header_index is None:
             raise ToolError(f"{file_path} is empty")
 
-    headers: List[Optional[str]] = []
-    seen: Dict[str, int] = {}
-    for value in grid[header_index]:
-        name = _cell(value, header=True)
-        if _blank(name):
-            headers.append(None)
-            continue
-        name = str(name).strip()
-        if name in seen:
-            seen[name] += 1
-            name = f"{name} ({seen[name]})"
-        else:
-            seen[name] = 1
-        headers.append(name)
-    if not any(headers):
+    headers, unnamed = _header_names(grid[header_index] or [], grid[header_index + 1:])
+    if not any(h for h in headers if h and h not in unnamed):
         raise ToolError(f"Row {header_index + 1} of {file_path} has no column names; set header_row")
 
     rows: List[Dict[str, Any]] = []
@@ -275,6 +326,8 @@ def read_table_file(file_path: str, sheet: Optional[str] = None,
         "columns": [h for h in headers if h],
         "row_count": len(rows),
     }
+    if unnamed:
+        info["unnamed_columns"] = unnamed
     return rows, info
 
 
@@ -287,7 +340,8 @@ def load_rows(rows: Optional[List[Dict[str, Any]]], file_path: Optional[str], sh
         parsed, info = read_table_file(file_path, sheet, header_row)
         if not parsed:
             raise ToolError(f"{file_path} has a header row but no data rows")
-        return parsed, {k: v for k, v in info.items() if k in ("file", "sheet", "header_row", "row_count")}
+        return parsed, {k: v for k, v in info.items()
+                        if k in ("file", "sheet", "header_row", "row_count", "unnamed_columns")}
     if sheet or header_row:
         raise ToolError("sheet / header_row apply to file_path only")
     if not rows:

@@ -8,9 +8,8 @@ import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import PriceRuleModal from './PriceRuleModal';
 import ApplyPricesModal from './ApplyPricesModal';
-import { HelpTip, ScopeBadge } from './PricingBits';
+import { HelpTip, ScopeBadge, Toggle } from './PricingBits';
 import {
-  PRICE_SOURCE_LABELS,
   cellRules,
   compactPeriodRange,
   describePeriodRange,
@@ -18,6 +17,7 @@ import {
   formatMoney,
   formatRatePct,
   partitionPriceRules,
+  priceSourceLabel,
   resolveCellPrice,
   ruleIsActive,
   rulePrice,
@@ -46,23 +46,34 @@ const describePrice = (rule) => {
   return formatMoney(rule.unit_price);
 };
 
-/** One matrix cell: the explicit price (bold) or the inherited one (grey, with where it comes from). */
-const PriceCell = ({ rules, product, customerType, scenarioId, onOpen }) => {
-  const explicit = cellRules(rules, product.unit_id, customerType).filter(ruleIsActive);
+/**
+ * One matrix cell: the explicit price (bold) or the inherited one (grey, with
+ * where it comes from). With `showInactive`, a switched-off price set here
+ * shows struck through; when it is the only price set here, clicking the
+ * cell opens it (to switch it back on or delete it).
+ */
+const PriceCell = ({ rules, product, customerType, scenarioId, onOpen, showInactive = false }) => {
+  const inCell = cellRules(rules, product.unit_id, customerType);
+  const explicit = inCell.filter(ruleIsActive);
+  const off = showInactive ? inCell.filter((r) => !ruleIsActive(r)) : [];
   const own = explicit[0] || null;
   const resolved = resolveCellPrice(rules, { unitId: product.unit_id, unitType: product.unit_type, basePrice: product.base_price, customerType, forecastId: scenarioId });
   const extra = explicit.length - 1;
   const ownPrice = own ? rulePrice(own, product.base_price) : null;
   const dated = own && (own.start_period || own.end_period);
+  const offRule = off[0] || null;
+  const offPrice = offRule ? rulePrice(offRule, product.base_price) : null;
   const title = own
     ? `${describePrice(own)}${dated ? ` · ${describePeriodRange(own.start_period, own.end_period)}` : ''}${own.forecast_id ? ' · this scenario only' : ''}. Click to edit.`
-    : resolved.price !== null
-      ? `No price set here; uses the ${PRICE_SOURCE_LABELS[resolved.source]?.toLowerCase() || resolved.source} (${formatMoney(resolved.price)}). Click to set one.`
-      : 'No price. Click to set one.';
+    : offRule
+      ? `${describePrice(offRule)} is set here but switched off${resolved.price !== null ? `; uses the ${priceSourceLabel(resolved.source).toLowerCase()} (${formatMoney(resolved.price)})` : ''}. Click to edit or delete it.`
+      : resolved.price !== null
+        ? `No price set here; uses the ${priceSourceLabel(resolved.source).toLowerCase()} (${formatMoney(resolved.price)}). Click to set one.`
+        : 'No price. Click to set one.';
   return (
     <button
       type="button"
-      onClick={() => onOpen(own, product, customerType)}
+      onClick={() => onOpen(own || offRule, product, customerType)}
       title={title}
       className="group flex w-full flex-col items-end rounded px-2 py-1 text-right hover:bg-orange-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500"
     >
@@ -84,6 +95,12 @@ const PriceCell = ({ rules, product, customerType, scenarioId, onOpen }) => {
         </>
       ) : (
         <span className="text-gray-300 group-hover:text-orange-700">—</span>
+      )}
+      {offRule && (
+        <span className="whitespace-nowrap text-[10px] text-gray-400" data-testid="cell-switched-off">
+          off: <span className="line-through">{offPrice !== null ? formatMoney(offPrice) : describePrice(offRule)}</span>
+          {off.length > 1 ? ` +${off.length - 1}` : ''}
+        </span>
       )}
     </button>
   );
@@ -168,8 +185,10 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
   const [modal, setModal] = useState({ open: false, rule: null, defaults: null });
   const [applyOpen, setApplyOpen] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [showInactive, setShowInactive] = useState(false);
 
   const scenarioId = scenario?.id || null;
+  const baseScenario = useMemo(() => Object.values(scenarios || {}).find((s) => s.is_base) || null, [scenarios]);
 
   const load = useCallback(async () => {
     try {
@@ -186,6 +205,9 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
   useEffect(() => { load(); }, [load]);
 
   const parts = useMemo(() => partitionPriceRules(rules), [rules]);
+  // The lists show rules in use; switched-off ones are listed together behind "Show switched-off prices".
+  const activeParts = useMemo(() => partitionPriceRules(rules.filter(ruleIsActive)), [rules]);
+  const inactiveRules = useMemo(() => rules.filter((r) => !ruleIsActive(r)), [rules]);
   const columns = useMemo(() => {
     const fromRules = rules.map((r) => r.customer_type).filter(Boolean);
     const all = [...customerTypes];
@@ -202,30 +224,44 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
     const res = existing
       ? await api.put(`/pricing/prices/${encodeURIComponent(existing.price_id)}`, payload, opts)
       : await api.post('/pricing/prices', payload, opts);
-    toast.success(existing ? 'Price updated' : 'Price added');
+    if (!payload.is_active) {
+      // Keep a price that was just switched off in view instead of letting it vanish.
+      setShowInactive(true);
+      toast.success(`${existing ? 'Price' : 'Price added and'} switched off. It is listed under “Switched-off prices”.`);
+    } else {
+      toast.success(existing ? 'Price updated' : 'Price added');
+    }
     (res?.data?.warnings || []).forEach((w) => toast(String(w), { icon: '⚠️', duration: 6000 }));
     await load();
     if (onChanged) onChanged();
   };
 
+  /** Confirm, then DELETE /pricing/prices/{price_id}. Resolves true when the price was deleted. */
   const remove = async (rule) => {
-    const who = rule.customer_id ? (rule.customer_name || rule.customer_id) : rule.customer_type || 'all customers';
-    const what = rule.unit_id ? (rule.unit_name || rule.unit_id) : rule.unit_type ? `every ${rule.unit_type} product` : 'all products';
+    const who = rule.customer_id
+      ? (rule.customer_name || customers.find((c) => c.customer_id === rule.customer_id)?.customer_name || rule.customer_id)
+      : rule.customer_type || 'all customers';
+    const what = rule.unit_id
+      ? (rule.unit_name || products.find((p) => p.unit_id === rule.unit_id)?.unit_name || rule.unit_id)
+      : rule.unit_type ? `every ${rule.unit_type} product` : 'all products';
+    const dated = rule.start_period || rule.end_period ? ` (${describePeriodRange(rule.start_period, rule.end_period)})` : '';
     const ok = await confirm({
       title: 'Delete this price?',
-      body: `${describePrice(rule)} for ${who} on ${what}. Sales rows already priced keep their price until you apply prices again.`,
+      body: `${describePrice(rule)} for ${who} on ${what}${dated}${ruleIsActive(rule) ? '' : ', switched off'}. Sales rows already priced keep their price until you apply prices again.`,
       confirmLabel: 'Delete price',
       variant: 'destructive',
     });
-    if (!ok) return;
+    if (!ok) return false;
     setBusyId(rule.price_id);
     try {
       await api.delete(`/pricing/prices/${encodeURIComponent(rule.price_id)}`, { suppressSuccessToast: true, suppressErrorToast: true });
       toast.success('Price deleted');
       await load();
       if (onChanged) onChanged();
+      return true;
     } catch (err) {
       toast.error(errorMessage(err, 'Could not delete the price.'));
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -278,9 +314,20 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
                 <span className="font-semibold text-gray-700">Bold</span> = set here. <span className="text-gray-400">Grey</span> = inherited (from a product-type or all-products discount, the all-customers price or list price). Click any cell to set a price.
               </p>
             </div>
-            {columns.length === 0 && (
-              <span className="text-xs text-amber-700">Give customers a type (Dealer, Distributor…) to price by type. <Link to="/customers" className="underline">Customers</Link></span>
-            )}
+            <div className="flex flex-wrap items-center gap-3">
+              {columns.length === 0 && (
+                <span className="text-xs text-amber-700">Give customers a type (Dealer, Distributor…) to price by type. <Link to="/customers" className="underline">Customers</Link></span>
+              )}
+              {inactiveRules.length > 0 && (
+                <label className="flex items-center gap-2 text-xs text-gray-700" title="Prices switched off (Active unticked) are kept but not used. Show them to switch them back on or delete them.">
+                  <Toggle checked={showInactive} onChange={setShowInactive} label="Show switched-off prices" />
+                  <span>
+                    Show switched-off prices
+                    <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">{inactiveRules.length}</span>
+                  </span>
+                </label>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -302,10 +349,10 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
                     <td className="px-3 py-1.5 text-right tabular-nums text-gray-700" title="Edit on the Products screen">
                       {Number(p.base_price) > 0 ? formatMoney(p.base_price) : <span className="text-amber-600" title="No list price: rows for this product need a price-list entry">not set</span>}
                     </td>
-                    <td className="px-1 py-1"><PriceCell rules={parts.matrix.concat(parts.allProducts)} product={p} customerType={null} scenarioId={scenarioId} onOpen={openCell} /></td>
+                    <td className="px-1 py-1"><PriceCell rules={parts.matrix.concat(parts.allProducts)} product={p} customerType={null} scenarioId={scenarioId} onOpen={openCell} showInactive={showInactive} /></td>
                     {columns.map((t) => (
                       <td key={t} className="px-1 py-1">
-                        <PriceCell rules={parts.matrix.concat(parts.allProducts)} product={p} customerType={t} scenarioId={scenarioId} onOpen={openCell} />
+                        <PriceCell rules={parts.matrix.concat(parts.allProducts)} product={p} customerType={t} scenarioId={scenarioId} onOpen={openCell} showInactive={showInactive} />
                       </td>
                     ))}
                   </tr>
@@ -321,7 +368,7 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
           <RuleList
             title="Prices for a product type or every product"
             help="For example: Distributor 40% off list on every product, or 40% off list for product type Accessory. A product-type price beats an every-product one; a price set for a product beats both."
-            rules={parts.allProducts}
+            rules={activeParts.allProducts}
             empty="None. Add one with “Add price” → Discount off list price → A product type or All products."
             customers={customers}
             scenarios={scenarios}
@@ -332,7 +379,7 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
           <RuleList
             title="Customer-specific prices"
             help="Beat every customer-type and all-customer price for that customer."
-            rules={parts.customer}
+            rules={activeParts.customer}
             empty="None. Use these for contract prices with one account."
             customers={customers}
             scenarios={scenarios}
@@ -340,6 +387,19 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
             onDelete={remove}
             busyId={busyId}
           />
+          {showInactive && inactiveRules.length > 0 && (
+            <RuleList
+              title="Switched-off prices"
+              help="Kept but not used for any sale. Edit one and tick Active to use it again, or delete it."
+              rules={inactiveRules}
+              empty="None."
+              customers={customers}
+              scenarios={scenarios}
+              onEdit={(r) => setModal({ open: true, rule: r, defaults: null })}
+              onDelete={remove}
+              busyId={busyId}
+            />
+          )}
         </div>
       )}
 
@@ -349,6 +409,7 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
         defaults={modal.defaults}
         onClose={() => setModal({ open: false, rule: null, defaults: null })}
         onSave={save}
+        onDelete={remove}
         customers={customers}
         products={products}
         customerTypes={columns}
@@ -359,6 +420,7 @@ const PriceListTab = ({ customers, products, customerTypes, productTypes = [], s
         open={applyOpen}
         onClose={() => setApplyOpen(false)}
         scenario={scenario}
+        baseScenario={baseScenario}
         customerTypes={columns}
         products={products}
         customers={customers}

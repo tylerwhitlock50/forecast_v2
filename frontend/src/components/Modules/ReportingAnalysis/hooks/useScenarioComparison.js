@@ -1,6 +1,33 @@
-import { useState, useCallback, useRef } from 'react';
-import api from '../../../../lib/apiClient';
+import { useState, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
+import api, { extractErrorMessage } from '../../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
+import ForecastContext from '../../../../context/ForecastContext';
+
+/**
+ * The ids that are still scenarios: `ids` without the ones missing from
+ * `scenarios` (the context's id -> scenario map), duplicates and blanks
+ * dropped, order kept. While the scenario list is not loaded (empty or
+ * missing) the ids are kept as they are.
+ */
+export const knownScenarioIds = (ids, scenarios) => {
+  const list = [];
+  (ids || []).forEach((id) => {
+    const value = id === null || id === undefined ? '' : String(id).trim();
+    if (value && !list.includes(value)) list.push(value);
+  });
+  const known = scenarios && typeof scenarios === 'object' ? Object.keys(scenarios) : [];
+  if (known.length === 0) return list;
+  return list.filter((id) => known.includes(id));
+};
+
+/** What to show when GET /forecast/comparison fails: the API's own detail (a 404 names the unknown ids). */
+export const comparisonErrorMessage = (err) => {
+  const detail = extractErrorMessage(err, 'Failed to fetch comparison data');
+  if (err?.response?.status === 404) {
+    return `${detail.replace(/\.$/, '')}. The scenario may have been deleted: pick another scenario to compare.`;
+  }
+  return detail;
+};
 
 // Lines between operating income and net income. When the comparison API
 // does not send them, they are read from each scenario's income statement
@@ -45,6 +72,10 @@ export const fillStatementLines = async (rows, window) => {
  * Every scenario is totalled over the same window; when none is given the
  * server uses the union of the selected scenarios' sales months and
  * reports it back as `window`.
+ *
+ * Ids that are no longer in the scenario list (a scenario deleted since it
+ * was selected) are dropped before the request, and their rows are dropped
+ * from `data`; if the API still answers 404 its detail is shown.
  */
 export const useScenarioComparison = () => {
   const [data, setData] = useState([]);
@@ -52,10 +83,15 @@ export const useScenarioComparison = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const latest = useRef(0);
+  // Outside a ForecastProvider (tests) there is no list to check against.
+  const scenarios = useContext(ForecastContext)?.scenarios || null;
+  const scenariosRef = useRef(scenarios);
+  useEffect(() => { scenariosRef.current = scenarios; }, [scenarios]);
 
-  const fetchComparison = useCallback(async (forecastIds, period = null) => {
+  const fetchComparison = useCallback(async (requestedIds, period = null) => {
     const request = ++latest.current;
-    if (!forecastIds || forecastIds.length === 0) {
+    const forecastIds = knownScenarioIds(requestedIds, scenariosRef.current);
+    if (forecastIds.length === 0) {
       setData([]);
       setWindow(null);
       setLoading(false);
@@ -80,12 +116,21 @@ export const useScenarioComparison = () => {
     } catch (err) {
       if (request !== latest.current) return;
       console.error('Error fetching comparison data:', err);
-      setError(err.userMessage || err.message || 'Failed to fetch comparison data');
-      toast.error('Failed to load comparison data');
+      const message = comparisonErrorMessage(err);
+      setData([]);
+      setError(message);
+      toast.error(`Could not load the comparison: ${message}`, { id: `comparison:${message}` });
     } finally {
       if (request === latest.current) setLoading(false);
     }
   }, []);
 
-  return { data, window: sharedWindow, loading, error, fetchComparison };
+  // A scenario deleted after the comparison loaded drops out of the table too.
+  const visible = useMemo(() => {
+    const known = scenarios && typeof scenarios === 'object' ? Object.keys(scenarios) : [];
+    if (known.length === 0) return data;
+    return data.filter((row) => known.includes(row.forecast_id));
+  }, [data, scenarios]);
+
+  return { data: visible, window: sharedWindow, loading, error, fetchComparison };
 };

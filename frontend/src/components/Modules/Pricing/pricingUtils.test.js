@@ -1,6 +1,13 @@
 import {
   PRECEDENCE_TEXT,
+  PRICE_SOURCE_LABELS,
   STACKING_TYPES,
+  applyPricesRisk,
+  invoiceAmount,
+  priceChangeMention,
+  priceSourceLabel,
+  readResolvedPrice,
+  resolvePriceQuery,
   cellRules,
   describeRate,
   distinctValues,
@@ -301,5 +308,52 @@ describe('product-type prices', () => {
     expect(formToPrice({ ...form, unit_id: 'ACC' }, null).unit_type).toBeNull();     // a product beats its type
     expect(validatePriceForm({ method: 'fixed', unit_id: '', unit_type: 'Accessory', unit_price: '35' })).toEqual({});
     expect(validatePriceForm({ method: 'fixed', unit_id: '', unit_type: '', unit_price: '35' }).unit_id).toBeTruthy();
+  });
+});
+
+describe('price sources', () => {
+  it('labels every source the engine reports, including product-type prices', () => {
+    // services.pricing.price_source, plus base_price and none
+    ['customer_product', 'customer_product_type', 'customer_all', 'type_product', 'type_product_type', 'type_all',
+      'product', 'product_type', 'all', 'base_price', 'none'].forEach((source) => expect(PRICE_SOURCE_LABELS[source]).toBeTruthy());
+    expect(PRICE_SOURCE_LABELS.customer_product_type).toBe('Customer price for the product type');
+    expect(PRICE_SOURCE_LABELS.type_product_type).toBe('Customer-type price for the product type');
+    expect(PRICE_SOURCE_LABELS.product_type).toBe('Product-type price');
+    expect(priceSourceLabel('type_product_type')).toBe('Customer-type price for the product type');
+    expect(priceSourceLabel('brand_new_source')).toBe('brand new source');
+    expect(priceSourceLabel('brand_new_source', 'From the server')).toBe('From the server');
+  });
+});
+
+describe('apply prices to a scenario', () => {
+  it('flags a branch, and a scenario whose name or description mentions a price change', () => {
+    expect(applyPricesRisk({ name: 'Budget 2027', is_base: true })).toBeNull();
+    expect(applyPricesRisk({ name: 'Budget 2027 high volume', is_base: false })).toEqual({ branch: true, mention: null });
+    expect(applyPricesRisk({ name: 'Budget 2027 +5% price', is_base: false }))
+      .toEqual({ branch: true, mention: { field: 'name', text: 'Budget 2027 +5% price' } });
+    expect(applyPricesRisk({ name: 'Budget 2027', description: 'Dealer pricing up 3%', is_base: true }))
+      .toEqual({ branch: false, mention: { field: 'description', text: 'Dealer pricing up 3%' } });
+    expect(priceChangeMention({ name: 'Plan', notes: 'Re-priced after the July list' })).toMatchObject({ field: 'notes' });
+    expect(priceChangeMention({ name: 'Enterprise growth', description: 'More units' })).toBeNull();
+    expect(applyPricesRisk(null)).toBeNull();
+  });
+});
+
+describe('price lookup for the example invoice', () => {
+  it('builds the /pricing/resolve query', () => {
+    expect(resolvePriceQuery({ unitId: '' })).toBeNull();
+    expect(resolvePriceQuery({ unitId: 'RF-100', customerId: 'C1001', customerType: 'Dealer', period: '2027-03', forecastId: 'F001' }))
+      .toBe('unit_id=RF-100&customer_id=C1001&period=2027-03&forecast_id=F001');
+    expect(resolvePriceQuery({ unitId: 'RF-100', customerType: 'Dealer' })).toBe('unit_id=RF-100&customer_type=Dealer');
+    expect(resolvePriceQuery({ unitId: 'RF-100', period: '2027-3' })).toBe('unit_id=RF-100');
+  });
+
+  it('reads the resolved price and says where it came from', () => {
+    expect(readResolvedPrice({ data: { price: 1110, source: 'type_product', source_label: 'x', rule: { price_id: 'P1' }, base_price: 1399 } }))
+      .toEqual({ price: 1110, source: 'type_product', label: 'Customer-type price for the product', rule: { price_id: 'P1' }, basePrice: 1399 });
+    expect(readResolvedPrice({ data: { price: null, source: 'none' } })).toMatchObject({ price: null, source: 'none', label: 'No price' });
+    expect(invoiceAmount(1110, 2)).toBe('2220');
+    expect(invoiceAmount(839.99, 3)).toBe('2519.97');
+    expect(invoiceAmount(null, 2)).toBe('');
   });
 });

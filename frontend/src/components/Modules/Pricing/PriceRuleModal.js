@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Modal, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '../../ui/modal';
 import { Button } from '../../ui/button';
 import { Field, inputClass, selectClass } from './PricingBits';
@@ -8,6 +9,7 @@ import {
   formatMoney,
   percentToFraction,
   priceToForm,
+  ruleIsActive,
   validatePriceForm,
 } from './pricingUtils';
 import { errorMessage } from '../DataImport/importSteps';
@@ -18,14 +20,17 @@ const whatFor = (form) => (form.unit_id ? 'product' : form.unit_type ? 'type' : 
 /**
  * Add or edit one price-list entry: a fixed price for a product or a product
  * type, or a discount off list price for one product, a product type or all
- * products, for everyone, a customer type or one customer.
+ * products, for everyone, a customer type or one customer. An existing
+ * entry can be deleted from here (`onDelete(rule)` confirms, deletes and
+ * resolves true when it did).
  */
-const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, products, customerTypes, productTypes = [], scenario }) => {
+const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, onDelete = null, customers, products, customerTypes, productTypes = [], scenario }) => {
   const [form, setForm] = useState(emptyPriceForm());
   const [who, setWho] = useState('all');
   const [what, setWhat] = useState('product');
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [serverError, setServerError] = useState(null);
 
   useEffect(() => {
@@ -37,6 +42,7 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
     setErrors({});
     setServerError(null);
     setSaving(false);
+    setDeleting(false);
   }, [open, rule, defaults]);
 
   if (!open) return null;
@@ -73,6 +79,23 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
     }));
   };
 
+  const busy = saving || deleting;
+  const switchedOff = Boolean(rule) && !ruleIsActive(rule);
+
+  const remove = async () => {
+    if (!rule || !onDelete) return;
+    setDeleting(true);
+    setServerError(null);
+    try {
+      const deleted = await onDelete(rule);
+      if (deleted) onClose();
+      else setDeleting(false);
+    } catch (err) {
+      setServerError(errorMessage(err, 'Could not delete the price.'));
+      setDeleting(false);
+    }
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     const found = validatePriceForm(form);
@@ -94,7 +117,7 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
   };
 
   return (
-    <Modal className="max-w-xl" onClick={(e) => e.target === e.currentTarget && !saving && onClose()}>
+    <Modal className="max-w-xl" onClick={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <form onSubmit={submit} noValidate>
         <ModalHeader>
           <div>
@@ -103,6 +126,11 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
           </div>
         </ModalHeader>
         <ModalContent className="space-y-5">
+          {switchedOff && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700" data-testid="price-switched-off">
+              This price is switched off, so nothing uses it. Tick <span className="font-medium">Active</span> below to use it again, or delete it.
+            </div>
+          )}
           <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Price type">
             {[
               { value: 'fixed', label: 'Fixed price', help: 'A set price per unit for one product or every product of a type.' },
@@ -231,8 +259,20 @@ const PriceRuleModal = ({ open, rule, defaults, onClose, onSave, customers, prod
           {serverError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">{serverError}</div>}
         </ModalContent>
         <ModalFooter className="sticky bottom-0 bg-white">
-          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button type="submit" disabled={saving} className="bg-orange-600 text-white hover:bg-orange-700">
+          {rule && onDelete && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={remove}
+              disabled={busy}
+              className="mr-auto border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
+            >
+              <Trash2 className="mr-1.5 h-4 w-4" />
+              {deleting ? 'Deleting…' : 'Delete price'}
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" disabled={busy} className="bg-orange-600 text-white hover:bg-orange-700">
             {saving ? 'Saving…' : rule ? 'Save changes' : 'Add price'}
           </Button>
         </ModalFooter>

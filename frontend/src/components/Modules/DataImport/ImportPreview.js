@@ -35,6 +35,40 @@ const ERROR_LIMIT = 50;
 
 const lines = (n) => plural(n, ['line', 'lines']);
 
+/** "Nothing will be changed": a replace import refused because some rows have errors. */
+const ReplaceBlocked = ({ children }) => (
+  <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="status" data-testid="replace-summary">
+    <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Nothing will be changed</div>
+    <div className="mt-0.5">{children}</div>
+  </div>
+);
+
+/**
+ * Price / deduction "Replace all": the rules it deletes first, or why it
+ * will not run. Nothing for the other modes.
+ */
+const RuleReplaceSummary = ({ result, done, errorCount, step }) => {
+  if (result.mode !== 'replace') return null;
+  const noun = step.kind === 'prices' ? ['price rule', 'price rules'] : ['rule', 'rules'];
+  if (result.replaceBlocked) {
+    return (
+      <ReplaceBlocked>
+        {plural(errorCount, ['row has a problem', 'rows have problems'])}. Replacing deletes every existing {noun[0]} of the
+        same scope first, so it only runs when every row is valid: no {noun[1]} are added, updated or deleted until the file is fixed.
+      </ReplaceBlocked>
+    );
+  }
+  if (done || !result.replaced) return null;
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status" data-testid="replace-summary">
+      <div className="flex items-center gap-2 font-medium">
+        <AlertTriangle className="h-4 w-4" /> Will first delete {plural(result.replaced, noun)} already saved
+      </div>
+      <div className="mt-0.5 text-amber-800">Every existing {noun[0]} of the same scope (company-wide, or the scenario) is deleted, then this file&apos;s {noun[1]} are added.</div>
+    </div>
+  );
+};
+
 /**
  * Sales replace modes: what the import removes from the scenario, or why it
  * will not run. Nothing for an add / update import.
@@ -47,13 +81,10 @@ const ReplaceSummary = ({ result, done, errorCount }) => {
     : 'In every month: afterwards the scenario holds exactly the lines in this file.';
   if (result.replaceBlocked) {
     return (
-      <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="status" data-testid="replace-summary">
-        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Nothing will be changed</div>
-        <div className="mt-0.5">
-          {plural(errorCount, ['row has a problem', 'rows have problems'])}. Replacing only runs when every row is valid,
-          so no lines are added, updated or removed until the file is fixed.
-        </div>
-      </div>
+      <ReplaceBlocked>
+        {plural(errorCount, ['row has a problem', 'rows have problems'])}. Replacing only runs when every row is valid,
+        so no lines are added, updated or removed until the file is fixed.
+      </ReplaceBlocked>
     );
   }
   // After the import the step's headline already says what was removed.
@@ -83,9 +114,12 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
   const isSales = step.kind === 'sales';
   const noun = step.rowNoun ? step.rowNoun[1] : 'rows';
   const isRecords = step.endpoint === '/import/records';
+  const isRules = step.kind === 'prices' || step.kind === 'deductions';
 
   const errors = result.errors || [];
   const visibleErrors = showAllErrors ? errors : errors.slice(0, ERROR_LIMIT);
+  // Price matrix files: errors name the customer-type column of the cell.
+  const hasColumns = errors.some((e) => e.column);
   const sources = describePriceSources(result.priceSources);
 
   const rowFor = (n) => {
@@ -136,6 +170,7 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
       )}
 
       {isSales && <ReplaceSummary result={result} done={done} errorCount={errors.length} />}
+      {isRules && <RuleReplaceSummary result={result} done={done} errorCount={errors.length} step={step} />}
 
       {result.skipped > 0 && !isRecords && (
         <p className="text-sm text-gray-600">{plural(result.skipped, ['row was', 'rows were'])} skipped.</p>
@@ -267,7 +302,12 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white text-left text-xs font-medium uppercase tracking-wide text-gray-500 shadow-[0_1px_0_#e5e7eb]">
                 <tr>
-                  <th className="w-20 px-3 py-2 text-right" title="Data row number in your file (the header row is not counted)">Row</th>
+                  <th
+                    className={`${hasColumns ? 'w-32' : 'w-20'} px-3 py-2 text-right`}
+                    title={hasColumns ? 'Data row number in your file (the header row is not counted), and the column of the cell' : 'Data row number in your file (the header row is not counted)'}
+                  >
+                    {hasColumns ? 'Row · column' : 'Row'}
+                  </th>
                   <th className="px-3 py-2">Values</th>
                   <th className="px-3 py-2">Problem</th>
                 </tr>
@@ -276,15 +316,23 @@ const ImportPreview = ({ result, rows, step, done = false, sourceRowFor = null }
                 {visibleErrors.map((e, i) => {
                   const sent = rowFor(e.row);
                   const fileRow = sourceRowFor && e.row ? (sourceRowFor[Number(e.row) - 1] ?? null) : null;
+                  const cell = e.column && sent && sent[e.column] !== undefined && sent[e.column] !== null && sent[e.column] !== ''
+                    ? String(sent[e.column]) : null;
                   return (
                     <tr key={i}>
                       <td className="px-3 py-1.5 text-right tabular-nums text-gray-700">
                         {e.row ?? '—'}
+                        {e.column && (
+                          <div className="text-[11px] text-gray-500" title="Column of the cell in your file" data-testid="error-column">{e.column} column</div>
+                        )}
                         {fileRow !== null && fileRow + 1 !== Number(e.row) && (
                           <div className="text-[11px] text-gray-400" title="Row in your original (wide) file">file row {fileRow + 1}</div>
                         )}
                       </td>
-                      <td className="max-w-xs truncate px-3 py-1.5 text-gray-500" title={sent ? JSON.stringify(sent) : ''}>{describeRow(sent) || '—'}</td>
+                      <td className="max-w-xs truncate px-3 py-1.5 text-gray-500" title={sent ? JSON.stringify(sent) : ''}>
+                        {cell !== null && <span className="font-medium text-gray-700">{e.column}: {cell} · </span>}
+                        {describeRow(sent) || '—'}
+                      </td>
                       <td className="px-3 py-1.5 text-red-700">{e.field ? <span className="font-medium">{e.field}: </span> : null}{e.error}</td>
                     </tr>
                   );

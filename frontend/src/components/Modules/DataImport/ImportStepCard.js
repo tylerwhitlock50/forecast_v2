@@ -197,8 +197,8 @@ const ImportStepCard = ({ step, number, count, countLabel, docs, scenario, noSce
   // What the server says it would write: sales rows, or new + updated rows / lines / operations / rules.
   const importCount = preview ? (isSales ? preview.imported : preview.created + preview.updated) : 0;
   const nothingToChange = Boolean(preview) && importCount === 0 && preview.errors.length === 0;
-  // A sales replace refuses the whole file while any row has an error.
-  const replaceBlocked = Boolean(isSales && preview?.replaceBlocked);
+  // A replace (sales, prices, deductions) refuses the whole file while any row has an error.
+  const replaceBlocked = Boolean(preview?.replaceBlocked);
   const toRemove = isSales && preview && !replaceBlocked ? preview.deleted : 0;
   const busy = phase === 'reading' || phase === 'checking' || phase === 'importing';
   const modeInfo = step.modes?.find((m) => m.value === mode);
