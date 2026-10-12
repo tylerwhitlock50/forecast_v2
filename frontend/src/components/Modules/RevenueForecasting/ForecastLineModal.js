@@ -187,6 +187,8 @@ const ForecastLineModal = ({ isOpen, onClose, onSave, initialData = null, defaul
       setFormData(convertedData);
       setErrors({});
     }
+    // Reset only when the modal opens or the line changes; the default range and period type are read at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialData]);
 
   // Validate form

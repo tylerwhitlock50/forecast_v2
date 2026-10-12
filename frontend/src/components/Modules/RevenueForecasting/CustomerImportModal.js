@@ -6,7 +6,7 @@ import { toast } from 'react-hot-toast';
 const CustomerImportModal = ({ isOpen, onClose, onComplete }) => {
   const handleImport = async (importData) => {
     try {
-      const { data, options } = importData;
+      const { data } = importData;
       
       const response = await api.post('/forecast/bulk_create_customers', {
         customers: data,

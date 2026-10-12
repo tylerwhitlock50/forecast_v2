@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatDateOnly } from '../../../lib/dates';
 import { DataTable } from '../../ui/data-table';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -20,14 +21,7 @@ const LoanTable = ({ loans, onEdit, onDelete, onViewSchedule }) => {
         return `${rate.toFixed(2)}%`;
     };
 
-    const formatDate = (dateString) => {
-        if (!dateString) return '';
-        return new Date(dateString).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        });
-    };
+    const formatDate = (dateString) => formatDateOnly(dateString, { year: 'numeric', month: 'short', day: 'numeric' }, '');
 
     const getLoanTypeVariant = (loanType) => {
         const variants = {

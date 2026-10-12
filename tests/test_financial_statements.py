@@ -96,10 +96,11 @@ def _seed(db_path: str) -> None:
     c.execute("""INSERT INTO capital_expenditures (capex_id, forecast_id, asset_name, amount, purchase_period, useful_life_months)
                  VALUES ('CX1', ?, 'Lathe', 1200, '2026-02', 12)""", (FORECAST,))
 
-    # Assumptions: opening cash 5,000, AR 1,000, AP 400, 30/30/30 days, 25% tax, equity plugged.
-    c.execute("""INSERT INTO financial_assumptions (forecast_id, opening_cash, opening_accounts_receivable, opening_inventory,
+    # Assumptions: balances as at end of Dec 2025 (so the model starts Jan 2026): opening cash 5,000,
+    # AR 1,000, AP 400, 30/30/30 days, 25% tax, equity plugged.
+    c.execute("""INSERT INTO financial_assumptions (forecast_id, opening_period, opening_cash, opening_accounts_receivable, opening_inventory,
                  opening_accounts_payable, dso_days, dio_days, dpo_days, income_tax_rate, minimum_cash_balance)
-                 VALUES (?, 5000, 1000, 0, 400, 30, 30, 30, 0.25, 4000)""", (FORECAST,))
+                 VALUES (?, '2025-12', 5000, 1000, 0, 400, 30, 30, 30, 0.25, 4000)""", (FORECAST,))
 
     conn.commit()
     conn.close()
@@ -456,3 +457,434 @@ class TestScenarioComparison:
         assert r.status_code == 200
         row = r.json()["data"]["comparison"][0]
         assert row["revenue"] == 0 and row["payroll"] == 5200
+
+
+# ---------------------------------------------------------------------------
+# Carry-forward: a window must not change the balances it reports
+# ---------------------------------------------------------------------------
+
+BALANCE_KEYS = ("cash", "accounts_receivable", "inventory", "fixed_assets_gross", "accumulated_depreciation",
+                "accounts_payable", "debt", "opening_equity", "retained_earnings", "total_equity", "total_assets",
+                "total_liabilities", "balance_check")
+
+
+def _build(engine_db, ids, start, end):
+    conn = engine_db.get_connection()
+    try:
+        return fs.build_statements(conn.cursor(), ids, start, end)
+    finally:
+        conn.close()
+
+
+class TestCarryForward:
+    def test_march_only_matches_march_in_full_window(self, engine_db, statements):
+        march_only = _build(engine_db, [FORECAST], "2026-03", "2026-03")
+        assert march_only["carry_forward"] == {
+            "opening_period": "2025-12",
+            "balances_as_of": "2026-02",
+            "rolled_forward_periods": ["2026-01", "2026-02"],
+            "months_rolled_forward": 2,
+        }
+        full_mar = _row(statements, "balance_sheet", "2026-03")
+        only_mar = march_only["balance_sheet"]["by_period"][0]
+        for key in BALANCE_KEYS:
+            assert only_mar[key] == pytest.approx(full_mar[key], abs=0.01), key
+        # Income statement and cash flow for March are identical too.
+        assert march_only["income_statement"]["by_period"][0] == _row(statements, "income_statement", "2026-03")
+        assert march_only["cash_flow"]["by_period"][0] == _row(statements, "cash_flow", "2026-03")
+        assert march_only["cash_flow"]["totals"]["closing_cash"] == full_mar["cash"]
+
+    def test_opening_column_is_the_carried_february_balance(self, engine_db, statements):
+        march_only = _build(engine_db, [FORECAST], "2026-03", "2026-03")
+        opening = march_only["balance_sheet"]["opening"]
+        feb = _row(statements, "balance_sheet", "2026-02")
+        assert opening["period"] == "2026-02"
+        for key in BALANCE_KEYS:
+            assert opening[key] == pytest.approx(feb[key], abs=0.01), key
+        # Not the stated opening balances: cash moved, debt was paid down, the lathe was bought and depreciated,
+        # and two months of results sit in retained earnings.
+        assert opening["cash"] != 5000
+        assert opening["debt"] == 8000
+        assert opening["fixed_assets_gross"] == 1200 and opening["accumulated_depreciation"] == 100
+        assert opening["retained_earnings"] == pytest.approx(
+            _row(statements, "income_statement", "2026-01")["net_income"] + _row(statements, "income_statement", "2026-02")["net_income"], abs=0.01)
+        assert opening["equity_plugged"] is True
+        assert abs(opening["balance_check"]) < 0.01
+        assert march_only["cash_flow"]["by_period"][0]["opening_cash"] == pytest.approx(feb["cash"], abs=0.01)
+
+    def test_every_single_month_window_matches_the_full_window(self, engine_db, statements):
+        for period in ["2026-01", "2026-02", "2026-03"]:
+            single = _build(engine_db, [FORECAST], period, period)
+            full = _row(statements, "balance_sheet", period)
+            for key in BALANCE_KEYS:
+                assert single["balance_sheet"]["by_period"][0][key] == pytest.approx(full[key], abs=0.01), (period, key)
+            assert abs(single["balance_sheet"]["by_period"][0]["balance_check"]) < 0.01
+
+    def test_detail_is_limited_to_the_window(self, engine_db):
+        march_only = _build(engine_db, [FORECAST], "2026-03", "2026-03")
+        # No sales in March, so no product/customer detail even though Jan/Feb were rolled forward.
+        assert march_only["detail"]["revenue_by_product"] == {}
+        assert march_only["detail"]["revenue_by_customer"] == {}
+        rent = march_only["detail"]["expenses_by_category"]["Rent"]
+        assert list(rent["by_period"].keys()) == ["2026-03"] and rent["total"] == 300
+        assert list(march_only["detail"]["payroll_headcount"].keys()) == ["2026-03"]
+        assert march_only["income_statement"]["totals"]["revenue"] == 0
+        assert march_only["income_statement"]["totals"]["payroll"] == 5200
+        # The lathe was bought in February: carried into the balance sheet, but not purchased in this window.
+        lathe = next(i for i in march_only["detail"]["capex_items"] if i["capex_id"] == "CX1")
+        assert lathe["in_window"] is False
+        assert list(lathe["depreciation_by_period"].keys()) == ["2026-03"]
+        # The loan detail opens at the window start (after the Jan and Feb payments), matching the balance sheet.
+        loan = march_only["detail"]["loans"]["LN1"]
+        assert loan["opening_balance"] == 8000 == march_only["balance_sheet"]["opening"]["debt"]
+        assert list(loan["principal"].keys()) == ["2026-03"] and loan["principal"]["2026-03"] == 500
+
+    def test_detail_flags_match_a_window_that_starts_at_the_opening(self, statements):
+        lathe = next(i for i in statements["detail"]["capex_items"] if i["capex_id"] == "CX1")
+        assert lathe["in_window"] is True
+        assert statements["detail"]["loans"]["LN1"]["opening_balance"] == 9000 == statements["balance_sheet"]["opening"]["debt"]
+
+    def test_warnings_only_for_the_window(self, engine_db):
+        # Cash dips below the 4,000 minimum from Feb; a Jan-only window must not report Feb.
+        jan_only = _build(engine_db, [FORECAST], "2026-01", "2026-01")
+        assert not any(w["code"] == "cash_below_minimum" for w in jan_only["warnings"])
+        march_only = _build(engine_db, [FORECAST], "2026-03", "2026-03")
+        shortfall = next(w for w in march_only["warnings"] if w["code"] == "cash_below_minimum")
+        assert shortfall["periods"] == ["2026-03"]
+
+    def test_window_before_opening_period_warns(self, engine_db):
+        stmt = _build(engine_db, [FORECAST], "2025-11", "2025-12")
+        codes = {w["code"] for w in stmt["warnings"]}
+        assert "window_before_opening" in codes
+        assert stmt["carry_forward"]["months_rolled_forward"] == 0
+        assert stmt["balance_sheet"]["opening"]["cash"] == 5000
+
+    def test_unset_opening_period_warns(self, engine_db):
+        conn = engine_db.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT INTO forecast (forecast_id, name) VALUES ('F-NOOPEN', 'No opening period')")
+        c.execute("INSERT INTO financial_assumptions (forecast_id, opening_cash) VALUES ('F-NOOPEN', 100)")
+        c.execute("INSERT INTO forecast (forecast_id, name) VALUES ('F-NOASSUMP', 'No assumptions at all')")
+        conn.commit()
+        try:
+            stmt = fs.build_statements(c, ["F-NOOPEN"], "2026-03", "2026-03")
+            codes = {w["code"] for w in stmt["warnings"]}
+            assert "opening_period_unset" in codes
+            assert "default_assumptions" not in codes
+            assert stmt["carry_forward"]["months_rolled_forward"] == 0
+            # Without saved assumptions the default warning carries the hint instead of a second warning.
+            other = fs.build_statements(c, ["F-NOASSUMP"], "2026-03", "2026-03")
+            other_codes = [w["code"] for w in other["warnings"]]
+            assert "default_assumptions" in other_codes and "opening_period_unset" not in other_codes
+            assert "opening period" in next(w for w in other["warnings"] if w["code"] == "default_assumptions")["message"]
+        finally:
+            c.execute("DELETE FROM financial_assumptions WHERE forecast_id = 'F-NOOPEN'")
+            c.execute("DELETE FROM forecast WHERE forecast_id IN ('F-NOOPEN', 'F-NOASSUMP')")
+            conn.commit()
+            conn.close()
+
+    def test_opening_assets_depreciate_through_the_carried_months(self, engine_db):
+        conn = engine_db.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT INTO forecast (forecast_id, name) VALUES ('F-ASSET', 'Asset base')")
+        # $2,400 net opening fixed assets with 24 months left => $100/month from Jan 2026.
+        c.execute("""INSERT INTO financial_assumptions (forecast_id, opening_period, opening_cash, opening_fixed_assets,
+                     opening_accumulated_depreciation, opening_fixed_assets_remaining_life_months, income_tax_rate)
+                     VALUES ('F-ASSET', '2025-12', 10000, 3000, 600, 24, 0)""")
+        conn.commit()
+        try:
+            full = fs.build_statements(c, ["F-ASSET"], "2026-01", "2026-12")
+            june_only = fs.build_statements(c, ["F-ASSET"], "2026-06", "2026-06")
+            full_june = _row(full, "balance_sheet", "2026-06")
+            only_june = june_only["balance_sheet"]["by_period"][0]
+            assert only_june["accumulated_depreciation"] == pytest.approx(600 + 6 * 100, abs=0.01)
+            assert only_june["accumulated_depreciation"] == pytest.approx(full_june["accumulated_depreciation"], abs=0.01)
+            assert june_only["balance_sheet"]["opening"]["accumulated_depreciation"] == pytest.approx(600 + 5 * 100, abs=0.01)
+            assert june_only["income_statement"]["by_period"][0]["depreciation"] == 100
+            # Company-wide payroll, expenses and the loan apply to this scenario too; the carried
+            # retained earnings are the same five months of results the full window shows.
+            assert june_only["balance_sheet"]["opening"]["retained_earnings"] == pytest.approx(
+                _row(full, "balance_sheet", "2026-05")["retained_earnings"], abs=0.01)
+            assert only_june["retained_earnings"] == pytest.approx(full_june["retained_earnings"], abs=0.01)
+            assert only_june["cash"] == pytest.approx(full_june["cash"], abs=0.01)
+            assert abs(only_june["balance_check"]) < 0.01
+        finally:
+            c.execute("DELETE FROM financial_assumptions WHERE forecast_id = 'F-ASSET'")
+            c.execute("DELETE FROM forecast WHERE forecast_id = 'F-ASSET'")
+            conn.commit()
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cash flow aggregation
+# ---------------------------------------------------------------------------
+
+class TestCashAggregation:
+    def test_totals_use_balances_not_sums_of_balances(self, statements):
+        rows = statements["cash_flow"]["by_period"]
+        totals = statements["cash_flow"]["totals"]
+        assert totals["opening_cash"] == rows[0]["opening_cash"] == 5000
+        assert totals["closing_cash"] == rows[-1]["closing_cash"]
+        assert totals["closing_cash"] != pytest.approx(sum(r["closing_cash"] for r in rows), abs=0.01)
+        # Flows are summed.
+        assert totals["net_cash_flow"] == pytest.approx(sum(r["net_cash_flow"] for r in rows), abs=0.01)
+        assert totals["operating_cash_flow"] == pytest.approx(sum(r["operating_cash_flow"] for r in rows), abs=0.01)
+
+    def test_opening_plus_movements_reconciles_to_closing(self, statements, engine_db):
+        for stmt in (statements, _build(engine_db, [FORECAST], "2026-02", "2026-03")):
+            rec = stmt["cash_flow"]["reconciliation"]
+            assert rec["opening_cash"] == stmt["balance_sheet"]["opening"]["cash"]
+            assert rec["closing_cash"] == stmt["balance_sheet"]["closing"]["cash"]
+            # Each figure is rounded to cents independently, so allow a cent of display rounding;
+            # the engine's own difference is computed before rounding and must be zero.
+            assert rec["opening_cash"] + rec["net_cash_flow"] == pytest.approx(rec["closing_cash"], abs=0.02)
+            assert rec["difference"] == 0
+            assert rec["net_cash_flow"] == stmt["cash_flow"]["totals"]["net_cash_flow"]
+
+    def test_csv_export_total_column_carries_closing_balance(self, client, statements):
+        r = client.get("/reporting/statements/export", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"})
+        assert r.status_code == 200
+        rows = {line.split(",")[0]: line.split(",") for line in r.text.splitlines() if line}
+        closing = statements["cash_flow"]["by_period"][-1]["closing_cash"]
+        assert float(rows["closing_cash"][-1]) == pytest.approx(closing, abs=0.01)
+        assert float(rows["opening_cash"][-1]) == pytest.approx(5000, abs=0.01)
+        assert float(rows["net_cash_flow"][-1]) == pytest.approx(closing - 5000, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Incomplete actuals
+# ---------------------------------------------------------------------------
+
+class TestVarianceCoverage:
+    @pytest.fixture
+    def partial_actuals(self, client):
+        for p in ("2026-01", "2026-02", "2026-03"):
+            client.delete("/reporting/actuals", params={"period": p})
+        entries = [
+            {"period": "2026-01", "line_item": "revenue", "amount": 1100},        # January revenue only
+            {"period": "2026-01", "line_item": "admin_expense", "amount": 0},     # confirmed zero, not missing
+            {"period": "2026-02", "line_item": "payroll", "amount": 5000},        # February payroll only
+        ]
+        assert client.post("/reporting/actuals", json={"entries": entries}).status_code == 200
+        yield
+        for p in ("2026-01", "2026-02", "2026-03"):
+            client.delete("/reporting/actuals", params={"period": p})
+
+    def _line(self, data, key):
+        return next(l for l in data["line_items"] if l["line_item"] == key)
+
+    def test_missing_months_are_not_zero(self, client, partial_actuals):
+        data = client.get("/reporting/variance", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"}).json()["data"]
+        assert data["periods_with_actuals"] == ["2026-01", "2026-02"]
+        assert data["actuals_through"] == "2026-02"
+
+        revenue = self._line(data, "revenue")
+        assert revenue["coverage"] == "partial"
+        assert revenue["by_period"][0]["actual"] == 1100 and revenue["by_period"][1]["actual"] is None
+        assert revenue["by_period"][1]["variance"] is None and revenue["by_period"][1]["favorable"] is None
+        # To date compares January only, never Jan+Feb budget against a Jan-only actual.
+        assert revenue["totals"]["periods_compared"] == ["2026-01"]
+        assert revenue["totals"]["missing_periods"] == ["2026-02"]
+        assert revenue["totals"]["budget_to_date"] == 1000
+        assert revenue["totals"]["actual_to_date"] == 1100
+        assert revenue["totals"]["variance_to_date"] == 100
+        assert revenue["totals"]["budget_through_latest_actual"] == 3000
+
+        payroll = self._line(data, "payroll")
+        assert payroll["totals"]["periods_compared"] == ["2026-02"]
+        assert payroll["totals"]["missing_periods"] == ["2026-01"]
+        assert payroll["totals"]["budget_to_date"] == 5200 and payroll["totals"]["actual_to_date"] == 5000
+        assert payroll["totals"]["variance_to_date"] == -200 and payroll["totals"]["favorable"] is True
+        assert payroll["by_period"][0]["actual"] is None
+
+    def test_confirmed_zero_is_compared(self, client, partial_actuals):
+        data = client.get("/reporting/variance", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"}).json()["data"]
+        admin = self._line(data, "admin_expense")
+        jan = admin["by_period"][0]
+        assert jan["actual"] == 0 and jan["variance"] == -100 and jan["favorable"] is True
+        assert admin["totals"]["actual_to_date"] == 0 and admin["totals"]["coverage"] == "partial"
+
+    def test_lines_without_actuals_and_period_coverage(self, client, partial_actuals):
+        data = client.get("/reporting/variance", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"}).json()["data"]
+        capex = self._line(data, "capex")
+        assert capex["coverage"] == "none" and capex["totals"]["actual_to_date"] is None and capex["totals"]["variance_to_date"] is None
+        assert "capex" in data["lines_without_actuals"]
+        coverage = {c["period"]: c for c in data["period_coverage"]}
+        assert list(coverage) == ["2026-01", "2026-02"]  # March is after the latest actual: not judged
+        assert coverage["2026-01"]["lines_entered"] == 2 and "payroll" in coverage["2026-01"]["lines_missing"]
+        assert coverage["2026-02"]["lines_entered"] == 1 and "revenue" in coverage["2026-02"]["lines_missing"]
+        assert not coverage["2026-01"]["complete"]
+        incomplete = {l["line_item"]: l["missing_periods"] for l in data["incomplete_lines"]}
+        assert incomplete == {"revenue": ["2026-02"], "admin_expense": ["2026-02"], "payroll": ["2026-01"]}
+        codes = [w["code"] for w in data["warnings"]]
+        assert "incomplete_actuals" in codes and "lines_without_actuals" in codes
+
+    def test_complete_coverage(self, client, partial_actuals):
+        client.post("/reporting/actuals", json={"entries": [
+            {"period": "2026-02", "line_item": "revenue", "amount": 1900},
+            {"period": "2026-01", "line_item": "payroll", "amount": 0},
+            {"period": "2026-02", "line_item": "admin_expense", "amount": 100},
+        ]})
+        data = client.get("/reporting/variance", params={"forecast_ids": FORECAST, "start_period": "2026-01", "end_period": "2026-03"}).json()["data"]
+        revenue = self._line(data, "revenue")
+        assert revenue["coverage"] == "complete" and revenue["totals"]["missing_periods"] == []
+        assert revenue["totals"]["budget_to_date"] == 3000 and revenue["totals"]["actual_to_date"] == 3000
+        assert not any(w["code"] == "incomplete_actuals" for w in data["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Calendars: payroll and debt
+# ---------------------------------------------------------------------------
+
+from datetime import date  # noqa: E402
+
+
+class TestPayCalendar:
+    def test_biweekly_runs_are_fridays_fourteen_days_apart(self):
+        runs = fs.pay_run_dates("biweekly", date(2026, 1, 1), 26)
+        assert runs[0] == date(2026, 1, 2)
+        assert all(d.weekday() == 4 for d in runs)
+        assert all((b - a).days == 14 for a, b in zip(runs, runs[1:]))
+        assert runs[-1] == date(2026, 1, 2) + __import__("datetime").timedelta(days=350)
+
+    def test_weekly_runs(self):
+        runs = fs.pay_run_dates("weekly", date(2026, 10, 9), 3)  # a Friday
+        assert runs == [date(2026, 10, 9), date(2026, 10, 16), date(2026, 10, 23)]
+
+    def test_semimonthly_runs_hit_the_15th_and_month_end(self):
+        assert fs.pay_run_dates("semimonthly", date(2027, 2, 1), 4) == [date(2027, 2, 15), date(2027, 2, 28), date(2027, 3, 15), date(2027, 3, 31)]
+        # Leap year, starting after the 15th.
+        assert fs.pay_run_dates("semimonthly", date(2028, 2, 16), 2) == [date(2028, 2, 29), date(2028, 3, 15)]
+
+    def test_monthly_runs_are_month_ends(self):
+        assert fs.pay_run_dates("monthly", date(2026, 1, 31), 3) == [date(2026, 1, 31), date(2026, 2, 28), date(2026, 3, 31)]
+        assert fs.pay_run_dates("monthly", date(2028, 2, 1), 2) == [date(2028, 2, 29), date(2028, 3, 31)]
+        assert fs.pay_run_dates("monthly", date(2026, 12, 31), 2) == [date(2026, 12, 31), date(2027, 1, 31)]
+
+    def test_add_months_clamps_to_month_end(self):
+        assert fs.add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+        assert fs.add_months(date(2028, 1, 31), 1) == date(2028, 2, 29)
+        assert fs.add_months(date(2026, 1, 31), 3) == date(2026, 4, 30)
+        assert fs.add_months(date(2025, 11, 30), 3) == date(2026, 2, 28)
+        assert fs.add_months(date(2026, 3, 15), -1) == date(2026, 2, 15)
+        assert fs.add_months(date(2026, 12, 31), 12) == date(2027, 12, 31)
+
+    def test_active_fraction_uses_real_calendar_days(self):
+        assert fs._active_fraction("2028-02", date(2028, 2, 15), None) == pytest.approx(15 / 29)
+        assert fs._active_fraction("2027-02", date(2027, 2, 15), None) == pytest.approx(14 / 28)
+        assert fs._active_fraction("2026-03", None, date(2026, 3, 10)) == pytest.approx(10 / 31)
+        assert fs._active_fraction("2026-03", date(2026, 4, 1), None) == 0.0
+        assert fs._active_fraction("2026-03", date(2026, 3, 1), date(2026, 3, 31)) == 1.0
+
+    def test_monthly_accrual_reconciles_to_annual_cost_and_pay_runs(self, client, engine_db):
+        # E1: $30/h x 40h x 52 = $62,400/yr with zero burden in the fixture config.
+        conn = engine_db.get_connection()
+        try:
+            months = fs.period_range("2026-02", "2027-01")
+            accrual = fs.payroll_by_period(conn.cursor(), [FORECAST], months)
+            cfg = fs.load_payroll_config(conn.cursor())
+        finally:
+            conn.close()
+        emp = {"rate_type": "hourly", "hourly_rate": 30, "weekly_hours": 40}
+        annual_overview = fs._employee_annual_gross(emp, 30) * fs._burden_multiplier(cfg, False)
+        assert sum(accrual["total"].values()) == pytest.approx(annual_overview, abs=0.01) == pytest.approx(62400, abs=0.01)
+
+        # 26 biweekly pay runs cover 52 weeks and sum to the same annual cost.
+        r = client.post("/payroll/config", json={"pay_frequency": "biweekly", "federal_tax_rate": 0, "state_tax_rate": 0,
+                                                 "social_security_rate": 0, "medicare_rate": 0, "unemployment_rate": 0,
+                                                 "benefits_rate": 0, "workers_comp_rate": 0})
+        assert r.status_code == 200, r.text
+        try:
+            r = client.get("/payroll/forecast", params={"periods": 26, "forecast_id": FORECAST, "include_raises": "false"})
+            assert r.status_code == 200, r.text
+            runs = r.json()["data"]["forecast"]
+            assert len(runs) == 26
+            assert sum(run["total_cost"] for run in runs) == pytest.approx(annual_overview, abs=0.01)
+            dates = [date.fromisoformat(run["date"]) for run in runs]
+            assert all(d.weekday() == 4 for d in dates)
+            assert all((b - a).days == 14 for a, b in zip(dates, dates[1:]))
+            assert all(run["month"] == run["date"][:7] for run in runs)
+        finally:
+            r = client.post("/payroll/config", json={"pay_frequency": "monthly", "federal_tax_rate": 0, "state_tax_rate": 0,
+                                                     "social_security_rate": 0, "medicare_rate": 0, "unemployment_rate": 0,
+                                                     "benefits_rate": 0, "workers_comp_rate": 0})
+            assert r.status_code == 200, r.text
+
+    def test_monthly_pay_runs_land_on_month_ends(self, client):
+        r = client.get("/payroll/forecast", params={"periods": 4, "forecast_id": FORECAST})
+        assert r.status_code == 200, r.text
+        data = r.json()["data"]
+        assert data["pay_frequency"] == "monthly"
+        dates = [date.fromisoformat(run["date"]) for run in data["forecast"]]
+        assert all(d == fs.month_end(d) for d in dates)
+        assert [fs.months_between(dates[0].strftime("%Y-%m"), d.strftime("%Y-%m")) for d in dates] == [0, 1, 2, 3]
+
+
+class TestLoanCalendar:
+    @pytest.fixture(scope="class")
+    def loan_client(self, engine_db):
+        import db.database as dbmod_short
+        original = dbmod_short.db_manager
+        dbmod_short.db_manager = engine_db
+        from api import loan_routes
+        app = FastAPI()
+        app.include_router(loan_routes.router)
+        yield TestClient(app)
+        dbmod_short.db_manager = original
+
+    def test_schedule_uses_calendar_months_and_clamps_day(self):
+        from api.loan_routes import generate_amortization_schedule
+        sched = generate_amortization_schedule("L1", 12000, 0.0, 12, "2026-01-31")
+        dates = [p.payment_date for p in sched]
+        assert dates == ["2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30", "2026-07-31",
+                         "2026-08-31", "2026-09-30", "2026-10-31", "2026-11-30", "2026-12-31", "2027-01-31"]
+        assert len({d[:7] for d in dates}) == 12  # one payment per month, no skipped or doubled month
+        assert sched[-1].remaining_balance == 0
+
+    def test_quarterly_and_leap_year_dates(self):
+        from api.loan_routes import generate_amortization_schedule, payment_date_for
+        sched = generate_amortization_schedule("L2", 1000, 0.08, 12, "2025-11-30", payment_frequency="quarterly")
+        assert [p.payment_date for p in sched] == ["2026-02-28", "2026-05-30", "2026-08-30", "2026-11-30"]
+        assert payment_date_for("2028-01-31", 1) == "2028-02-29"
+        assert payment_date_for("2027-01-31", 1) == "2027-02-28"
+        assert payment_date_for("2026-03-15", 1) == "2026-04-15"
+
+    def test_created_loan_schedule_feeds_every_statement_month(self, loan_client, engine_db):
+        r = loan_client.post("/loans/", json={
+            "loan_name": "Month-end loan", "lender": "Bank", "loan_type": "term_loan", "principal_amount": 2400,
+            "interest_rate": 0, "loan_term_months": 24, "start_date": "2026-01-31", "payment_type": "amortizing",
+        })
+        assert r.status_code == 200, r.text
+        loan_id = r.json()["data"]["loan_id"]
+        try:
+            conn = engine_db.get_connection()
+            try:
+                c = conn.cursor()
+                c.execute("SELECT next_payment_date FROM loans WHERE loan_id = ?", (loan_id,))
+                assert c.fetchone()[0] == "2026-02-28"
+                stmt = fs.build_statements(c, [FORECAST], "2026-01", "2027-01")
+            finally:
+                conn.close()
+            principal = {r_["period"]: -r_["principal_payments"] for r_ in stmt["cash_flow"]["by_period"]}
+            assert principal["2026-01"] == 500 + 0           # fixture loan only; new loan's first payment is Feb 28
+            assert principal["2026-02"] == 500 + 100
+            assert all(principal[p] == 100 for p in fs.period_range("2026-04", "2027-01"))  # fixture loan ends Mar
+            detail = stmt["detail"]["loans"][loan_id]
+            assert detail["opening_balance"] == 0  # originated inside the window: proceeds in Jan, not opening debt
+            assert detail["proceeds"]["2026-01"] == 2400
+            assert stmt["cash_flow"]["by_period"][0]["loan_proceeds"] == 2400
+            # A later window opens with the drawn balance less the principal paid in the carried months.
+            conn = engine_db.get_connection()
+            try:
+                later = fs.build_statements(conn.cursor(), [FORECAST], "2026-04", "2026-04")
+            finally:
+                conn.close()
+            new_loan = later["detail"]["loans"][loan_id]
+            assert new_loan["opening_balance"] == pytest.approx(2400 - 200, abs=0.01)
+            assert new_loan["opening_balance"] + later["detail"]["loans"]["LN1"]["opening_balance"] == pytest.approx(later["balance_sheet"]["opening"]["debt"], abs=0.01)
+        finally:
+            conn = engine_db.get_connection()
+            conn.execute("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))
+            conn.execute("DELETE FROM loans WHERE loan_id = ?", (loan_id,))
+            conn.commit()
+            conn.close()

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { formatDateOnly, parseLocalDate } from '../../../lib/dates';
 import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
 import { Button } from '../../ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -20,14 +21,7 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
         }).format(amount);
     };
 
-    const formatDate = (dateString) => {
-        if (!dateString) return '';
-        return new Date(dateString).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        });
-    };
+    const formatDate = (dateString) => formatDateOnly(dateString, { year: 'numeric', month: 'short', day: 'numeric' }, '');
 
     const getFilteredPayments = () => {
         if (!schedule.payment_schedule) return [];
@@ -37,14 +31,14 @@ const AmortizationScheduleModal = ({ schedule, onClose }) => {
         switch (viewMode) {
             case 'upcoming':
                 return schedule.payment_schedule.filter(payment => 
-                    new Date(payment.payment_date) >= today
+                    (parseLocalDate(payment.payment_date) || new Date(0)) >= today
                 ).slice(0, 12); // Next 12 payments
                 
             case 'annual':
                 // Group by year and show annual totals
                 const yearlyData = {};
                 schedule.payment_schedule.forEach(payment => {
-                    const year = new Date(payment.payment_date).getFullYear();
+                    const year = (parseLocalDate(payment.payment_date) || new Date(payment.payment_date)).getFullYear();
                     if (!yearlyData[year]) {
                         yearlyData[year] = {
                             year,

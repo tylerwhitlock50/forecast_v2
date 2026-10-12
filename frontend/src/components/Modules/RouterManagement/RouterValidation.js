@@ -190,10 +190,6 @@ const RouterValidation = ({ routers, routerOperations, machines, units, laborRat
     return { issues, warnings, stats };
   }, [routers, routerOperations, machines, units, laborRates]);
 
-  const getSeverityClass = (type) => {
-    return type === 'error' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800';
-  };
-
   const getSeverityIcon = (type) => {
     return type === 'error' ? '❌' : '⚠️';
   };

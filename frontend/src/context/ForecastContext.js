@@ -581,11 +581,6 @@ export const ForecastProvider = ({ children }) => {
         
         actions.setData(data);
         
-        // Show appropriate message based on data availability
-        const totalRecords = (data.sales_forecast?.length || 0) + 
-                           (data.products?.length || 0) + 
-                           (data.customers?.length || 0);
-        
         // Suppress routine data load toasts to reduce notification barrage
         // Only show if there's an error or if explicitly needed
       } catch (error) {
@@ -813,7 +808,7 @@ export const ForecastProvider = ({ children }) => {
           forecast_id: forecastData.forecast_id
         };
 
-        const response = await api.post('/forecast/create', { sales: salesData });
+        await api.post('/forecast/create', { sales: salesData });
         // API client already handles response format and shows success toast
         actions.fetchAllData(); // Refresh data
       } catch (error) {
@@ -845,7 +840,7 @@ export const ForecastProvider = ({ children }) => {
           }
         });
 
-        const response = await api.post('/forecast/update', backendUpdateData);
+        await api.post('/forecast/update', backendUpdateData);
         // Suppress success toast for routine updates to reduce notification barrage
         // actions.fetchAllData(); // Refresh data - removed to avoid full reload
       } catch (error) {
@@ -865,7 +860,7 @@ export const ForecastProvider = ({ children }) => {
         const params = isCascadeTable
           ? { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) }
           : undefined;
-        const response = await api.delete(`/forecast/delete/${backendTableName}/${recordId}`, { params });
+        await api.delete(`/forecast/delete/${backendTableName}/${recordId}`, { params });
         // Suppress success toast for routine deletes
         actions.fetchAllData(); // Refresh data
       } catch (error) {
@@ -915,7 +910,7 @@ export const ForecastProvider = ({ children }) => {
           customerData.customer_id = `CUST-${String(maxId + 1).padStart(3, '0')}`;
         }
 
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'customers',
           data: customerData 
         });
@@ -936,7 +931,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'customers',
           id: customerId,
           updates: customerData
@@ -959,7 +954,7 @@ export const ForecastProvider = ({ children }) => {
         actions.setLoading(true);
         // Cascade delete related sales for the active scenario when removing a customer
         const params = { cascade: true, ...(state.activeScenario ? { forecast_id: state.activeScenario } : {}) };
-        const response = await api.delete(`/forecast/delete/${tableName}/${customerId}`, { params });
+        await api.delete(`/forecast/delete/${tableName}/${customerId}`, { params });
         
         // API client already handles response format
         toast.success('Customer deleted successfully');
@@ -978,7 +973,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'machines',
           data: machineData 
         });
@@ -999,7 +994,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'machines',
           id: machineId,
           updates: machineData
@@ -1021,7 +1016,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/machines/${machineId}`);
+        await api.delete(`/forecast/delete/machines/${machineId}`);
         
         // API client already handles response format
         toast.success('Machine deleted successfully');
@@ -1040,7 +1035,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
 
-        const response = await api.post('/forecast/create', {
+        await api.post('/forecast/create', {
           table: 'router_definitions',
           data: routerData
         });
@@ -1060,7 +1055,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'router_definitions',
           id: routerId,
           updates: routerData
@@ -1082,7 +1077,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/router_definitions/${routerId}`);
+        await api.delete(`/forecast/delete/router_definitions/${routerId}`);
         
         // API client already handles response format
         toast.success('Router deleted successfully');
@@ -1101,7 +1096,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'router_operations',
           data: operationData 
         });
@@ -1122,7 +1117,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'router_operations',
           id: operationId,
           updates: operationData
@@ -1144,7 +1139,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/router_operations/${operationId}`);
+        await api.delete(`/forecast/delete/router_operations/${operationId}`);
         
         // API client already handles response format
         toast.success('Router operation deleted successfully');
@@ -1174,7 +1169,7 @@ export const ForecastProvider = ({ children }) => {
           console.log('Auto-generated product ID:', productData.unit_id);
         }
 
-        const response = await api.post('/forecast/create', {
+        await api.post('/forecast/create', {
           table: 'units',
           data: mapProductForBackend(productData)
         });
@@ -1194,7 +1189,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
 
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'units',
           id: productId,
           updates: mapProductForBackend(productData)
@@ -1215,7 +1210,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/${tableName}/${productId}`);
+        await api.delete(`/forecast/delete/${tableName}/${productId}`);
         
         // API client already handles response format
         toast.success('Product deleted successfully');
@@ -1234,7 +1229,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'labor_rates',
           data: laborRateData 
         });
@@ -1255,7 +1250,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'labor_rates',
           id: laborRateId,
           updates: laborRateData
@@ -1277,7 +1272,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/${tableName}/${laborRateId}`);
+        await api.delete(`/forecast/delete/${tableName}/${laborRateId}`);
         
         // API client already handles response format
         toast.success('Labor rate deleted successfully');
@@ -1296,7 +1291,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'units',
           data: unitData 
         });
@@ -1317,7 +1312,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'units',
           id: unitId,
           updates: unitData
@@ -1340,7 +1335,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/create', { 
+        await api.post('/forecast/create', { 
           table: 'bom',
           data: bomData 
         });
@@ -1361,7 +1356,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
 
-        const response = await api.post('/forecast/create', {
+        await api.post('/forecast/create', {
           table: 'bom_definitions',
           data: bomData
         });
@@ -1381,7 +1376,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.post('/forecast/update', {
+        await api.post('/forecast/update', {
           table: 'bom_definitions',
           id: bomId,
           updates: bomData
@@ -1403,7 +1398,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/bom_definitions/${bomId}`);
+        await api.delete(`/forecast/delete/bom_definitions/${bomId}`);
         
         // API client already handles response format
         toast.success('BOM definition deleted successfully');
@@ -1449,7 +1444,7 @@ export const ForecastProvider = ({ children }) => {
       try {
         actions.setLoading(true);
         
-        const response = await api.delete(`/forecast/delete/bom/${bomId}`);
+        await api.delete(`/forecast/delete/bom/${bomId}`);
         
         // API client already handles response format
         toast.success('BOM deleted successfully');
@@ -1668,6 +1663,8 @@ export const ForecastProvider = ({ children }) => {
     };
     
     loadData();
+    // `actions` is a stable set of closures created once per provider; depending on it would refetch on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.activeScenario]); // Only depend on activeScenario, not state changes
 
 

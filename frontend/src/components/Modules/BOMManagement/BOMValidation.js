@@ -4,8 +4,8 @@ import { Badge } from '../../ui/badge';
 
 const BOMValidation = ({ boms, bomItems, units }) => {
   // Ensure arrays are defined and not null
-  const safeBoms = boms || [];
-  const safeBomItems = bomItems || [];
+  const safeBoms = useMemo(() => boms || [], [boms]);
+  const safeBomItems = useMemo(() => bomItems || [], [bomItems]);
   
   const validationResults = useMemo(() => {
     const issues = [];
@@ -232,7 +232,6 @@ const BOMValidation = ({ boms, bomItems, units }) => {
 
   const getHealthScore = () => {
     const totalItems = safeBomItems.length;
-    const totalBOMs = safeBoms.length;
     
     if (totalItems === 0) return 0;
     

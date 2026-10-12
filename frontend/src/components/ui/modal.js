@@ -27,12 +27,14 @@ const ModalHeader = React.forwardRef(({ className, ...props }, ref) => (
 ))
 ModalHeader.displayName = "ModalHeader"
 
-const ModalTitle = React.forwardRef(({ className, ...props }, ref) => (
+const ModalTitle = React.forwardRef(({ className, children, ...props }, ref) => (
   <h2
     ref={ref}
     className={cn("text-lg font-semibold", className)}
     {...props}
-  />
+  >
+    {children}
+  </h2>
 ))
 ModalTitle.displayName = "ModalTitle"
 

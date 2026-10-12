@@ -1,8 +1,8 @@
 import React from 'react';
+import { formatDateOnly } from '../../../lib/dates';
 import { StatsCard } from '../../ui/stats-card';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
-import { Badge } from '../../ui/badge';
 
 const LoanSummary = ({ summary, onRefresh }) => {
     const formatCurrency = (amount) => {
@@ -20,13 +20,7 @@ const LoanSummary = ({ summary, onRefresh }) => {
         return `${rate.toFixed(2)}%`;
     };
 
-    const formatDate = (dateString) => {
-        if (!dateString) return '';
-        return new Date(dateString).toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric'
-        });
-    };
+    const formatDate = (dateString) => formatDateOnly(dateString, { month: 'short', day: 'numeric' }, '');
 
     if (!summary) {
         return (

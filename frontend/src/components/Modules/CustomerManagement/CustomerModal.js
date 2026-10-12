@@ -51,6 +51,8 @@ const CustomerModal = ({ isOpen, onClose, onSave, customer, existingCustomers = 
       }
       setErrors({});
     }
+    // generateNextCustomerId derives from existingCustomers, which is already a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, customer, existingCustomers]);
 
   // Validate form

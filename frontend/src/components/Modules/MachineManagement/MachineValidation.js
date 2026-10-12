@@ -111,14 +111,6 @@ const MachineValidation = ({ machines }) => {
     return { issues, warnings, stats };
   }, [machines]);
 
-  const getSeverityClass = (type) => {
-    return type === 'issue' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800';
-  };
-
-  const getSeverityIcon = (type) => {
-    return type === 'issue' ? '❌' : '⚠️';
-  };
-
   const formatCurrency = (value) => {
     if (!value) return 'N/A';
     return `$${Number(value).toFixed(2)}`;

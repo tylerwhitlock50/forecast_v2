@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { parseLocalDate, toDateOnly, formatDateOnly } from '../../../lib/dates';
 import { useForecast } from '../../../context/ForecastContext';
 import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
@@ -145,9 +146,10 @@ const PayrollManagement = () => {
 
   // Calculate next review date (12 months from start date or last review)
   const getNextReviewDate = (startDate) => {
-    const date = new Date(startDate);
+    const date = parseLocalDate(startDate);
+    if (!date) return null;
     date.setFullYear(date.getFullYear() + 1);
-    return date.toISOString().split('T')[0];
+    return toDateOnly(date);
   };
 
   // Get current payroll data with enhanced structure
@@ -162,7 +164,7 @@ const PayrollManagement = () => {
       expected_raise: emp.expected_raise || 0,
       allocations: emp.allocations || { 'Customer-Centric Brands': 100 },
       benefits_eligible: !(emp.benefits_eligible === false || emp.benefits_eligible === 0 || emp.benefits_eligible === '0'),
-      status: emp.end_date && new Date(emp.end_date) < new Date() ? 'inactive' : 'active'
+      status: emp.end_date && parseLocalDate(emp.end_date) && parseLocalDate(emp.end_date) < new Date() ? 'inactive' : 'active'
     }));
   }, [data?.payroll]);
 
@@ -252,7 +254,7 @@ const PayrollManagement = () => {
       hourly_rate: 0,
       rate_type: 'hourly',
       weekly_hours: 40,
-      start_date: new Date().toISOString().split('T')[0],
+      start_date: toDateOnly(),
       end_date: '',
       next_review_date: '',
       expected_raise: 0,
@@ -324,17 +326,7 @@ const PayrollManagement = () => {
     }).format(amount);
   };
 
-  const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
-    // Date-only strings are local dates, not UTC midnight.
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateString));
-    const date = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
-  };
+  const formatDate = (dateString) => formatDateOnly(dateString, { year: 'numeric', month: 'short', day: 'numeric' }, 'N/A');
 
   // Define columns for employee table
   const employeeColumns = [

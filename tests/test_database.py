@@ -476,19 +476,49 @@ class TestDatabaseManager:
         temp_db_manager.close_connection(conn1)
         temp_db_manager.close_connection(conn2)
     
-    def test_path_detection(self):
-        """Test automatic path detection"""
+    def test_path_detection(self, monkeypatch, tmp_path):
+        """Local development: no env overrides and no /data mount -> ./data/forecast.db"""
+        monkeypatch.delenv('DATABASE_PATH', raising=False)
+        monkeypatch.delenv('DATA_DIR', raising=False)
+        monkeypatch.chdir(tmp_path)  # never touch the repo's ./data
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(os.path, 'isdir', lambda p: False if p == '/data' else real_isdir(p))
+
         db_manager = DatabaseManager()
-        
-        # Should use local paths in development
-        assert './data' in db_manager.data_dir
-        assert './data/forecast.db' == db_manager.database_path
-    
-    def test_custom_paths(self):
-        """Test custom path configuration"""
-        custom_db_path = "/tmp/test.db"
-        custom_data_dir = "/tmp/data"
-        
+
+        assert db_manager.data_dir == './data'
+        assert db_manager.database_path == './data/forecast.db'
+
+    def test_path_detection_in_container(self, monkeypatch, tmp_path):
+        """Inside the Docker image the /data mount wins over ./data."""
+        monkeypatch.delenv('DATABASE_PATH', raising=False)
+        monkeypatch.delenv('DATA_DIR', raising=False)
+        monkeypatch.chdir(tmp_path)
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(os.path, 'isdir', lambda p: True if p == '/data' else real_isdir(p))
+        real_makedirs = os.makedirs
+        monkeypatch.setattr(os, 'makedirs', lambda p, exist_ok=False: None if p == '/data' else real_makedirs(p, exist_ok=exist_ok))
+
+        db_manager = DatabaseManager()
+
+        assert db_manager.data_dir == '/data'
+        assert db_manager.database_path == '/data/forecast.db'
+
+    def test_env_paths(self, monkeypatch, tmp_path):
+        """DATABASE_PATH / DATA_DIR are honoured when the caller passes nothing."""
+        monkeypatch.setenv('DATABASE_PATH', str(tmp_path / 'env' / 'env.db'))
+        monkeypatch.setenv('DATA_DIR', str(tmp_path / 'csv'))
+
+        db_manager = DatabaseManager()
+
+        assert db_manager.database_path == str(tmp_path / 'env' / 'env.db')
+        assert db_manager.data_dir == str(tmp_path / 'csv')
+
+    def test_custom_paths(self, tmp_path):
+        """Explicit arguments are used verbatim"""
+        custom_db_path = str(tmp_path / 'custom' / 'test.db')
+        custom_data_dir = str(tmp_path / 'custom_data')
+
         db_manager = DatabaseManager(
             database_path=custom_db_path,
             data_dir=custom_data_dir
@@ -496,6 +526,17 @@ class TestDatabaseManager:
 
         assert db_manager.database_path == custom_db_path
         assert db_manager.data_dir == custom_data_dir
+
+    def test_explicit_paths_beat_environment(self, monkeypatch, tmp_path):
+        """A test or script naming its own database must never be redirected to the env's DB."""
+        monkeypatch.setenv('DATABASE_PATH', str(tmp_path / 'production' / 'forecast.db'))
+        monkeypatch.setenv('DATA_DIR', str(tmp_path / 'production'))
+        custom_db_path = str(tmp_path / 'isolated' / 'test.db')
+
+        db_manager = DatabaseManager(database_path=custom_db_path)
+
+        assert db_manager.database_path == custom_db_path
+        assert db_manager.data_dir == str(tmp_path / 'isolated')
 
 
 def test_payroll_schema_preserved(test_db_manager):

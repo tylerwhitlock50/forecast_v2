@@ -218,7 +218,7 @@ const ReportingDashboard = () => {
             )}
             {activeTab === 'balance-sheet' && (
               <TabsContent value="balance-sheet" className="mt-6">
-                {hasStatements ? <BalanceSheet data={statements.balance_sheet} /> : <EmptyState loading={loading} />}
+                {hasStatements ? <BalanceSheet data={statements.balance_sheet} carryForward={statements.carry_forward} /> : <EmptyState loading={loading} />}
               </TabsContent>
             )}
             {activeTab === 'cash-flow' && (

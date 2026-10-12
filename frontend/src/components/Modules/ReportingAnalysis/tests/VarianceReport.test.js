@@ -32,7 +32,8 @@ const variancePayload = {
         { period: '2026-02', budget: 100000, actual: 95000, variance: -5000, variance_pct: -5, favorable: false },
         { period: '2026-03', budget: 100000, actual: null, variance: null, variance_pct: null, favorable: null }
       ],
-      totals: { budget_full_period: 300000, budget_to_date: 200000, actual_to_date: 205000, variance_to_date: 5000, variance_pct_to_date: 2.5, favorable: true }
+      coverage: 'complete',
+      totals: { budget_full_period: 300000, budget_through_latest_actual: 200000, budget_to_date: 200000, actual_to_date: 205000, variance_to_date: 5000, variance_pct_to_date: 2.5, favorable: true, periods_compared: ['2026-01', '2026-02'], missing_periods: [], coverage: 'complete' }
     },
     {
       line_item: 'payroll',
@@ -45,7 +46,23 @@ const variancePayload = {
         { period: '2026-02', budget: 40000, actual: 43000, variance: 3000, variance_pct: 7.5, favorable: false },
         { period: '2026-03', budget: 40000, actual: null, variance: null, variance_pct: null, favorable: null }
       ],
-      totals: { budget_full_period: 120000, budget_to_date: 80000, actual_to_date: 81000, variance_to_date: 1000, variance_pct_to_date: 1.25, favorable: false }
+      coverage: 'complete',
+      totals: { budget_full_period: 120000, budget_through_latest_actual: 80000, budget_to_date: 80000, actual_to_date: 81000, variance_to_date: 1000, variance_pct_to_date: 1.25, favorable: false, periods_compared: ['2026-01', '2026-02'], missing_periods: [], coverage: 'complete' }
+    },
+    {
+      line_item: 'admin_expense',
+      label: 'Admin Expenses',
+      direction: 'expense',
+      statement: 'income',
+      has_actuals: true,
+      coverage: 'partial',
+      by_period: [
+        { period: '2026-01', budget: 1000, actual: null, variance: null, variance_pct: null, favorable: null },
+        { period: '2026-02', budget: 1000, actual: 0, variance: -1000, variance_pct: -100, favorable: true },
+        { period: '2026-03', budget: 1000, actual: null, variance: null, variance_pct: null, favorable: null }
+      ],
+      // February was a confirmed zero; January was never entered, so to date is February only.
+      totals: { budget_full_period: 3000, budget_through_latest_actual: 2000, budget_to_date: 1000, actual_to_date: 0, variance_to_date: -1000, variance_pct_to_date: -100, favorable: true, periods_compared: ['2026-02'], missing_periods: ['2026-01'], coverage: 'partial' }
     },
     {
       line_item: 'capex',
@@ -58,8 +75,16 @@ const variancePayload = {
         { period: '2026-02', budget: 5000, actual: null, variance: null, variance_pct: null, favorable: null },
         { period: '2026-03', budget: 5000, actual: null, variance: null, variance_pct: null, favorable: null }
       ],
-      totals: { budget_full_period: 15000, budget_to_date: 10000, actual_to_date: null, variance_to_date: null, variance_pct_to_date: null, favorable: null }
+      coverage: 'none',
+      totals: { budget_full_period: 15000, budget_through_latest_actual: 10000, budget_to_date: 0, actual_to_date: null, variance_to_date: null, variance_pct_to_date: null, favorable: null, periods_compared: [], missing_periods: ['2026-01', '2026-02'], coverage: 'none' }
     }
+  ],
+  actuals_through: '2026-02',
+  incomplete_lines: [{ line_item: 'admin_expense', label: 'Admin Expenses', missing_periods: ['2026-01'] }],
+  lines_without_actuals: ['capex'],
+  period_coverage: [
+    { period: '2026-01', lines_entered: 2, lines_total: 4, lines_missing: ['admin_expense', 'capex'], complete: false },
+    { period: '2026-02', lines_entered: 3, lines_total: 4, lines_missing: ['capex'], complete: false }
   ]
 };
 
@@ -147,6 +172,35 @@ describe('VarianceReport', () => {
     const revenueToDate = screen.getByTestId('variance-to-date-row-revenue');
     const tdCells = within(revenueToDate).getAllByRole('cell').map(c => c.textContent);
     expect(tdCells.slice(1, 6)).toEqual(['300,000', '200,000', '205,000', '5,000', '2.5%']);
+    expect(tdCells[7]).toBe('Complete through Feb 2026');
+
+    // A line with no actuals has no budget-to-date comparison either: nothing is compared.
+    const capexToDate = within(screen.getByTestId('variance-to-date-row-capex')).getAllByRole('cell').map(c => c.textContent);
+    expect(capexToDate.slice(1, 6)).toEqual(['15,000', '—', '—', '—', '—']);
+    expect(capexToDate[7]).toBe('No actuals');
+  });
+
+  it('distinguishes a missing month from a confirmed zero and shows coverage', async () => {
+    render(<VarianceReport forecastIds={['F001']} period={{ start: '2026-01', end: '2026-03' }} />);
+    await waitFor(() => expect(screen.getByLabelText('Period')).toHaveValue('2026-02'));
+
+    // February: a confirmed zero actual is compared (variance of the whole budget, favourable).
+    const adminFeb = within(rowFor('admin_expense')).getAllByRole('cell').map(c => c.textContent);
+    expect(adminFeb.slice(2, 6)).toEqual(['1,000', '0', '(1,000)', '-100.0%']);
+    expect(within(rowFor('admin_expense')).getByText('Fav')).toBeInTheDocument();
+
+    // January: never entered, so no actual, no variance, no verdict.
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: '2026-01' } });
+    const adminJan = within(rowFor('admin_expense')).getAllByRole('cell').map(c => c.textContent);
+    expect(adminJan.slice(2, 6)).toEqual(['1,000', '—', '—', '—']);
+    expect(screen.getByTestId('period-coverage-note')).toHaveTextContent('Jan 2026: actuals entered for 2 of 4 lines');
+
+    // To date: only February is compared and the gap is called out.
+    const adminToDate = within(screen.getByTestId('variance-to-date-row-admin_expense')).getAllByRole('cell').map(c => c.textContent);
+    expect(adminToDate.slice(1, 6)).toEqual(['3,000', '1,000', '0', '(1,000)', '-100.0%']);
+    expect(adminToDate[7]).toBe('Partial — missing Jan 2026');
+    expect(screen.getByTestId('incomplete-actuals-note')).toHaveTextContent('Admin Expenses missing Jan 2026');
+    expect(screen.getByText(/latest Feb 2026/)).toBeInTheDocument();
   });
 
   it('prefills the entry form from existing actuals and posts entries on save', async () => {

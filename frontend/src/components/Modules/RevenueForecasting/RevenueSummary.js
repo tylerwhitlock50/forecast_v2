@@ -8,7 +8,6 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment, onCardClick }) => 
   
   // Calculate summary statistics based on visible time periods only
   const summaryStats = useMemo(() => {
-    const products = Array.isArray(data.products) ? data.products : [];
     const customers = Array.isArray(data.customers) ? data.customers : [];
     const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
     
@@ -42,7 +41,7 @@ const RevenueSummary = ({ data, timePeriods, selectedSegment, onCardClick }) => 
       customerCount,
       averagePrice: totalQuantity > 0 ? totalRevenue / totalQuantity : 0
     };
-  }, [data.products, data.customers, data.sales_forecast, selectedSegment, activeScenario, timePeriods]);
+  }, [data.customers, data.sales_forecast, selectedSegment, activeScenario, timePeriods]);
 
   const handleCardClick = (cardType) => {
     if (onCardClick) {

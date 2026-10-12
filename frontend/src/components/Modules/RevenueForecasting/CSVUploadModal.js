@@ -87,6 +87,8 @@ const CSVUploadModal = ({
     } finally {
       setIsProcessing(false);
     }
+    // existingData is only read for duplicate hints at processing time; re-creating the callback on every data change is not wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importType, parseCSV]);
 
   const handleFileSelect = useCallback((selectedFile) => {

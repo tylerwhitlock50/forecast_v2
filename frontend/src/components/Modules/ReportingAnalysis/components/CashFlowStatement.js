@@ -48,6 +48,14 @@ const CashFlowStatement = ({ data }) => {
   }
 
   const columns = periodColumns(rows, totals);
+  // Opening cash + the window's net cash flow must land on the final closing balance.
+  const reconciliation = data.reconciliation || {
+    opening_cash: first.opening_cash,
+    net_cash_flow: totals.net_cash_flow,
+    closing_cash: last.closing_cash,
+    difference: (first.opening_cash || 0) + (totals.net_cash_flow || 0) - (last.closing_cash || 0)
+  };
+  const reconciles = Math.abs(reconciliation.difference || 0) < 0.05; // figures are rounded to cents independently
 
   return (
     <div className="space-y-6">
@@ -57,6 +65,12 @@ const CashFlowStatement = ({ data }) => {
         <StatsCard title="Net change in cash" value={fmt(totals.net_cash_flow)} subtitle={`Opening cash ${fmt(first.opening_cash)}`} variant={(totals.net_cash_flow || 0) >= 0 ? 'default' : 'danger'} />
         <StatsCard title="Closing cash" value={fmt(last.closing_cash)} subtitle={last.period ? formatPeriod(last.period) : ''} variant={(last.closing_cash || 0) >= 0 ? 'primary' : 'danger'} />
       </div>
+
+      <p className={reconciles ? 'text-xs text-gray-500' : 'text-xs text-red-600 font-medium'} data-testid="cash-reconciliation">
+        Opening cash {fmt(reconciliation.opening_cash)} + net change {fmt(reconciliation.net_cash_flow)} = closing cash {fmt(reconciliation.closing_cash)}
+        {reconciles ? ' (reconciles). ' : ` (does not reconcile by ${fmt(reconciliation.difference)}). `}
+        The Total column sums cash movements; opening and closing cash are the window's balances, not sums of months.
+      </p>
 
       <StatementTable rows={CASH_FLOW_ROWS} columns={columns} firstColumnLabel="Cash flow statement" testId="cash-flow-table" />
     </div>

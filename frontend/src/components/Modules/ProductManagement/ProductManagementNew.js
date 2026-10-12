@@ -1,17 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
-import ProductTable from './ProductTable';
 import ProductModal from './ProductModal';
 import ProductSummary from './ProductSummary';
 import ProductValidation from './ProductValidation';
@@ -27,8 +25,8 @@ const ProductManagement = () => {
   const [editingProduct, setEditingProduct] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
-  const [sortField, setSortField] = useState('unit_name');
-  const [sortDirection, setSortDirection] = useState('asc');
+  const [sortField] = useState('unit_name');
+  const [sortDirection] = useState('asc');
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [bulkAction, setBulkAction] = useState('');
 
@@ -163,34 +161,6 @@ const ProductManagement = () => {
         URL.revokeObjectURL(url);
         toast.success(`Exported ${csvData.length} products`);
       }
-    }
-  };
-
-  // Handle sorting
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
-    }
-  };
-
-  // Handle product selection
-  const handleProductSelect = (productId, selected) => {
-    if (selected) {
-      setSelectedProducts(prev => [...prev, productId]);
-    } else {
-      setSelectedProducts(prev => prev.filter(id => id !== productId));
-    }
-  };
-
-  // Handle select all
-  const handleSelectAll = (selected) => {
-    if (selected) {
-      setSelectedProducts(filteredProducts.map(p => p.unit_id));
-    } else {
-      setSelectedProducts([]);
     }
   };
 

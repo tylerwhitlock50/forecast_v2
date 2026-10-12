@@ -101,14 +101,6 @@ const ProductValidation = ({ products }) => {
     return { issues, warnings, stats };
   }, [products]);
 
-  const getSeverityClass = (type) => {
-    return type === 'error' ? 'validation-error' : 'validation-warning';
-  };
-
-  const getSeverityIcon = (type) => {
-    return type === 'error' ? '❌' : '⚠️';
-  };
-
   const summaryCards = [
     {
       icon: "✅",

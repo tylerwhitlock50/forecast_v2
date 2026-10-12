@@ -18,6 +18,11 @@ route layer stays thin and the maths is unit-testable without HTTP.
 Conventions
 -----------
 * Periods are 'YYYY-MM' strings. A reporting window is inclusive on both ends.
+* Opening balances are stated as at the END of assumptions.opening_period; the
+  model starts the month after. A window that starts later is rolled forward
+  from there (see resolve_carry_forward), so the balances a window reports
+  never depend on where the window starts.
+* Cash flow totals sum flows; opening/closing cash totals are balances.
 * Scenario scoping: rows whose forecast_id is in the selected set OR NULL are
   included. NULL means "company-wide" (shared by every scenario). Revenue is
   always scenario-specific so it is never NULL-scoped.
@@ -161,6 +166,52 @@ def period_bounds(period: str) -> Tuple[date, date]:
     return date(y, m, 1), date(y, m, last)
 
 
+def month_end(d: date) -> date:
+    """Last calendar day of the month containing `d`."""
+    return date(d.year, d.month, calendar.monthrange(d.year, d.month)[1])
+
+
+def add_months(d: date, months: int) -> date:
+    """
+    Calendar-month arithmetic that keeps the day of month where possible and
+    clamps to the month end otherwise (Jan 31 + 1 month = Feb 28/29).
+    """
+    idx = d.year * 12 + (d.month - 1) + months
+    year, month = idx // 12, idx % 12 + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+
+
+def pay_run_dates(frequency: str, start: date, count: int) -> List[date]:
+    """
+    The next `count` pay dates on or after `start`, on real calendar dates:
+
+      * weekly / biweekly: Fridays, 7 / 14 days apart
+      * semimonthly: the 15th and the last day of each month
+      * monthly: the last day of each month
+
+    No average-day increments, so month ends, February and leap years land
+    on the right day and a year's worth of runs never drifts.
+    """
+    if count <= 0:
+        return []
+    if frequency in ("weekly", "biweekly"):
+        step = 7 if frequency == "weekly" else 14
+        first = start + timedelta(days=(4 - start.weekday()) % 7)  # Friday on/after start
+        return [first + timedelta(days=step * i) for i in range(count)]
+
+    dates: List[date] = []
+    cursor = date(start.year, start.month, 1)
+    while len(dates) < count:
+        candidates = [month_end(cursor)]
+        if frequency == "semimonthly":
+            candidates.insert(0, date(cursor.year, cursor.month, 15))
+        for candidate in candidates:
+            if candidate >= start and len(dates) < count:
+                dates.append(candidate)
+        cursor = add_months(cursor, 1)
+    return dates
+
+
 def _parse_date(value: Optional[str]) -> Optional[date]:
     if not value:
         return None
@@ -234,8 +285,15 @@ def load_payroll_config(cursor) -> Dict[str, Any]:
 # Revenue and product COGS
 # ---------------------------------------------------------------------------
 
-def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str]) -> Dict[str, Any]:
-    """Revenue and BOM/routing-driven COGS per period for the selected scenarios."""
+def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
+                               detail_periods: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """
+    Revenue and BOM/routing-driven COGS per period for the selected scenarios.
+
+    `periods` drives the per-period totals (every modelled month, including
+    months rolled forward before a report window); `detail_periods` limits the
+    product / customer breakdown and record count to the reported window.
+    """
     out = {
         "revenue": _zero_by_period(periods),
         "quantity": _zero_by_period(periods),
@@ -265,6 +323,7 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
     )
     rows = cursor.fetchall()
     period_set = set(periods)
+    detail_set = set(detail_periods) if detail_periods is not None else period_set
     unit_cost_cache: Dict[Tuple, Dict[str, Any]] = {}
 
     for (period, customer_id, unit_id, quantity, unit_price, total_revenue,
@@ -288,6 +347,10 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
         out["materials"][period] += materials
         out["labor"][period] += labor
         out["manufacturing"][period] += machine
+        if uc["warnings"]:
+            out["cost_warnings"][unit_id or "unknown"] = sorted(set(uc["warnings"]))
+        if period not in detail_set:
+            continue
         out["record_count"] += 1
 
         prod = out["by_product"].setdefault(unit_id or "unknown", {
@@ -301,9 +364,6 @@ def revenue_and_cogs_by_period(cursor, forecast_ids: Sequence[str], periods: Seq
             "customer_id": customer_id, "customer_name": customer_name, "revenue": 0.0,
         })
         cust["revenue"] += revenue
-
-        if uc["warnings"]:
-            out["cost_warnings"][unit_id or "unknown"] = sorted(set(uc["warnings"]))
 
     return out
 
@@ -441,8 +501,15 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
 # Expenses
 # ---------------------------------------------------------------------------
 
-def expenses_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str]) -> Dict[str, Any]:
-    """Expense allocations per period, bucketed by statement line."""
+def expenses_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str],
+                       detail_periods: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """
+    Expense allocations per period, bucketed by statement line.
+
+    The category breakdown (`by_category`) covers `detail_periods` only
+    (defaults to `periods`), so carried-forward months feed the balances
+    but not the reported detail.
+    """
     scope, params = _scope_clause("e.forecast_id", forecast_ids, include_null=True)
     cursor.execute(
         f"""
@@ -464,6 +531,8 @@ def expenses_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[st
         "by_category": {},
     }
     period_set = set(periods)
+    detail_periods = list(detail_periods) if detail_periods is not None else list(periods)
+    detail_set = set(detail_periods)
     for period, category_type, category_name, amount in cursor.fetchall():
         if period not in period_set:
             continue
@@ -477,8 +546,10 @@ def expenses_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[st
         else:
             bucket = "operating"
         out[bucket][period] += amount
+        if period not in detail_set:
+            continue
         cat = out["by_category"].setdefault(category_name or "Uncategorized", {
-            "category_type": category_type, "bucket": bucket, "by_period": _zero_by_period(periods), "total": 0.0,
+            "category_type": category_type, "bucket": bucket, "by_period": _zero_by_period(detail_periods), "total": 0.0,
         })
         cat["by_period"][period] += amount
         cat["total"] += amount
@@ -536,11 +607,13 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
         loan_entry = by_loan.setdefault(loan_id, {
             "loan_name": loan_name, "opening_balance": balance_before,
             "principal": _zero_by_period(periods), "interest": _zero_by_period(periods),
+            "proceeds": _zero_by_period(periods),
         })
 
         if originated and first_day <= originated <= last_day:
             p = originated.strftime("%Y-%m")
             proceeds[p] += float(principal_amount or 0)
+            loan_entry["proceeds"][p] += float(principal_amount or 0)
 
         for pay_date, p_amt, i_amt, total, _remaining in schedule:
             d = _parse_date(pay_date)
@@ -653,6 +726,58 @@ def _round_dict(d: Dict[str, Any], ndigits: int = 2) -> Dict[str, Any]:
     return out
 
 
+def _slice(by_period: Dict[str, Any], periods: Sequence[str]) -> Dict[str, Any]:
+    """Restrict a {period: value} dict to the given periods, in order."""
+    return {p: by_period[p] for p in periods if p in by_period}
+
+
+def resolve_carry_forward(assumptions: Dict[str, Any], start_period: str) -> Tuple[List[str], Optional[Dict[str, Any]]]:
+    """
+    Months that must be rolled forward before a reporting window starts.
+
+    The opening balances are stated as at the END of `opening_period`, so the
+    model starts in the month after it. When a report starts later than that,
+    every month in between is computed (cash, working capital, capex,
+    depreciation, debt and retained earnings) so the window's opening column
+    is the true carried balance and a March-only report shows the same March
+    as a January-to-December report.
+
+    Returns (carry_periods, warning). The warning explains why no carry
+    forward could be done: the opening period is unset, or the window starts
+    before the first modelled month.
+    """
+    opening_period = assumptions.get("opening_period")
+    if not opening_period:
+        return [], {
+            "code": "opening_period_unset",
+            "message": (
+                f"No opening balance date is set, so the opening balances are applied at the start of this "
+                f"report ({start_period}). Set the opening period under Assumptions so earlier months "
+                f"are rolled forward and the closing balances do not depend on the report window."
+            ),
+        }
+    try:
+        validate_period(str(opening_period))
+    except ValueError:
+        return [], {
+            "code": "opening_period_invalid",
+            "message": f"Opening period '{opening_period}' is not a valid YYYY-MM; opening balances are applied at {start_period}.",
+        }
+    first_model = shift_period(str(opening_period), 1)
+    if first_model < start_period:
+        return period_range(first_model, shift_period(start_period, -1)), None
+    if first_model > start_period:
+        return [], {
+            "code": "window_before_opening",
+            "message": (
+                f"The report starts in {start_period}, before the first month after the opening balance date "
+                f"({opening_period}). Balances before {first_model} are not modelled; the opening balances are "
+                f"applied at {start_period} instead."
+            ),
+        }
+    return [], None
+
+
 def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str,
                      include_raises: bool = True) -> Dict[str, Any]:
     """Build the full statement set for a reporting window."""
@@ -665,17 +790,29 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     # company, not the scenario), falling back to defaults.
     assumptions, found = load_assumptions(cursor, forecast_ids[0])
     warnings: List[Dict[str, Any]] = []
+    carry_periods, carry_warning = resolve_carry_forward(assumptions, start_period)
     if not found:
+        hint = ""
+        if carry_warning and carry_warning["code"] == "opening_period_unset":
+            hint = " Opening balances are applied at the start of this report; set an opening period so earlier months roll forward."
+            carry_warning = None
         warnings.append({
             "code": "default_assumptions",
-            "message": "No financial assumptions saved for this scenario; using defaults (zero opening balances, 30/60/30 day working capital, 21% tax).",
+            "message": "No financial assumptions saved for this scenario; using defaults (zero opening balances, 30/60/30 day working capital, 21% tax)." + hint,
         })
+    if carry_warning:
+        warnings.append(carry_warning)
 
-    sales = revenue_and_cogs_by_period(cursor, forecast_ids, periods)
-    payroll = payroll_by_period(cursor, forecast_ids, periods, include_raises=include_raises)
-    expenses = expenses_by_period(cursor, forecast_ids, periods)
-    loans = loans_by_period(cursor, periods)
-    capex = capex_by_period(cursor, forecast_ids, periods, assumptions)
+    # Everything balance-related is computed from the first modelled month;
+    # the window is sliced out afterwards.
+    all_periods = carry_periods + periods
+    window_set = set(periods)
+
+    sales = revenue_and_cogs_by_period(cursor, forecast_ids, all_periods, detail_periods=periods)
+    payroll = payroll_by_period(cursor, forecast_ids, all_periods, include_raises=include_raises)
+    expenses = expenses_by_period(cursor, forecast_ids, all_periods, detail_periods=periods)
+    loans = loans_by_period(cursor, all_periods)
+    capex = capex_by_period(cursor, forecast_ids, all_periods, assumptions)
 
     if sales["cost_warnings"]:
         warnings.append({
@@ -690,7 +827,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     dpo = float(assumptions.get("dpo_days") or 0)
     min_cash = float(assumptions.get("minimum_cash_balance") or 0)
 
-    # Opening balance sheet
+    # Opening balance sheet, as at the end of the month before the first modelled month.
     opening_cash = float(assumptions.get("opening_cash") or 0)
     opening_ar = float(assumptions.get("opening_accounts_receivable") or 0)
     opening_inv = float(assumptions.get("opening_inventory") or 0)
@@ -716,8 +853,8 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             })
 
     # Same keys as a period row so the UI can treat it as column zero.
-    opening = {
-        "period": shift_period(periods[0], -1),
+    model_opening = {
+        "period": shift_period(all_periods[0], -1),
         "cash": opening_cash,
         "accounts_receivable": opening_ar,
         "inventory": opening_inv,
@@ -741,9 +878,9 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         "equity_plugged": equity_plugged,
     }
 
-    income_rows: List[Dict[str, Any]] = []
-    cash_rows: List[Dict[str, Any]] = []
-    balance_rows: List[Dict[str, Any]] = []
+    all_income: List[Dict[str, Any]] = []
+    all_cash: List[Dict[str, Any]] = []
+    all_balance: List[Dict[str, Any]] = []
 
     prev_ar, prev_inv, prev_ap = opening_ar, opening_inv, opening_ap
     cash = opening_cash
@@ -753,7 +890,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     cumulative_ni = 0.0
     cash_shortfall_periods: List[str] = []
 
-    for period in periods:
+    for period in all_periods:
         revenue = sales["revenue"][period]
         materials = sales["materials"][period]
         labor = sales["labor"][period]
@@ -776,7 +913,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         net_income = pre_tax - tax
         cumulative_ni += net_income
 
-        income_rows.append({
+        all_income.append({
             "period": period,
             "revenue": revenue,
             "units_sold": sales["quantity"][period],
@@ -821,10 +958,10 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         net_change = cfo + cfi + cff
         opening_cash_period = cash
         cash = cash + net_change
-        if cash < min_cash:
+        if cash < min_cash and period in window_set:
             cash_shortfall_periods.append(period)
 
-        cash_rows.append({
+        all_cash.append({
             "period": period,
             "net_income": net_income,
             "depreciation": dep,
@@ -850,7 +987,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         equity = opening_equity + cumulative_ni
         total_assets = cash + ar + inv + (fa_gross - acc_dep)
         total_liabilities = ap + opening_other + debt
-        balance_rows.append({
+        all_balance.append({
             "period": period,
             "cash": cash,
             "accounts_receivable": ar,
@@ -873,6 +1010,20 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "working_capital": (cash + ar + inv) - (ap + opening_other),
         })
         prev_ar, prev_inv, prev_ap = ar, inv, ap
+
+    # Slice the window out of the modelled range. The opening column is the
+    # balance sheet at the end of the month before the window: the carried
+    # balance when months were rolled forward, else the stated opening balances.
+    n_carry = len(carry_periods)
+    income_rows = all_income[n_carry:]
+    cash_rows = all_cash[n_carry:]
+    balance_rows = all_balance[n_carry:]
+    if n_carry:
+        opening = dict(all_balance[n_carry - 1])
+        opening["equity"] = opening["total_equity"]
+        opening["equity_plugged"] = equity_plugged
+    else:
+        opening = model_opening
 
     if cash_shortfall_periods:
         warnings.append({
@@ -897,9 +1048,24 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
     income_totals["operating_margin_pct"] = (income_totals.get("operating_income", 0.0) / rev_total * 100) if rev_total else 0.0
     income_totals["net_margin_pct"] = (income_totals.get("net_income", 0.0) / rev_total * 100) if rev_total else 0.0
 
+    # Cash balances are not flows: the Total column carries the window's
+    # opening and closing balance, never a sum of monthly balances.
     cash_totals = _totals(cash_rows, skip=("opening_cash", "closing_cash"))
-    cash_totals["opening_cash"] = opening_cash
+    window_opening_cash = opening["cash"]
+    cash_totals["opening_cash"] = window_opening_cash
     cash_totals["closing_cash"] = cash
+    net_cash_flow_total = cash_totals.get("net_cash_flow", 0.0)
+    cash_reconciliation = {
+        "opening_cash": window_opening_cash,
+        "net_cash_flow": net_cash_flow_total,
+        "closing_cash": cash,
+        "difference": (window_opening_cash + net_cash_flow_total) - cash,
+    }
+
+    employee_rows = []
+    for emp in payroll["employees"]:
+        by_period = _slice(emp["by_period"], periods)
+        employee_rows.append({**emp, "by_period": by_period, "total": sum(by_period.values())})
 
     return {
         "forecast_ids": list(forecast_ids),
@@ -908,6 +1074,12 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         "end_period": periods[-1],
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "assumptions": _round_dict({k: v for k, v in assumptions.items() if k != "notes"} | {"notes": assumptions.get("notes"), "found": found}),
+        "carry_forward": {
+            "opening_period": assumptions.get("opening_period"),
+            "balances_as_of": opening["period"],
+            "rolled_forward_periods": carry_periods,
+            "months_rolled_forward": n_carry,
+        },
         "warnings": warnings,
         "income_statement": {
             "by_period": [_round_dict(r) for r in income_rows],
@@ -916,6 +1088,7 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
         "cash_flow": {
             "by_period": [_round_dict(r) for r in cash_rows],
             "totals": _round_dict(cash_totals),
+            "reconciliation": _round_dict(cash_reconciliation),
         },
         "balance_sheet": {
             "opening": _round_dict(opening),
@@ -926,11 +1099,32 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "revenue_by_product": _round_dict(sales["by_product"]),
             "revenue_by_customer": _round_dict(sales["by_customer"]),
             "expenses_by_category": _round_dict(expenses["by_category"]),
-            "payroll_by_department": _round_dict(payroll["by_department"]),
-            "payroll_by_business_unit": _round_dict(payroll["by_business_unit"]),
-            "payroll_headcount": _round_dict(payroll["headcount"]),
-            "loans": _round_dict(loans["by_loan"]),
-            "capex_items": [_round_dict(i) for i in capex["items"]],
+            "payroll_by_department": _round_dict({d: _slice(v, periods) for d, v in payroll["by_department"].items()}),
+            "payroll_by_business_unit": _round_dict({u: _slice(v, periods) for u, v in payroll["by_business_unit"].items()}),
+            "payroll_headcount": _round_dict(_slice(payroll["headcount"], periods)),
+            "payroll_employees": [_round_dict(e) for e in employee_rows],
+            "loans": _round_dict({
+                lid: {
+                    **entry,
+                    # Balance at the start of the reported window: the modelled opening balance
+                    # rolled through the carried months' proceeds and principal payments.
+                    "opening_balance": entry["opening_balance"]
+                    + sum(entry["proceeds"][p] for p in carry_periods)
+                    - sum(entry["principal"][p] for p in carry_periods),
+                    "principal": _slice(entry["principal"], periods),
+                    "interest": _slice(entry["interest"], periods),
+                    "proceeds": _slice(entry["proceeds"], periods),
+                }
+                for lid, entry in loans["by_loan"].items()
+            }),
+            "capex_items": [
+                _round_dict({
+                    **i,
+                    "in_window": i["purchase_period"] in window_set,
+                    "depreciation_by_period": _slice(i["depreciation_by_period"], periods),
+                })
+                for i in capex["items"]
+            ],
         },
     }
 
@@ -967,9 +1161,25 @@ def _budget_lines_by_period(statements: Dict[str, Any]) -> Dict[str, Dict[str, f
     return lines
 
 
+def _favorable(variance: Optional[float], direction: str) -> Optional[bool]:
+    if variance is None:
+        return None
+    return variance >= 0 if direction == "income" else variance <= 0
+
+
 def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_period: str,
                    statements: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Budget vs actual for every statement line that has a budget or an actual."""
+    """
+    Budget vs actual for every statement line.
+
+    A line/month with no recorded actual is MISSING (actual = None, no
+    variance); a recorded amount of 0 is a confirmed zero and is compared
+    like any other actual. To-date totals compare each line only over the
+    months that line has actuals for, and every line reports which months
+    are missing up to the latest month that has any actuals, so partial
+    entry (e.g. January revenue but only February payroll) is visible
+    instead of producing a misleading variance.
+    """
     statements = statements or build_statements(cursor, forecast_ids, start_period, end_period)
     periods = statements["periods"]
     budget = _budget_lines_by_period(statements)
@@ -984,50 +1194,78 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
         actual[key][entry["period"]] = actual[key].get(entry["period"], 0.0) + float(entry["amount"] or 0)
 
     periods_with_actuals = sorted({p for line in actual.values() for p in line})
+    actuals_through = periods_with_actuals[-1] if periods_with_actuals else None
+    through_periods = [p for p in periods if actuals_through and p <= actuals_through]
 
     lines_out: List[Dict[str, Any]] = []
+    incomplete_lines: List[Dict[str, Any]] = []
+    lines_without_actuals: List[str] = []
     for key, meta in VARIANCE_LINE_ITEMS.items():
         by_period = []
-        b_total = a_total = 0.0
-        has_actual = False
+        b_total = 0.0
         for p in periods:
             b = budget[key].get(p, 0.0)
             a = actual[key].get(p)
             b_total += b
-            if a is not None:
-                has_actual = True
-                a_total += a
             variance = (a - b) if a is not None else None
-            favorable = None
-            if variance is not None:
-                favorable = variance >= 0 if meta["direction"] == "income" else variance <= 0
             by_period.append({
                 "period": p,
                 "budget": round(b, 2),
                 "actual": round(a, 2) if a is not None else None,
                 "variance": round(variance, 2) if variance is not None else None,
                 "variance_pct": round(variance / abs(b) * 100, 2) if (variance is not None and b) else None,
-                "favorable": favorable,
+                "favorable": _favorable(variance, meta["direction"]),
             })
-        # Totals compare only periods where actuals exist, so YTD is apples to apples.
-        b_ytd = sum(budget[key].get(p, 0.0) for p in periods_with_actuals)
-        a_ytd = sum(actual[key].get(p, 0.0) for p in periods_with_actuals) if has_actual else None
+
+        compared = [p for p in periods if p in actual[key]]
+        missing = [p for p in through_periods if p not in actual[key]]
+        if not compared:
+            coverage = "none"
+        elif missing:
+            coverage = "partial"
+        else:
+            coverage = "complete"
+
+        # To-date totals are apples to apples: only months where THIS line has an actual.
+        b_ytd = sum(budget[key].get(p, 0.0) for p in compared)
+        a_ytd = sum(actual[key][p] for p in compared) if compared else None
         v_ytd = (a_ytd - b_ytd) if a_ytd is not None else None
+        b_through = sum(budget[key].get(p, 0.0) for p in through_periods)
         lines_out.append({
             "line_item": key,
             "label": meta["label"],
             "direction": meta["direction"],
             "statement": meta["statement"],
-            "has_actuals": has_actual,
+            "has_actuals": bool(compared),
+            "coverage": coverage,
             "by_period": by_period,
             "totals": {
                 "budget_full_period": round(b_total, 2),
+                "budget_through_latest_actual": round(b_through, 2),
                 "budget_to_date": round(b_ytd, 2),
                 "actual_to_date": round(a_ytd, 2) if a_ytd is not None else None,
                 "variance_to_date": round(v_ytd, 2) if v_ytd is not None else None,
                 "variance_pct_to_date": round(v_ytd / abs(b_ytd) * 100, 2) if (v_ytd is not None and b_ytd) else None,
-                "favorable": (v_ytd >= 0 if meta["direction"] == "income" else v_ytd <= 0) if v_ytd is not None else None,
+                "favorable": _favorable(v_ytd, meta["direction"]),
+                "periods_compared": compared,
+                "missing_periods": missing,
+                "coverage": coverage,
             },
+        })
+        if coverage == "partial":
+            incomplete_lines.append({"line_item": key, "label": meta["label"], "missing_periods": missing})
+        elif coverage == "none":
+            lines_without_actuals.append(key)
+
+    period_coverage = []
+    for p in through_periods:
+        entered = [k for k in VARIANCE_LINE_ITEMS if p in actual[k]]
+        period_coverage.append({
+            "period": p,
+            "lines_entered": len(entered),
+            "lines_total": len(VARIANCE_LINE_ITEMS),
+            "lines_missing": [k for k in VARIANCE_LINE_ITEMS if p not in actual[k]],
+            "complete": len(entered) == len(VARIANCE_LINE_ITEMS),
         })
 
     warnings = list(statements.get("warnings", []))
@@ -1036,11 +1274,33 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
             "code": "unknown_actual_lines",
             "message": f"Ignored actuals for unknown line items: {', '.join(sorted(unknown_lines))}",
         })
+    if incomplete_lines:
+        detail = "; ".join(
+            f"{line['label']} (missing {', '.join(line['missing_periods'])})" for line in incomplete_lines
+        )
+        warnings.append({
+            "code": "incomplete_actuals",
+            "message": (
+                f"Actuals are incomplete through {actuals_through} for {len(incomplete_lines)} line(s): {detail}. "
+                f"To-date variances compare only the months each line has actuals for."
+            ),
+            "lines": incomplete_lines,
+        })
+    if actuals_through and lines_without_actuals:
+        warnings.append({
+            "code": "lines_without_actuals",
+            "message": f"{len(lines_without_actuals)} line(s) have no actuals in this window and are shown as missing, not as zero.",
+            "lines": lines_without_actuals,
+        })
 
     return {
         "forecast_ids": statements["forecast_ids"],
         "periods": periods,
         "periods_with_actuals": periods_with_actuals,
+        "actuals_through": actuals_through,
+        "period_coverage": period_coverage,
+        "incomplete_lines": incomplete_lines,
+        "lines_without_actuals": lines_without_actuals,
         "line_items": lines_out,
         "warnings": warnings,
     }
