@@ -694,11 +694,13 @@ class DatabaseManager:
                 file_total REAL,
                 control_total REAL,
                 status TEXT,
-                note TEXT
+                note TEXT,
+                replaced INTEGER DEFAULT 0
             )
         ''')
-        # What each import overwrote, so undoing it restores the earlier
-        # amounts instead of deleting the rows it changed.
+        # What each import overwrote ('updated') or removed with replace_lines
+        # ('removed'), so undoing it restores the earlier amounts and puts the
+        # removed rows back exactly instead of deleting the rows it changed.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS actuals_batch_changes (
                 batch_id TEXT NOT NULL,
@@ -708,6 +710,11 @@ class DatabaseManager:
                 previous_source TEXT,
                 previous_batch_id TEXT,
                 previous_updated_at TEXT,
+                change_type TEXT DEFAULT 'updated',
+                previous_period TEXT,
+                previous_line_item TEXT,
+                previous_reference_id TEXT,
+                previous_created_at TEXT,
                 PRIMARY KEY (batch_id, actual_id)
             )
         ''')
@@ -902,6 +909,40 @@ class DatabaseManager:
             conn.commit()
         except Exception as e:
             print(f"Error migrating governance / controls schema: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
+    def migrate_actuals_undo_tracking(self):
+        """
+        Columns undo needs to put back rows an actuals import removed with
+        replace_lines (the row's key and created_at in actuals_batch_changes)
+        and the per-batch count of replaced rows (idempotent).
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            additions = {
+                "actuals_batch_changes": (("change_type", "TEXT DEFAULT 'updated'"), ("previous_period", "TEXT"),
+                                          ("previous_line_item", "TEXT"), ("previous_reference_id", "TEXT"),
+                                          ("previous_created_at", "TEXT")),
+                "actuals_batches": (("replaced", "INTEGER DEFAULT 0"),),
+            }
+            for table, cols in additions.items():
+                cursor.execute(f"PRAGMA table_info({table})")
+                existing = {col[1] for col in cursor.fetchall()}
+                if not existing:
+                    continue
+                for name, ddl in cols:
+                    if name not in existing:
+                        try:
+                            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                        except sqlite3.OperationalError as alter_err:
+                            if 'duplicate column name' not in str(alter_err).lower():
+                                raise
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating actuals undo tracking: {e}")
             conn.rollback()
         finally:
             self.close_connection(conn)
@@ -1646,6 +1687,7 @@ class DatabaseManager:
         self.migrate_financial_assumptions_table()
         self.migrate_price_list_table()
         self.migrate_governance_and_controls()
+        self.migrate_actuals_undo_tracking()
         self.ensure_base_scenario()
 
     def _has_seed_data(self) -> bool:

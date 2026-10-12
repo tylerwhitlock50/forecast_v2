@@ -421,15 +421,31 @@ class TestBatches:
         assert "Undone" in batches[first_id]["note"]
         assert client.delete(f"/reporting/actuals/batches/{first_id}").status_code == 409
 
-        # Undoing the correction removes the row it added and puts payroll back to its earlier 300.
+        # Undoing the correction removes the row it added. Payroll's earlier 300 came from the first import,
+        # which is already undone, so it does not come back: with both undone nothing is left (ACT-3).
         p2 = client.delete(f"/reporting/actuals/batches/{second_id}", params={"dry_run": "true"}).json()["data"]
-        assert p2["added_rows"] == 1 and p2["changed_rows"] == 1 and p2["rows_to_restore"] == 1
-        assert any("earlier amount" in n for n in p2["notes"])
+        assert p2["added_rows"] == 1 and p2["changed_rows"] == 1 and p2["rows_to_restore"] == 0
+        assert p2["rows_to_remove"] == 2
+        assert any("already undone" in n and first_id in n for n in p2["notes"])
         assert p2["changed"] == [{"period": "2026-04", "line_item": "payroll", "label": "Payroll",
-                                  "reference_id": "", "amount": 320.0, "restores_to": 300.0, "action": "restore"}]
+                                  "reference_id": "", "amount": 320.0, "restores_to": None, "action": "remove"}]
         done = client.delete(f"/reporting/actuals/batches/{second_id}").json()["data"]
-        assert done["removed"] == 1 and done["restored"] == 1
-        assert stored(mgr) == [("2026-04", "payroll", "", 300.0)]
+        assert done["removed"] == 2 and done["restored"] == 0
+        assert stored(mgr) == []
+
+    def test_undo_newest_first_restores_the_earlier_amount(self, env):
+        client, mgr = env
+        first = upload(client, "period,line_item,amount\n2026-04,revenue,1000\n2026-04,payroll,300\n")
+        second = post(client, [{"period": "2026-04", "line_item": "payroll", "amount": 320}])
+        first_id, second_id = first.json()["data"]["batch_id"], second.json()["data"]["batch_id"]
+        p = client.delete(f"/reporting/actuals/batches/{second_id}", params={"dry_run": "true"}).json()["data"]
+        assert p["rows_to_restore"] == 1 and any("earlier amount" in n for n in p["notes"])
+        assert p["changed"] == [{"period": "2026-04", "line_item": "payroll", "label": "Payroll",
+                                 "reference_id": "", "amount": 320.0, "restores_to": 300.0, "action": "restore"}]
+        done = client.delete(f"/reporting/actuals/batches/{second_id}").json()["data"]
+        assert done["removed"] == 0 and done["restored"] == 1
+        assert stored(mgr, "SELECT line_item, amount, batch_id FROM actuals ORDER BY line_item") == [
+            ("payroll", 300.0, first_id), ("revenue", 1000.0, first_id)]
 
     def test_unknown_batch_is_404(self, env):
         client, _ = env

@@ -7,6 +7,9 @@ import { plural } from './actualsApi';
 const money = (value) => formatAccounting(value, { decimals: 2 });
 const MAX_LIST = 50;
 
+/** The months and lines of the file that hold amounts under other references (kept and added, or replaced). */
+export const otherReferenceLines = (report) => (report?.line_totals || []).filter(t => (t.other_references || []).length > 0);
+
 // What the check found, in one sentence a finance person can act on.
 export const previewHeadline = (report) => {
   if (!report) return null;
@@ -25,11 +28,18 @@ export const previewHeadline = (report) => {
       text: `${plural(rejected, 'row')} ${rejected === 1 ? 'has a problem' : 'have problems'}. Fix the file and check it again, or tick "Import the valid rows" to leave ${rejected === 1 ? 'it' : 'them'} out.`
     };
   }
+  const added = otherReferenceLines(report).filter(t => !t.replaced);
+  const addedText = added.length
+    ? ` ${plural(added.length, 'month and line', 'months and lines')} already ${added.length === 1 ? 'holds' : 'hold'} amounts under other references: they are kept and added (see Month totals after import). Tick "Replace these months' lines" if this file replaces them.`
+    : '';
   if (outcome === 'unchanged') {
-    return { tone: 'info', title: 'Nothing to import', text: 'Every amount in the file already matches what is stored.' };
+    return { tone: added.length ? 'warning' : 'info', title: 'Nothing to import', text: `Every amount in the file already matches what is stored.${addedText}` };
   }
   if (outcome === 'partial') {
-    return { tone: 'warning', title: 'Ready to import the valid rows', text: `${plural(rejected, 'row')} with problems will be left out.` };
+    return { tone: 'warning', title: 'Ready to import the valid rows', text: `${plural(rejected, 'row')} with problems will be left out.${addedText}` };
+  }
+  if (added.length) {
+    return { tone: 'warning', title: 'Ready to import: some lines already hold other amounts', text: `Every row checked out.${addedText}` };
   }
   return { tone: 'success', title: 'Ready to import', text: 'Every row checked out.' };
 };
@@ -101,6 +111,10 @@ const ImportPreview = ({ report }) => {
   const totals = report.totals || { by_line_item: [], by_period: [], grand_total: 0 };
   const changed = (report.rows || []).filter(r => r.action === 'updated');
   const hasControl = report.control_total !== null && report.control_total !== undefined;
+  const others = otherReferenceLines(report);
+  const hasAfter = (report.line_totals || []).length > 0 && report.stored_after_total !== null && report.stored_after_total !== undefined;
+  const afterDiffers = hasAfter && Math.abs(report.stored_after_total - (totals.grand_total || 0)) >= 0.005;
+  const replaced = report.replaced || 0;
 
   return (
     <div className="space-y-4" data-testid="actuals-import-preview">
@@ -108,10 +122,11 @@ const ImportPreview = ({ report }) => {
         {headline.text}
       </StatusBox>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="actuals-preview-counts">
+      <div className={cn('grid grid-cols-2 gap-2', replaced ? 'sm:grid-cols-5' : 'sm:grid-cols-4')} data-testid="actuals-preview-counts">
         <Count label="New" value={report.inserted} />
         <Count label="Changed" value={report.updated} />
         <Count label="Unchanged" value={report.unchanged} />
+        {replaced > 0 && <Count label="Replaced" value={replaced} />}
         <Count label="Problems" value={report.rejected} tone="bad" />
       </div>
 
@@ -128,6 +143,15 @@ const ImportPreview = ({ report }) => {
           )
         ) : (
           <span className="ml-2 text-gray-500">Enter a control total (e.g. from the trial balance) to check it.</span>
+        )}
+        {hasAfter && (
+          <div className={cn('mt-1', afterDiffers || report.control_matches_after === false ? 'font-medium text-amber-800' : 'text-gray-600')} data-testid="actuals-after-total">
+            After this import, these months and lines hold <span className="tabular-nums">{money(report.stored_after_total)}</span> in total
+            {' '}(stored now {money(report.stored_before_total)})
+            {report.control_matches_after === false && hasControl
+              ? `: ${money(report.control_difference_after)} off the control total`
+              : ''}.
+          </div>
         )}
       </div>
 
@@ -172,6 +196,45 @@ const ImportPreview = ({ report }) => {
             <li key={i} className="flex gap-1.5"><AlertTriangle className="mt-0.5 h-3 w-3 flex-none" aria-hidden="true" />{w}</li>
           ))}
         </ul>
+      )}
+
+      {others.length > 0 && (
+        <div>
+          <h5 className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Month totals after import</h5>
+          <p className="mb-1 text-xs text-gray-600">
+            Amounts are stored per reference and added up. These months and lines already hold amounts under references this file does not include.
+          </p>
+          <div className="max-h-56 overflow-auto rounded-md border border-amber-200">
+            <table className="min-w-full text-xs tabular-nums" data-testid="actuals-line-totals">
+              <thead>
+                <tr className="bg-amber-50 text-amber-900">
+                  <th className="px-2 py-1 text-left font-medium">Month</th>
+                  <th className="px-2 py-1 text-left font-medium">Line</th>
+                  <th className="px-2 py-1 text-right font-medium">Stored now</th>
+                  <th className="px-2 py-1 text-right font-medium">This file</th>
+                  <th className="px-2 py-1 text-right font-medium">After import</th>
+                  <th className="px-2 py-1 text-left font-medium">Other references</th>
+                </tr>
+              </thead>
+              <tbody>
+                {others.slice(0, MAX_LIST).map(t => (
+                  <tr key={`${t.period}|${t.line_item}`} className="border-t border-amber-100 align-top">
+                    <td className="px-2 py-1 whitespace-nowrap">{t.label || formatPeriod(t.period)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{t.line_label || t.line_item}</td>
+                    <td className="px-2 py-1 text-right">{money(t.before)}</td>
+                    <td className="px-2 py-1 text-right">{money(t.file_amount)}</td>
+                    <td className="px-2 py-1 text-right font-medium">{money(t.after)}</td>
+                    <td className="px-2 py-1">
+                      {(t.other_references || []).map(o => `${o.reference_id || '(no reference)'} ${money(o.amount)}`).join('; ')}
+                      <span className={cn('ml-1', t.replaced ? 'text-red-700' : 'text-amber-800')}>{t.replaced ? '(replaced)' : '(kept and added)'}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {others.length > MAX_LIST && <p className="mt-1 text-xs text-gray-500">and {others.length - MAX_LIST} more</p>}
+        </div>
       )}
 
       {totals.rows > 0 && (

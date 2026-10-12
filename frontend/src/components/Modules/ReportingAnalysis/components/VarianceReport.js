@@ -72,14 +72,35 @@ export const buildActualsTemplate = (lineItems, period) => {
 // "Saved 2 actual(s) for Feb 2026" / why nothing was saved, from the import report.
 export const saveMessage = (report, period) => {
   const written = (report?.inserted || 0) + (report?.updated || 0);
-  if (report?.outcome === 'unchanged' || written === 0) {
+  const replaced = report?.replaced || 0;
+  if (report?.outcome === 'unchanged' || (written === 0 && replaced === 0)) {
     return `Nothing changed for ${formatPeriod(period)}: the amounts already match what is stored.`;
   }
   const parts = [];
   if (report.inserted) parts.push(`${report.inserted} new`);
   if (report.updated) parts.push(`${report.updated} changed`);
-  return `Saved ${written} actual(s) for ${formatPeriod(period)} (${parts.join(', ')}).`;
+  if (replaced) parts.push(`${replaced} imported ${replaced === 1 ? 'amount' : 'amounts'} replaced`);
+  const undo = replaced ? ' Undo the save under Import history to put the imported amounts back.' : '';
+  return `Saved ${written} actual(s) for ${formatPeriod(period)} (${parts.join(', ')}).${undo}`;
 };
+
+/**
+ * Each line's month total from the stored actuals rows: amounts are stored per reference and added up
+ * (an import under GL-JAN plus a hand entry is their sum), so the form shows and edits the total.
+ * Returns { line_item: { total, referenced: [{ reference_id, amount }] } }.
+ */
+export const lineMonthTotals = (actuals) => {
+  const out = {};
+  (actuals || []).forEach(a => {
+    const line = out[a.line_item] || { total: 0, referenced: [] };
+    line.total = Math.round((line.total + Number(a.amount || 0)) * 100) / 100;
+    if (a.reference_id) line.referenced.push({ reference_id: a.reference_id, amount: Number(a.amount || 0) });
+    out[a.line_item] = line;
+  });
+  return out;
+};
+
+const sameAmount = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
 
 const VarianceReport = ({ forecastIds, period }) => {
   const { variance, loading, error, fetchVariance } = useVariance();
@@ -87,6 +108,7 @@ const VarianceReport = ({ forecastIds, period }) => {
   const [lineItems, setLineItems] = useState([]);
   const [entryPeriod, setEntryPeriod] = useState('');
   const [entryValues, setEntryValues] = useState({});
+  const [entryStored, setEntryStored] = useState({});   // line_item -> { total, referenced } as stored
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState(null);
   const [showImport, setShowImport] = useState(false);
@@ -138,18 +160,18 @@ const VarianceReport = ({ forecastIds, period }) => {
     setEntryPeriod(prev => (prev && periods.includes(prev) ? prev : preferred));
   }, [periods, withActuals]);
 
-  // Prefill the entry form from existing actuals for the entry period.
+  // Prefill the entry form with each line's month total, imported amounts (with a reference) included.
   const loadEntryValues = useCallback(async (p) => {
     if (!p) return;
     try {
       const res = await api.get(`/reporting/actuals?start_period=${p}&end_period=${p}`, { suppressErrorToast: true });
+      const totals = lineMonthTotals(res?.data?.actuals);
       const next = {};
-      (res?.data?.actuals || []).forEach(a => {
-        if (a.reference_id) return; // reference-level entries are not edited here
-        next[a.line_item] = a.amount;
-      });
+      Object.entries(totals).forEach(([line, t]) => { next[line] = t.total; });
+      setEntryStored(totals);
       setEntryValues(next);
     } catch {
+      setEntryStored({});
       setEntryValues({});
     }
   }, []);
@@ -166,18 +188,25 @@ const VarianceReport = ({ forecastIds, period }) => {
   }, [refresh, loadEntryValues, entryPeriod]);
 
   const handleSaveActuals = async () => {
-    const entries = effectiveLineItems
+    const typed = effectiveLineItems
       .filter(li => entryValues[li.line_item] !== undefined && entryValues[li.line_item] !== '' && entryValues[li.line_item] !== null)
       .map(li => ({ period: entryPeriod, line_item: li.line_item, amount: parseFloat(entryValues[li.line_item]), source: 'manual' }))
       .filter(e => !isNaN(e.amount));
-    if (entries.length === 0) {
+    if (typed.length === 0) {
       setStatus({ type: 'error', text: 'Enter at least one amount before saving.' });
+      return;
+    }
+    // Only lines whose month total changed are saved. Each sets the line's total for the month:
+    // amounts imported under a reference are replaced (replace_lines), never added to.
+    const entries = typed.filter(e => !entryStored[e.line_item] || !sameAmount(entryStored[e.line_item].total, e.amount));
+    if (entries.length === 0) {
+      setStatus({ type: 'success', text: saveMessage({ outcome: 'unchanged' }, entryPeriod) });
       return;
     }
     setSaving(true);
     setStatus(null);
     try {
-      const result = await saveActualEntries(entries, { source: 'manual' });
+      const result = await saveActualEntries(entries, { source: 'manual', replaceLines: true });
       if (!result.ok) {
         setStatus({ type: 'error', text: result.message || 'Nothing was saved.' });
         return;
@@ -210,6 +239,7 @@ const VarianceReport = ({ forecastIds, period }) => {
     try {
       await api.delete(`/reporting/actuals?period=${entryPeriod}`, { suppressErrorToast: true });
       setEntryValues({});
+      setEntryStored({});
       setStatus({ type: 'success', text: `Cleared actuals for ${formatPeriod(entryPeriod)}.` });
       await refreshAll();
     } catch (err) {
@@ -377,7 +407,11 @@ const VarianceReport = ({ forecastIds, period }) => {
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
                 <h3 className="text-lg font-medium">Enter actuals</h3>
-                <p className="text-sm text-gray-600">Amounts are saved per period and line item; leave a field blank to keep it unchanged.</p>
+                <p className="text-sm text-gray-600" data-testid="actuals-entry-help">
+                  Each field is the line&rsquo;s total for the month, imported amounts included. Saving a changed amount sets that
+                  total: amounts imported under a reference are replaced by it, not added to (undo the save under Import history to put
+                  them back). Fields you leave unchanged or blank are not saved.
+                </p>
               </div>
               <div className="w-48">
                 <Label htmlFor="entry-period">Entry period</Label>
@@ -402,24 +436,36 @@ const VarianceReport = ({ forecastIds, period }) => {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {effectiveLineItems.map(li => (
-                <div key={li.line_item}>
-                  <Label htmlFor={`actual-${li.line_item}`} className="text-xs text-gray-600">
-                    {li.label}
-                    <span className="ml-1 text-gray-400">({STATEMENT_LABELS[li.statement] || li.statement})</span>
-                  </Label>
-                  <Input
-                    id={`actual-${li.line_item}`}
-                    type="number"
-                    step="0.01"
-                    className="h-8 mt-1 text-right"
-                    value={entryValues[li.line_item] ?? ''}
-                    onChange={e => setEntryValues(v => ({ ...v, [li.line_item]: e.target.value }))}
-                    placeholder="0.00"
-                    disabled={entryClosed}
-                  />
-                </div>
-              ))}
+              {effectiveLineItems.map(li => {
+                const referenced = entryStored[li.line_item]?.referenced || [];
+                const typed = entryValues[li.line_item];
+                const changed = referenced.length > 0 && typed !== '' && typed !== undefined && typed !== null
+                  && !isNaN(parseFloat(typed)) && !sameAmount(parseFloat(typed), entryStored[li.line_item].total);
+                return (
+                  <div key={li.line_item}>
+                    <Label htmlFor={`actual-${li.line_item}`} className="text-xs text-gray-600">
+                      {li.label}
+                      <span className="ml-1 text-gray-400">({STATEMENT_LABELS[li.statement] || li.statement})</span>
+                    </Label>
+                    <Input
+                      id={`actual-${li.line_item}`}
+                      type="number"
+                      step="0.01"
+                      className="h-8 mt-1 text-right"
+                      value={typed ?? ''}
+                      onChange={e => setEntryValues(v => ({ ...v, [li.line_item]: e.target.value }))}
+                      placeholder="0.00"
+                      disabled={entryClosed}
+                    />
+                    {referenced.length > 0 && (
+                      <p className={cn('mt-0.5 text-xs', changed ? 'text-amber-800' : 'text-gray-500')} data-testid={`actual-${li.line_item}-imported`}>
+                        Includes imported {referenced.map(r => `${r.reference_id} ${formatAccounting(r.amount, { decimals: 2 })}`).join('; ')}
+                        {changed ? ' (replaced by this total when you save)' : ''}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             {status && (

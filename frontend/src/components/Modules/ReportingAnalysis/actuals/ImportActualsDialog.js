@@ -32,6 +32,7 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
   const [controlTotal, setControlTotal] = useState('');
   const [combineDuplicates, setCombineDuplicates] = useState(false);
   const [allowPartial, setAllowPartial] = useState(false);
+  const [replaceLines, setReplaceLines] = useState(false);
   const [note, setNote] = useState('');
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState(null);          // { ok, report, message } of the latest dry run
@@ -41,7 +42,7 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
   const sequence = useRef(0);
   const fileInput = useRef(null);
 
-  const options = { controlTotal, combineDuplicates, allowPartial };
+  const options = { controlTotal, combineDuplicates, allowPartial, replaceLines };
 
   const runCheck = useCallback(async (theFile, opts) => {
     if (!theFile) return;
@@ -64,9 +65,9 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
   // Re-check whenever the file or an option that changes the outcome changes.
   useEffect(() => {
     if (!file || result) return undefined;
-    const timer = setTimeout(() => runCheck(file, { controlTotal, combineDuplicates, allowPartial }), CHECK_DELAY_MS);
+    const timer = setTimeout(() => runCheck(file, { controlTotal, combineDuplicates, allowPartial, replaceLines }), CHECK_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [file, controlTotal, combineDuplicates, allowPartial, runCheck, result]);
+  }, [file, controlTotal, combineDuplicates, allowPartial, replaceLines, runCheck, result]);
 
   const handleFile = (event) => {
     const chosen = event.target.files?.[0] || null;
@@ -82,7 +83,7 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
 
   const report = check?.report;
   const canImport = !!file && !checking && !importing && !!report && ['imported', 'partial'].includes(report.outcome);
-  const writeCount = report ? (report.inserted || 0) + (report.updated || 0) : 0;
+  const writeCount = report ? (report.inserted || 0) + (report.updated || 0) + (report.replaced || 0) : 0;
 
   const handleImport = async () => {
     if (!canImport) return;
@@ -110,6 +111,7 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
         {done ? (
           <StatusBox tone="success" title="Actuals imported" testId="actuals-import-done">
             {plural(result.report.inserted, 'new amount')}, {plural(result.report.updated, 'changed amount')}, {result.report.unchanged} unchanged
+            {result.report.replaced ? `, ${plural(result.report.replaced, 'amount')} under other references replaced` : ''}
             {result.report.rejected ? `; ${plural(result.report.rejected, 'row')} left out` : ''}.
             {' '}Saved as import <span className="font-mono">{result.report.batch_id}</span>: you can undo it under Import history.
           </StatusBox>
@@ -158,6 +160,10 @@ const ImportActualsDialog = ({ onClose, onImported, onDownloadTemplate }) => {
               <Checkbox id="actuals-partial" checked={allowPartial} onChange={setAllowPartial}
                 help="Rows with problems are left out. Otherwise nothing is imported until every row is right.">
                 Import the valid rows even if some rows have problems
+              </Checkbox>
+              <Checkbox id="actuals-replace" checked={replaceLines} onChange={setReplaceLines}
+                help="For every month and line in the file, amounts already stored under other references (an earlier import, a hand entry) are removed, so the line's month total becomes the file's. Otherwise they are kept and added. Undo puts them back.">
+                Replace these months&rsquo; lines
               </Checkbox>
             </div>
 
