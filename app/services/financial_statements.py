@@ -51,7 +51,10 @@ Conventions
   negative (no carry-back / carry-forward across years).
 * Payroll burden is employer cost only (social security, medicare,
   unemployment, workers comp, benefits); income tax withheld from employees
-  is not added. Salaried employees store their annual salary.
+  is not added. Salaried employees store their annual salary. Each month
+  accrues annual cost / 12, weighted by day for a hire, a leaver and a raise
+  (which applies from next_review_date itself); pay runs weight their pay
+  period's days the same way (gross_for_days).
 * Labor classes (payroll.labor_class) decide where pay lands, automatically:
     admin or not classified -> operating expense 'payroll';
     indirect                -> COGS 'indirect_labor' (factory support staff);
@@ -101,6 +104,11 @@ DEFAULT_ASSUMPTIONS: Dict[str, Any] = {
     "notes": None,
 }
 
+#: The company's biweekly pay calendar when payroll_config.pay_anchor_date is
+#: not set: a fixed Friday, so every report, window and the pay-run forecast
+#: use the same paydays (this one puts paydays on 1 Jan 2027 and 2 Jan 2026).
+DEFAULT_PAY_ANCHOR_DATE = date(2021, 1, 8)
+
 DEFAULT_PAYROLL_CONFIG: Dict[str, Any] = {
     "config_id": "default",
     "federal_tax_rate": 0.22,
@@ -111,6 +119,7 @@ DEFAULT_PAYROLL_CONFIG: Dict[str, Any] = {
     "benefits_rate": 0.25,
     "workers_comp_rate": 0.015,
     "pay_frequency": "biweekly",
+    "pay_anchor_date": DEFAULT_PAY_ANCHOR_DATE.isoformat(),
 }
 
 PAY_PERIODS_PER_YEAR = {
@@ -220,23 +229,32 @@ def add_months(d: date, months: int) -> date:
     return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
 
 
-def pay_run_dates(frequency: str, start: date, count: int) -> List[date]:
+def pay_run_dates(frequency: str, start: date, count: int, anchor: Optional[date] = None) -> List[date]:
     """
-    The next `count` pay dates on or after `start`, on real calendar dates:
+    The next `count` pay dates on or after `start`, on the company's fixed
+    pay calendar (real calendar dates):
 
-      * weekly / biweekly: Fridays, 7 / 14 days apart
+      * weekly: every Friday
+      * biweekly: every other Friday, anchor + 14 x k days (`anchor` is a
+        known payday, default DEFAULT_PAY_ANCHOR_DATE)
       * semimonthly: the 15th and the last day of each month
       * monthly: the last day of each month
 
+    `start` only picks the first run listed; it never moves the calendar, so
+    a month has the same paydays whatever window or start date asks for it.
     No average-day increments, so month ends, February and leap years land
     on the right day and a year's worth of runs never drifts.
     """
     if count <= 0:
         return []
-    if frequency in ("weekly", "biweekly"):
-        step = 7 if frequency == "weekly" else 14
+    if frequency == "weekly":
         first = start + timedelta(days=(4 - start.weekday()) % 7)  # Friday on/after start
-        return [first + timedelta(days=step * i) for i in range(count)]
+        return [first + timedelta(days=7 * i) for i in range(count)]
+    if frequency == "biweekly":
+        anchor = anchor or DEFAULT_PAY_ANCHOR_DATE
+        steps = -((anchor - start).days // 14)   # ceil((start - anchor) / 14 days)
+        first = anchor + timedelta(days=14 * steps)
+        return [first + timedelta(days=14 * i) for i in range(count)]
 
     dates: List[date] = []
     cursor = date(start.year, start.month, 1)
@@ -317,7 +335,17 @@ def load_payroll_config(cursor) -> Dict[str, Any]:
                 config[key] = stored[key]
     if config.get("pay_frequency") not in PAY_PERIODS_PER_YEAR:
         config["pay_frequency"] = "biweekly"
+    anchor = _parse_date(config.get("pay_anchor_date"))
+    if not anchor or anchor.weekday() != 4:   # an unreadable or non-Friday anchor: the default calendar
+        anchor = DEFAULT_PAY_ANCHOR_DATE
+    config["pay_anchor_date"] = anchor.isoformat()
     return config
+
+
+def pay_anchor(config: Dict[str, Any]) -> date:
+    """The configured biweekly payday the pay calendar is built from (DEFAULT_PAY_ANCHOR_DATE when unset)."""
+    anchor = _parse_date((config or {}).get("pay_anchor_date"))
+    return anchor if anchor and anchor.weekday() == 4 else DEFAULT_PAY_ANCHOR_DATE
 
 
 # ---------------------------------------------------------------------------
@@ -593,17 +621,47 @@ def _active_fraction(period: str, start: Optional[date], end: Optional[date]) ->
     return ((active_end - active_start).days + 1) / days_in_month
 
 
-def _employee_rate_for_period(emp: Dict[str, Any], period: str, include_raises: bool) -> float:
+def rate_segments(emp: Dict[str, Any], first: date, last: date, include_raises: bool,
+                  start: Optional[date] = None, end: Optional[date] = None) -> List[Tuple[int, float]]:
+    """
+    The days of first..last (inclusive) the employee is on payroll (between
+    `start` and `end`), as [(days, rate), ...]. The raise applies from
+    next_review_date itself, so a month or pay period that contains the
+    review date is split into the days before it (old rate) and the days
+    from it (new rate). expected_raise above 1 is a flat amount, 1 or less a
+    fraction.
+    """
+    active_start = max(first, start) if start else first
+    active_end = min(last, end) if end else last
+    if active_end < active_start:
+        return []
+    days = (active_end - active_start).days + 1
     rate = float(emp.get("hourly_rate") or 0)
-    if not include_raises:
-        return rate
-    review = _parse_date(emp.get("next_review_date"))
-    raise_amt = float(emp.get("expected_raise") or 0)
-    if review and raise_amt and review <= period_bounds(period)[0]:
-        # Same convention as the legacy pay-period forecast: values above 1
-        # are a flat $/hour bump, values <= 1 are a percentage.
-        rate = rate + raise_amt if raise_amt > 1 else rate * (1 + raise_amt)
-    return rate
+    review = _parse_date(emp.get("next_review_date")) if include_raises else None
+    raise_amt = float(emp.get("expected_raise") or 0) if include_raises else 0.0
+    if not (review and raise_amt) or review > active_end:
+        return [(days, rate)]
+    raised = rate + raise_amt if raise_amt > 1 else rate * (1 + raise_amt)
+    if review <= active_start:
+        return [(days, raised)]
+    before = (review - active_start).days
+    return [(before, rate), (days - before, raised)]
+
+
+def gross_for_days(emp: Dict[str, Any], first: date, last: date, periods_per_year: int, period_days: int,
+                   include_raises: bool, start: Optional[date] = None, end: Optional[date] = None) -> float:
+    """
+    Gross pay for the employee's days on payroll in first..last, inside a
+    pay period (or month) of `period_days` days that pays annual gross /
+    `periods_per_year`: each day earns that period's pay / period_days at the
+    rate in force on the day (see rate_segments). The statements call it per
+    calendar month (12 a year), the pay runs per pay period, so both apply a
+    hire, a leaver and a raise from the same day.
+    """
+    return sum(
+        annual_base_pay(emp.get("rate_type"), rate, emp.get("weekly_hours")) / periods_per_year * (days / period_days)
+        for days, rate in rate_segments(emp, first, last, include_raises, start, end)
+    )
 
 
 def normalize_allocations(value: Any) -> Dict[str, float]:
@@ -767,8 +825,9 @@ def payroll_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[str
             if fraction <= 0:
                 emp_by_period[period] = 0.0
                 continue
-            rate = _employee_rate_for_period(emp, period, include_raises)
-            monthly_gross = _employee_annual_gross(emp, rate) / 12 * fraction
+            first, last = period_bounds(period)
+            # Prorated by day for a hire or a leaver, and across a raise dated inside the month.
+            monthly_gross = gross_for_days(emp, first, last, 12, (last - first).days + 1, include_raises, start, end)
             cost = monthly_gross * multiplier
             emp_by_period[period] = cost
             totals[period] += cost
@@ -843,30 +902,117 @@ def _names(employees: Sequence[Dict[str, Any]], limit: int = 6) -> str:
     return ", ".join(names)
 
 
+def window_total(values: Dict[str, float], periods: Sequence[str]) -> float:
+    """
+    Sum of a {period: amount} dict over `periods`, added month by month in
+    order: the same float arithmetic as the statements' totals, so a figure
+    built from the same months rounds to the same cent (the built-in sum()
+    is compensated on Python 3.12+ and can land on the other side of a half
+    cent).
+    """
+    total = 0.0
+    for p in periods:
+        total += float(values.get(p, 0.0) or 0.0)
+    return total
+
+
+def month_ranges(periods: Sequence[str]) -> str:
+    """'2027-01..2027-03, 2027-06' for a sorted list of months (runs of consecutive months collapsed)."""
+    spans: List[List[str]] = []
+    for p in periods:
+        if spans and shift_period(spans[-1][-1], 1) == p:
+            spans[-1].append(p)
+        else:
+            spans.append([p])
+    return ", ".join(s[0] if len(s) == 1 else f"{s[0]}..{s[-1]}" for s in spans)
+
+
+def labor_coverage(direct_payroll: Dict[str, float], standard_labor: Dict[str, float],
+                   periods: Sequence[str]) -> Dict[str, Any]:
+    """
+    Which months of a window book direct labor at direct payroll and which
+    at the routing standard alone (labor_lines_by_period replaces the
+    standard month by month): months_with_direct_pay, standard_only_months
+    (routing labor but no direct pay) and standard_only_labor, their
+    standard.
+    """
+    direct_months = [p for p in periods if float(direct_payroll.get(p, 0.0)) > 0]
+    standard_only = [p for p in periods
+                     if float(direct_payroll.get(p, 0.0)) <= 0 and float(standard_labor.get(p, 0.0)) > 0]
+    return {
+        "months_with_direct_pay": direct_months,
+        "standard_only_months": standard_only,
+        "standard_only_labor": window_total(standard_labor, standard_only),
+    }
+
+
+def describe_unclassified_effect(direct_months: Sequence[str], standard_only_months: Sequence[str],
+                                 has_direct_pay: Optional[bool] = None) -> str:
+    """
+    What leaving a production worker unclassified does to the statements,
+    month by month: counted twice where the routing standard stands alone,
+    in operating expenses instead of COGS where direct payroll replaced it.
+    """
+    twice = ("Direct labor in COGS comes from the routings, so a production worker left unclassified is counted "
+             "twice (routing standard in COGS and pay in Payroll).")
+    misplaced = ("Direct labor in COGS is the pay of employees classed Direct, so a production worker left "
+                 "unclassified is counted once, in Payroll (operating expenses) instead of COGS: gross margin is "
+                 "overstated.")
+    if not (bool(direct_months) if has_direct_pay is None else has_direct_pay):
+        return twice
+    if not (direct_months and standard_only_months):
+        return misplaced
+    return (f"In months with direct pay ({month_ranges(direct_months)}) a production worker left unclassified is in "
+            f"Payroll (operating expenses) instead of COGS, so gross margin is overstated; in months without direct "
+            f"pay ({month_ranges(standard_only_months)}) direct labor comes from the routings and that worker is "
+            f"counted twice (routing standard in COGS and pay in Payroll).")
+
+
 def describe_labor_policy(standard: float, direct_payroll: float, variance: float, indirect: float,
-                          admin: float, unclassified: Sequence[Dict[str, Any]]) -> str:
-    """Plain-spoken explanation of where payroll landed, for notes and the Read Me."""
-    money = lambda v: f"${v:,.0f}"  # noqa: E731
-    if direct_payroll > 0:
-        if variance >= 0:
-            adjust = f"plus a direct labor variance of {money(variance)} (payroll above standard)"
-        else:
-            adjust = f"less a direct labor variance of {money(-variance)} (payroll below standard)"
-        parts = [f"Direct labor in COGS is the routing standard ({money(standard)}) {adjust}, so it equals the pay "
-                 f"of employees classed Direct ({money(direct_payroll)}); nobody is counted twice."]
+                          admin: float, unclassified: Sequence[Dict[str, Any]], *,
+                          standard_only: float = 0.0, direct_months: Sequence[str] = (),
+                          standard_only_months: Sequence[str] = ()) -> str:
+    """
+    Plain-spoken explanation of where payroll landed, for notes and the Read
+    Me. Direct payroll replaces the routing standard month by month, so when
+    some months of the window have routing labor but no direct pay
+    (`standard_only_months`, whose standard is `standard_only`) the message
+    says which months use which basis. Every figure it names adds up, in
+    cents, to the income statement's direct labor (standard + variance).
+    """
+    cents = lambda v: round(float(v or 0) + 0.0, 2)  # noqa: E731
+    money = lambda v: f"${v:,.2f}" if v >= 0 else f"-${-v:,.2f}"  # noqa: E731
+    std, var = cents(standard), cents(variance)
+    total = cents(std + var)                      # the income statement's direct labor
+    std_only = cents(standard_only) if standard_only_months else 0.0
+    adjust = "plus" if var >= 0 else "less"
+    above = "payroll above standard" if var >= 0 else "payroll below standard"
+    if direct_payroll > 0 and direct_months and std_only > 0:
+        # Each figure is derived from the rounded ones so the sentence adds up in cents: total = direct pay +
+        # standard alone, and direct pay = standard of the direct months + variance.
+        paid = cents(direct_payroll)              # pay of employees classed Direct (all in the direct months)
+        std_only = cents(total - paid)            # the routing standard of the months without direct pay
+        std_paid_months = cents(paid - var)       # the routing standard of the months with direct pay
+        parts = [f"Direct labor in COGS is {money(total)}. In months with direct pay ({month_ranges(direct_months)}) "
+                 f"it is the pay of employees classed Direct ({money(paid)}): the routing standard "
+                 f"({money(std_paid_months)}) {adjust} a direct labor variance of {money(abs(var))} ({above}). In "
+                 f"months without direct pay ({month_ranges(standard_only_months)}) it is the routing standard "
+                 f"alone ({money(std_only)}), so gross margin moves when direct pay starts or stops. Nobody is "
+                 f"counted twice."]
+    elif direct_payroll > 0:
+        parts = [f"Direct labor in COGS is the routing standard ({money(std)}) {adjust} a direct labor variance of "
+                 f"{money(abs(var))} ({above}), so it equals the pay of employees classed Direct ({money(total)}); "
+                 f"nobody is counted twice."]
     else:
-        parts = [f"Direct labor in COGS is the routing standard ({money(standard)}): routing minutes x labor rates. "
-                 f"No employee is classed Direct, so payroll does not replace it."]
+        parts = [f"Direct labor in COGS is the routing standard ({money(std)}): routing minutes x labor rates. "
+                 f"No employee classed Direct is paid in these months, so payroll does not replace it."]
     if indirect > 0:
-        parts.append(f"Indirect (factory) employees ({money(indirect)}) are in COGS as Indirect labor.")
-    parts.append(f"Admin and unclassified employees ({money(admin)}) are Payroll in operating expenses.")
+        parts.append(f"Indirect (factory) employees ({money(cents(indirect))}) are in COGS as Indirect labor.")
+    parts.append(f"Admin and unclassified employees ({money(cents(admin))}) are Payroll in operating expenses.")
     if unclassified:
-        if direct_payroll > 0:
-            parts.append(f"Not classified (treated as Admin): {_names(unclassified)}. "
-                         f"Class any production worker among them Direct.")
-        else:
-            parts.append(f"Not classified (treated as Admin): {_names(unclassified)}. If any of them build product, "
-                         f"class them Direct; otherwise their pay is in Payroll and in the routing standard too.")
+        effect = describe_unclassified_effect(direct_months, standard_only_months, has_direct_pay=direct_payroll > 0)
+        parts.append(f"Not classified (treated as Admin): {_names(unclassified)}. {effect} Class any production "
+                     f"worker among them Direct.")
     return " ".join(parts)
 
 
@@ -1248,20 +1394,42 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             for row in payroll["employees"] if not row.get("labor_class")
         ) if e["window_cost"] > 0
     ]
-    window_standard = sum(sales["labor"][p] for p in periods)
+    # Window totals add month by month, like the income statement's totals, so they match it to the cent.
+    window_standard = window_total(sales["labor"], periods)
+    coverage = labor_coverage(labor_lines["direct_payroll"], sales["labor"], periods)
     labor_policy = {
-        "direct_payroll_in_cogs": any(labor_lines["direct_payroll"][p] > 0 for p in periods),
+        "direct_payroll_in_cogs": bool(coverage["months_with_direct_pay"]),
         "standard_direct_labor": window_standard,
-        "direct_payroll": sum(labor_lines["direct_payroll"][p] for p in periods),
-        "labor_variance": sum(labor_lines["labor_variance"][p] for p in periods),
-        "indirect_labor": sum(labor_lines["indirect_labor"][p] for p in periods),
-        "admin_payroll": sum(labor_lines["payroll"][p] for p in periods),
+        "direct_payroll": window_total(labor_lines["direct_payroll"], periods),
+        "labor_variance": window_total(labor_lines["labor_variance"], periods),
+        "indirect_labor": window_total(labor_lines["indirect_labor"], periods),
+        "admin_payroll": window_total(labor_lines["payroll"], periods),
+        **coverage,
         "unclassified_employees": [{k: e[k] for k in ("employee_id", "employee_name", "department")}
                                    for e in window_unclassified],
     }
+    # Direct labor in COGS as the income statement shows it (cogs_labor + labor_variance totals).
+    labor_policy["cogs_direct_labor"] = round(round(window_standard, 2) + round(labor_policy["labor_variance"], 2), 2)
     labor_policy["message"] = describe_labor_policy(
         labor_policy["standard_direct_labor"], labor_policy["direct_payroll"], labor_policy["labor_variance"],
-        labor_policy["indirect_labor"], labor_policy["admin_payroll"], labor_policy["unclassified_employees"])
+        labor_policy["indirect_labor"], labor_policy["admin_payroll"], labor_policy["unclassified_employees"],
+        standard_only=coverage["standard_only_labor"], direct_months=coverage["months_with_direct_pay"],
+        standard_only_months=coverage["standard_only_months"])
+    if labor_policy["direct_payroll_in_cogs"] and coverage["standard_only_months"]:
+        months = coverage["standard_only_months"]
+        warnings.append({
+            "code": "partial_direct_payroll",
+            "level": "info",
+            "message": (
+                f"Direct labor in COGS is the pay of employees classed Direct in "
+                f"{month_ranges(coverage['months_with_direct_pay'])}, but {month_ranges(months)} "
+                f"{'have' if len(months) != 1 else 'has'} routing labor and no direct pay, so "
+                f"{'those months use' if len(months) != 1 else 'that month uses'} the routing standard alone "
+                f"(${coverage['standard_only_labor']:,.2f}). Gross margin moves when direct pay starts or stops; "
+                f"check the start and end dates of the employees classed Direct."
+            ),
+            "periods": months,
+        })
     if window_unclassified and window_standard > 0:
         count = len(window_unclassified)
         warnings.append({
@@ -1270,11 +1438,13 @@ def build_statements(cursor, forecast_ids: Sequence[str], start_period: str, end
             "message": (
                 f"{count} employee{'s have' if count != 1 else ' has'} no labor class, so "
                 f"{'their' if count != 1 else 'the'} pay is in Payroll (operating expenses): "
-                f"{_names(window_unclassified)}. Direct labor in COGS comes from the routings, so a production "
-                f"worker left unclassified is counted twice. Under Payroll, class production workers Direct, "
-                f"factory support Indirect and everyone else Admin."
+                f"{_names(window_unclassified)}. "
+                f"{describe_unclassified_effect(coverage['months_with_direct_pay'], coverage['standard_only_months'])}"
+                f" Under Payroll, class production workers Direct, factory support Indirect and everyone else Admin."
             ),
             "employees": labor_policy["unclassified_employees"],
+            "direct_payroll_in_cogs": labor_policy["direct_payroll_in_cogs"],
+            "standard_only_months": coverage["standard_only_months"],
         })
 
     tax_rate = float(assumptions.get("income_tax_rate") or 0)

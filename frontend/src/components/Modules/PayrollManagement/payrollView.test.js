@@ -86,13 +86,19 @@ describe('labor class, horizon and bridge helpers', () => {
   it('shapes the statement bridge', () => {
     const view = bridgeToView({
       pay_frequency: 'biweekly', runs_per_year: 26, start_period: '2027-01', end_period: '2027-02',
-      opening_accrued_payroll: 1931.43, closing_accrued_payroll: 544.76,
-      by_period: [{ period: '2027-01', accrued: 4506.67, paid: 6240, pay_runs: 3, difference: -1733.33, accrued_payroll_balance: 198.1 }],
-      totals: { accrued: 9013.33, paid: 10400, pay_runs: 5, difference: -1386.67 }
+      pay_anchor_date: '2021-01-08', opening_accrued_payroll: 1931.43, closing_accrued_payroll: 297.14,
+      by_period: [{ period: '2027-01', accrued: 4506.67, earned: 4605.71, paid: 6240, pay_runs: 3, difference: -1733.33,
+        accrued_payroll_balance: 297.14 }],
+      totals: { accrued: 9013.33, earned: 8765.71, paid: 10400, pay_runs: 5, difference: -1386.67 }
     });
-    expect(view.rows[0]).toEqual({ period: '2027-01', accrued: 4506.67, paid: 6240, payRuns: 3, difference: -1733.33, balance: 198.1 });
+    expect(view.rows[0]).toEqual({ period: '2027-01', accrued: 4506.67, earned: 4605.71, paid: 6240, payRuns: 3,
+      difference: -1733.33, balance: 297.14 });
+    // Owed at month end moves by earned - paid.
+    expect(view.opening + view.rows[0].earned - view.rows[0].paid).toBeCloseTo(view.rows[0].balance, 2);
     expect(view.opening).toBe(1931.43);
+    expect(view.anchor).toBe('2021-01-08');
     expect(view.totals.payRuns).toBe(5);
+    expect(view.totals.earned).toBe(8765.71);
     expect(bridgeToView(null)).toBeNull();
   });
 });

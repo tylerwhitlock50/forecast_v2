@@ -132,8 +132,9 @@ class LaborRateCreate(LaborRateBase):
 class PayrollBase(BaseModel):
     employee_name: str
     department: str
-    weekly_hours: int
-    hourly_rate: float
+    # Decimal hours are fine (37.5 is a common schedule); no negative pay or hours.
+    weekly_hours: float = Field(..., ge=0, le=168)
+    hourly_rate: float = Field(..., ge=0)
     rate_type: str = "hourly"  # "hourly" or "salary"
     labor_type: str
     start_date: str
@@ -161,12 +162,30 @@ class PayrollConfigBase(BaseModel):
     workers_comp_rate: float = 0.015
     # weekly | biweekly | semimonthly | monthly
     pay_frequency: str = 'biweekly'
+    # A known biweekly payday (a Friday, YYYY-MM-DD); biweekly paydays are this date + 14 x k days.
+    pay_anchor_date: Optional[str] = None
 
 class PayrollConfig(PayrollConfigBase):
     config_id: str
 
 class PayrollConfigCreate(PayrollConfigBase):
     pass
+
+class PayrollConfigUpdate(BaseModel):
+    """
+    POST /payroll/config body: only the fields given change, the rest keep
+    their stored values. Rates are fractions (0.062 = 6.2%).
+    """
+    federal_tax_rate: Optional[float] = Field(None, ge=0, le=1)
+    state_tax_rate: Optional[float] = Field(None, ge=0, le=1)
+    social_security_rate: Optional[float] = Field(None, ge=0, le=1)
+    medicare_rate: Optional[float] = Field(None, ge=0, le=1)
+    unemployment_rate: Optional[float] = Field(None, ge=0, le=1)
+    benefits_rate: Optional[float] = Field(None, ge=0, le=5)
+    workers_comp_rate: Optional[float] = Field(None, ge=0, le=1)
+    # weekly | biweekly | semimonthly | monthly (checked by the route: anything else is a 422)
+    pay_frequency: Optional[str] = None
+    pay_anchor_date: Optional[str] = None
 
 # API Request/Response Models
 class SQLApplyRequest(BaseModel):

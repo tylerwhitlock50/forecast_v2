@@ -9,9 +9,11 @@ import PayrollBridge from './PayrollBridge';
 // for information; it comes out of gross pay and is not an extra cost.
 // The horizon defaults to one year of runs for the pay frequency (12 / 24 /
 // 26 / 52); the bridge below reconciles the income statement with pay dates.
+// loading: the first pay runs have not arrived yet, so the cards show a
+// placeholder instead of $0 and 'Based on 0 months'.
 const PayrollForecast = ({
   forecast, forecastHorizon, onHorizonChange, runsPerYear = 26, payFrequency,
-  bridge = null, bridgeLoading = false, bridgeWindow = null, onBridgeWindowChange
+  bridge = null, bridgeLoading = false, bridgeWindow = null, onBridgeWindowChange, loading = false
 }) => {
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'chart'
   const [showDetails, setShowDetails] = useState(false);
@@ -124,6 +126,17 @@ const PayrollForecast = ({
         </div>
       </div>
 
+      {loading ? (
+        <div className="payroll-forecast-summary" aria-busy="true" data-testid="payroll-forecast-loading">
+          {['Next Payroll', 'Monthly Average', 'Annual Projection', 'Total Forecast'].map(title => (
+            <div className="payroll-summary-card" key={title}>
+              <h3>{title}</h3>
+              <div className="payroll-summary-value">…</div>
+              <div className="payroll-summary-detail">Loading pay runs…</div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className="payroll-forecast-summary">
         <div className="payroll-summary-card">
           <h3>Next Payroll</h3>
@@ -172,8 +185,9 @@ const PayrollForecast = ({
           </div>
         </div>
       </div>
+      )}
 
-      {viewMode === 'table' && (
+      {viewMode === 'table' && !loading && (
         <div className="payroll-forecast-table-container">
           <table className="payroll-forecast-table">
             <thead>
@@ -218,7 +232,7 @@ const PayrollForecast = ({
         </div>
       )}
 
-      {viewMode === 'chart' && (
+      {viewMode === 'chart' && !loading && (
         <div className="payroll-forecast-chart">
           <PayrollChart data={trendData.slice(0, runsPerYear)} />
         </div>

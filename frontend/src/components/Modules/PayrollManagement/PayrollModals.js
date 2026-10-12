@@ -24,8 +24,20 @@ export const validatePayRate = (rateType, rate) => {
   return null;
 };
 
-// Employee Modal for adding/editing employees
-export const EmployeeModal = ({ employee, departments, businessUnits, onSave, onCancel, activeScenario = null, activeScenarioName = '' }) => {
+/** Weekly hours from the input: decimals are fine (37.5 is a common schedule). */
+export const parseHours = (value) => {
+  const hours = parseFloat(value);
+  return Number.isFinite(hours) ? hours : 0;
+};
+
+// Employee Modal for adding/editing employees. activeScenarioLocked: the
+// active scenario is approved and locked, so a new hire cannot go into it
+// (the API refuses the write); it is offered disabled and the form defaults
+// to company-wide.
+export const EmployeeModal = ({
+  employee, departments, businessUnits, onSave, onCancel, activeScenario = null, activeScenarioName = '',
+  activeScenarioLocked = false
+}) => {
   const [formData, setFormData] = useState({
     employee_name: '',
     department: '',
@@ -38,7 +50,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
     expected_raise: 0,
     benefits_eligible: true,
     allocations: { 'Customer-Centric Brands': 100 },
-    forecast_id: activeScenario || null,
+    forecast_id: (activeScenario && !activeScenarioLocked) ? activeScenario : null,
     labor_class: ''
   });
 
@@ -66,12 +78,16 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
       newErrors.hourly_rate = rateError;
     }
 
-    if (formData.weekly_hours <= 0 || formData.weekly_hours > 168) {
-      newErrors.weekly_hours = 'Weekly hours must be between 1 and 168';
+    if (!(formData.weekly_hours > 0) || formData.weekly_hours > 168) {
+      newErrors.weekly_hours = 'Weekly hours must be more than 0 and at most 168';
     }
 
     if (!formData.start_date) {
       newErrors.start_date = 'Start date is required';
+    }
+
+    if (formData.start_date && formData.end_date && formData.end_date < formData.start_date) {
+      newErrors.end_date = 'End date must be on or after the start date';
     }
 
     // Validate allocations
@@ -197,7 +213,12 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                 >
                   <option value="">Company-wide (in every scenario)</option>
                   {activeScenario && (
-                    <option value={activeScenario}>This scenario only ({activeScenarioName || activeScenario})</option>
+                    <option
+                      value={activeScenario}
+                      disabled={activeScenarioLocked && formData.forecast_id !== activeScenario}
+                    >
+                      This scenario only ({activeScenarioName || activeScenario}){activeScenarioLocked ? ' - approved and locked' : ''}
+                    </option>
                   )}
                   {formData.forecast_id && formData.forecast_id !== activeScenario && (
                     <option value={formData.forecast_id}>Scenario {formData.forecast_id} only</option>
@@ -205,6 +226,7 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
                 </select>
                 <small className="text-muted-foreground">
                   Company-wide employees roll into every scenario's statements. Scenario-only employees are copied when that scenario is branched.
+                  {activeScenarioLocked && ' The active scenario is approved and locked: branch it to add scenario-only staff.'}
                 </small>
               </div>
             </div>
@@ -248,11 +270,15 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
               </div>
 
               <div className="form-group">
-                <label>Weekly Hours *</label>
+                <label htmlFor="payroll-weekly-hours">Weekly Hours *</label>
                 <input
+                  id="payroll-weekly-hours"
                   type="number"
+                  step="any"
+                  min="0"
+                  max="168"
                   value={formData.weekly_hours}
-                  onChange={(e) => setFormData({...formData, weekly_hours: parseInt(e.target.value) || 0})}
+                  onChange={(e) => setFormData({...formData, weekly_hours: parseHours(e.target.value)})}
                   className={errors.weekly_hours ? 'error' : ''}
                 />
                 {errors.weekly_hours && <span className="error-text">{errors.weekly_hours}</span>}
@@ -285,12 +311,16 @@ export const EmployeeModal = ({ employee, departments, businessUnits, onSave, on
               </div>
 
               <div className="form-group">
-                <label>End Date (Optional)</label>
+                <label htmlFor="payroll-end-date">End Date (Optional)</label>
                 <input
+                  id="payroll-end-date"
                   type="date"
+                  min={formData.start_date || undefined}
                   value={formData.end_date || ''}
                   onChange={(e) => setFormData({...formData, end_date: e.target.value})}
+                  className={errors.end_date ? 'error' : ''}
                 />
+                {errors.end_date && <span className="error-text">{errors.end_date}</span>}
               </div>
 
               <div className="form-group">
@@ -535,8 +565,10 @@ export const AllocationModal = ({ employee, businessUnits, onSave, onCancel }) =
   );
 };
 
-// Configuration Modal for tax and benefit rates
-const RateInput = ({ id, label, help, value, onChange, step = '0.001', digits = 2 }) => (
+// Configuration Modal for tax and benefit rates. step 'any': payroll rates are
+// arbitrary decimals (medicare 0.0145, SUTA 0.0275), so no fixed step grid may
+// make the browser refuse to submit the form.
+const RateInput = ({ id, label, help, value, onChange, step = 'any', digits = 2 }) => (
   <div className="form-group">
     <label htmlFor={id}>{label}</label>
     <div className="input-group">
@@ -576,7 +608,8 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
       unemploymentRate: 0.006,
       benefitsRate: 0.25,
       workersCompRate: 0.015,
-      payFrequency: 'biweekly'
+      payFrequency: 'biweekly',
+      payAnchorDate: formData.payAnchorDate
     });
   };
 
@@ -609,6 +642,21 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
               </select>
               <small>Used for the pay-run forecast. Financial statements always use calendar months.</small>
             </div>
+            {(formData.payFrequency || 'biweekly') === 'biweekly' && (
+              <div className="form-group">
+                <label htmlFor="payroll-pay-anchor">A known payday (a Friday)</label>
+                <input
+                  id="payroll-pay-anchor"
+                  type="date"
+                  value={formData.payAnchorDate || ''}
+                  onChange={(e) => setFormData({...formData, payAnchorDate: e.target.value})}
+                />
+                <small>
+                  Every other Friday from this date is a payday, in the pay-run forecast and in the statement vs pay
+                  dates table, whatever months you look at.
+                </small>
+              </div>
+            )}
           </div>
 
           <div className="config-section">
@@ -626,7 +674,7 @@ export const ConfigurationModal = ({ config, onSave, onCancel }) => {
           <div className="config-section">
             <h4>Benefits (benefits-eligible staff, added to payroll cost)</h4>
             <RateInput id="payroll-benefits" label="Benefits Rate" value={formData.benefitsRate}
-              onChange={set('benefitsRate')} step="0.01" digits={1}
+              onChange={set('benefitsRate')} digits={1}
               help="Percentage of gross pay for health insurance, retirement, etc." />
           </div>
 

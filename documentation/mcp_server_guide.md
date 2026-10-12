@@ -295,7 +295,7 @@ return the API's confirmation.
 | Sales forecast | `list_sales`, `upsert_sales`, `delete_sale`, `import_sales` (price optional: resolved from the price list; `dry_run`, `year`, `mode`), `revenue_summary` (`group_by` period / customer / unit / customer_unit / customer_type / product_type; `product` and `unit_type` are accepted aliases), **`adjust_sales`** (bulk price / volume change by months, customers, products) |
 | Master data | `create_record`, `update_record`, `delete_record` (customers, units, bom, bom_definitions, router_definitions, router_operations, machines, labor_rates, expense_categories, ...), `import_customers`, `import_products` |
 | Costing | `product_cost_summary` (`top_n` 50 by net sales, `unit_id`), `unit_cost_preview`, `cost_breakdown` (`top_n` 50), `materials_usage` (`top_n` 50 by spend, `material_contains`, `bom_id`, `include_products`), `machine_utilization`, `labor_utilization`, `list_bom` (100 lines), **`adjust_material_costs`** (bulk BOM repricing by material name) |
-| Payroll | `list_employees` (paged, 50), `get_employee`, `create_employee`, `update_employee`, `delete_employee` (`labor_class` direct / indirect / admin), `get_payroll_config`, `update_payroll_config`, `payroll_forecast`, `payroll_summary`, `payroll_statement_bridge` (pay accrued by month vs paid on pay dates, implied accrued payroll) |
+| Payroll | `list_employees` (paged, 50), `get_employee`, `create_employee`, `update_employee`, `delete_employee` (`labor_class` direct / indirect / admin), `get_payroll_config`, `update_payroll_config` (only the fields given change; `pay_anchor_date` = a known biweekly payday, a Friday), `payroll_forecast`, `payroll_summary`, `payroll_statement_bridge` (pay accrued by month vs paid on the company's pay dates, pay earned by day and the payroll owed at month end; a month has the same pay dates and balance in any window) |
 | Expenses | `list_expense_categories`, `create_expense_category`, `list_expenses` (paged, 50), `create_expense`, `update_expense`, `delete_expense`, `expense_forecast`, `expense_summary` |
 | Loans | `list_loans`, `create_loan`, `update_loan` (paid / recorded installments are never changed; `preview` first), `delete_loan`, `loan_schedule` (paged, 120 payments, `start_period` / `end_period`), `loan_summary`, `loan_cash_flow`, `loan_schedule_audit` (read-only: legacy 30.44-day dates, gaps, broken balances), `repair_loan_schedule` (dry run unless `dry_run=false`) |
 | Reporting | `financial_statements`, `variance`, `get_assumptions`, `update_assumptions`, `list_capex`, `create_capex`, `update_capex`, `delete_capex` |
@@ -308,7 +308,8 @@ return the API's confirmation.
   scenarios' sales window. Always returns `totals` (gross sales, each deduction, net sales,
   materials / labor / machine, product COGS, overhead, total COGS, gross profit, margins;
   `*_pct` fields are percentages) and the warnings. `group_by="summary"` adds the monthly
-  bridge as a `{columns, rows}` table that ties to the income statement; the dimension
+  bridge as a `{columns, rows}` table that ties to the income statement: each month's
+  `product_cogs + labor_variance + indirect_labor + factory_overhead + other_cogs = total_cogs`; the dimension
   groups show contribution margin before factory overhead, largest first, `top_n` of them
   with the rest summed in `others`.
 * `forecast_labor_forecast`: `periods` plus arrays per labor type (`hours`, `cost`, `fte`),

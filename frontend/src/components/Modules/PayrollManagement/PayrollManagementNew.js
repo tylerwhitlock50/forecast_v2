@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { parseLocalDate, toDateOnly, formatDateOnly } from '../../../lib/dates';
 import { defaultWindowForScenario } from '../../../lib/scenarioWindow';
 import { useForecast } from '../../../context/ForecastContext';
-import api from '../../../lib/apiClient';
+import api, { describeError } from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import './PayrollManagement.css';
@@ -19,6 +19,7 @@ import BusinessUnitAllocation from './BusinessUnitAllocation';
 import DepartmentAnalytics from './DepartmentAnalytics';
 import PayrollReports from './PayrollReports';
 import { EmployeeModal, AllocationModal, ConfigurationModal } from './PayrollModals';
+import { isLocked } from '../Scenarios/governance';
 import {
   parseAllocations,
   indexEmployeeCosts,
@@ -37,6 +38,7 @@ import {
 } from './payrollView';
 
 const LABOR_CLASS_BADGE = { direct: 'info', indirect: 'secondary', admin: 'outline' };
+const LOADING = '…';
 
 const serverConfigToForm = (cfg) => ({
   federalTaxRate: Number(cfg.federal_tax_rate ?? 0.22),
@@ -46,23 +48,33 @@ const serverConfigToForm = (cfg) => ({
   unemploymentRate: Number(cfg.unemployment_rate ?? 0.006),
   benefitsRate: Number(cfg.benefits_rate ?? 0.25),
   workersCompRate: Number(cfg.workers_comp_rate ?? 0.015),
-  payFrequency: cfg.pay_frequency || 'biweekly'
+  payFrequency: cfg.pay_frequency || 'biweekly',
+  payAnchorDate: cfg.pay_anchor_date || ''
 });
 
-const formConfigToServer = (cfg) => ({
-  federal_tax_rate: cfg.federalTaxRate,
-  state_tax_rate: cfg.stateTaxRate,
-  social_security_rate: cfg.socialSecurityRate,
-  medicare_rate: cfg.medicareRate,
-  unemployment_rate: cfg.unemploymentRate,
-  benefits_rate: cfg.benefitsRate,
-  workers_comp_rate: cfg.workersCompRate,
-  pay_frequency: cfg.payFrequency || 'biweekly'
-});
+const formConfigToServer = (cfg) => {
+  const body = {
+    federal_tax_rate: cfg.federalTaxRate,
+    state_tax_rate: cfg.stateTaxRate,
+    social_security_rate: cfg.socialSecurityRate,
+    medicare_rate: cfg.medicareRate,
+    unemployment_rate: cfg.unemploymentRate,
+    benefits_rate: cfg.benefitsRate,
+    workers_comp_rate: cfg.workersCompRate,
+    pay_frequency: cfg.payFrequency || 'biweekly'
+  };
+  // The biweekly pay calendar: a known payday (blank keeps the stored one).
+  if (cfg.payAnchorDate) body.pay_anchor_date = cfg.payAnchorDate;
+  return body;
+};
 
 const PayrollManagement = () => {
-  const { data, actions, activeScenario, scenarios } = useForecast();
+  const { data, actions, activeScenario, scenarios, loading, lastUpdated, error: loadError } = useForecast();
   const activeScenarioName = activeScenario && scenarios?.[activeScenario] ? scenarios[activeScenario].name : '';
+  // An approved scenario refuses changes to its own rows: new hires default to company-wide.
+  const activeScenarioLocked = isLocked(activeScenario ? scenarios?.[activeScenario] : null);
+  // First load: no roster yet. Show loading, never 'no employees' or $0 (the sidebar's rule).
+  const rosterLoading = !(data?.payroll?.length) && Boolean(loading || (!lastUpdated && !loadError));
   const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('employees');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -100,6 +112,7 @@ const PayrollManagement = () => {
   // API (same rules as the income statement) - never re-derived here.
   const [costIndex, setCostIndex] = useState({});
   const [payrollSummary, setPayrollSummary] = useState(null);
+  const [summaryLoaded, setSummaryLoaded] = useState(false);
 
   // Payroll config lives on the server (payroll_config) so the statements
   // engine and this screen burden payroll with the same rates.
@@ -173,11 +186,13 @@ const PayrollManagement = () => {
         if (cancelled) return;
         setCostIndex(indexEmployeeCosts(employeesRes?.data?.employees));
         setPayrollSummary(summaryRes?.data?.summary || null);
+        setSummaryLoaded(true);
       })
       .catch(() => {
         if (!cancelled) {
           setCostIndex({});
           setPayrollSummary(null);
+          setSummaryLoaded(true);
         }
       });
     return () => { cancelled = true; };
@@ -270,7 +285,7 @@ const PayrollManagement = () => {
       expected_raise: 0,
       benefits_eligible: true,
       allocations: { 'Customer-Centric Brands': 100 },
-      forecast_id: activeScenario || null,
+      forecast_id: (activeScenario && !activeScenarioLocked) ? activeScenario : null,
       labor_class: ''
     });
     setShowEmployeeModal(true);
@@ -315,7 +330,8 @@ const PayrollManagement = () => {
       setShowAllocationModal(false);
       setSelectedEmployee(null);
     } catch (error) {
-      toast.error('Error saving employee: ' + error.message);
+      // The server's reason (e.g. the scenario is approved and locked), never axios' 'status code 409'.
+      toast.error(describeError(error, employee.employee_id ? 'Could not update employee' : 'Could not add employee'));
     }
   };
 
@@ -330,7 +346,7 @@ const PayrollManagement = () => {
         await actions.deleteEmployee(employeeId);
         toast.success('Employee deleted successfully');
       } catch (error) {
-        toast.error('Error deleting employee: ' + error.message);
+        toast.error(describeError(error, 'Could not delete employee'));
       }
     }
   };
@@ -495,28 +511,28 @@ const PayrollManagement = () => {
       />
 
       {/* Summary Statistics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8" aria-busy={rosterLoading || !summaryLoaded}>
         <StatsCard
           title="Active Employees"
-          value={activeEmployees.length}
+          value={rosterLoading ? LOADING : activeEmployees.length}
           variant="primary"
         />
         <StatsCard
           title="Total Annual Cost"
-          value={formatCurrency(totalAnnualCost)}
+          value={summaryLoaded ? formatCurrency(totalAnnualCost) : LOADING}
           subtitle="Gross + employer taxes + benefits"
           help="Annual employer cost at current rates, the same rules as the income statement. Income-tax withholding comes out of gross pay and is not added."
           variant="success"
         />
         <StatsCard
           title="Average Hourly Rate"
-          value={formatCurrency(avgHourlyRate)}
+          value={summaryLoaded ? formatCurrency(avgHourlyRate) : LOADING}
           subtitle="Salaries as an hourly equivalent"
           variant="info"
         />
         <StatsCard
           title="Departments"
-          value={departmentCount}
+          value={summaryLoaded ? departmentCount : LOADING}
           variant="secondary"
         />
       </div>
@@ -599,7 +615,7 @@ const PayrollManagement = () => {
           )}
           <Card>
             <CardHeader>
-              <CardTitle>All Employees ({filteredEmployees.length})</CardTitle>
+              <CardTitle>{rosterLoading ? 'All Employees' : `All Employees (${filteredEmployees.length})`}</CardTitle>
             </CardHeader>
             <CardContent>
               <DataTable
@@ -607,7 +623,7 @@ const PayrollManagement = () => {
                 columns={employeeColumns}
                 onEdit={handleEditEmployee}
                 onDelete={(employee) => handleDeleteEmployee(employee.employee_id)}
-                emptyMessage="No employees found. Click 'Add Employee' to get started."
+                emptyMessage={rosterLoading ? 'Loading employees…' : "No employees found. Click 'Add Employee' to get started."}
               />
             </CardContent>
           </Card>
@@ -619,6 +635,7 @@ const PayrollManagement = () => {
           )}
           <PayrollForecast
             forecast={payrollForecast}
+            loading={forecastLoading && payrollForecast.length === 0}
             forecastHorizon={forecastHorizon ?? forecastMeta.periods ?? (forecastMeta.runsPerYear || runsPerYear)}
             onHorizonChange={setForecastHorizon}
             runsPerYear={forecastMeta.runsPerYear || runsPerYear}
@@ -668,6 +685,7 @@ const PayrollManagement = () => {
           onSave={handleSaveEmployee}
           activeScenario={activeScenario}
           activeScenarioName={activeScenarioName}
+          activeScenarioLocked={activeScenarioLocked}
           onCancel={() => {
             setShowEmployeeModal(false);
             setSelectedEmployee(null);
@@ -703,7 +721,7 @@ const PayrollManagement = () => {
               setShowConfigModal(false);
               actions.fetchAllData?.(activeScenario);
             } catch (error) {
-              console.error('Error saving payroll config:', error);
+              toast.error(describeError(error, 'Could not save the payroll configuration'));
             }
           }}
           onCancel={() => setShowConfigModal(false)}

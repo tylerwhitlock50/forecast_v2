@@ -4,8 +4,9 @@ import { PAY_FREQUENCY_LABELS } from './payrollView';
 
 // Statement payroll vs payroll cash (GET /payroll/statement-bridge, shaped by
 // payrollView.bridgeToView). The income statement accrues payroll evenly by
-// calendar month; cash goes out on pay dates. The difference is timing, and
-// its running total is the payroll owed but not yet paid at month end.
+// calendar month; cash goes out on the company's pay dates (one calendar: a
+// month shows the same paydays whatever window is picked). Owed at month end
+// is pay earned but not yet paid; it moves by earned - paid each month.
 
 const money = (value) => {
   const n = Number(value) || 0;
@@ -42,7 +43,11 @@ const PayrollBridge = ({ bridge, loading = false, window, onWindowChange, payFre
           <h3 id="payroll-bridge-title" className="mb-1 text-xl font-semibold text-slate-800">Statement vs pay dates</h3>
           <p className="text-sm text-gray-600">
             The income statement spreads payroll evenly over each month. Cash goes out on {frequency || 'the'} pay dates, so a
-            month with an extra payday pays more than it shows. The last column is pay earned but not yet paid at month end.
+            month with an extra payday pays more than it shows. The last column is pay earned but not yet paid at month end:
+            it moves by pay earned less pay paid, and a month shows the same pay dates and balance whatever months you pick.
+            {bridge?.frequency === 'biweekly' && bridge?.anchor && (
+              <span data-testid="bridge-anchor"> Paydays are every other Friday from {formatDateOnly(bridge.anchor, { month: 'short', day: 'numeric', year: 'numeric' }, bridge.anchor)} (set under Configure Rates).</span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm text-gray-700">
@@ -77,11 +82,12 @@ const PayrollBridge = ({ bridge, loading = false, window, onWindowChange, payFre
             <thead>
               <tr className="bg-gray-50 text-gray-600">
                 <th scope="col" className="px-3 py-2 text-left font-medium">Month</th>
-                <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Payroll on the income statement: annual cost / 12, prorated for start and end dates">Income statement</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Payroll on the income statement: annual cost / 12, prorated by day for start and end dates and raises">Income statement</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Pay for the days worked in the month, at the daily rate of the pay period each day belongs to">Earned</th>
                 <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap">Paid on pay dates</th>
                 <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap">Pay runs</th>
                 <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Income statement less paid">Difference</th>
-                <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Pay earned but not yet paid at month end (accrued payroll)">Owed at month end</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium whitespace-nowrap" title="Pay earned but not yet paid at month end (accrued payroll): last month's balance + earned - paid">Owed at month end</th>
               </tr>
             </thead>
             <tbody>
@@ -89,13 +95,14 @@ const PayrollBridge = ({ bridge, loading = false, window, onWindowChange, payFre
                 <td className="px-3 py-1.5 whitespace-nowrap" title={`Pay for days worked before ${monthLabel(bridge.start)} that falls on a pay date in the window`}>
                   Earned before {monthLabel(bridge.start)}
                 </td>
-                <td colSpan={4} />
+                <td colSpan={5} />
                 <td className="px-3 py-1.5 text-right">{money(bridge.opening)}</td>
               </tr>
               {bridge.rows.map(row => (
                 <tr key={row.period} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-3 py-1.5 text-left text-gray-900 whitespace-nowrap">{monthLabel(row.period)}</td>
                   <td className="px-3 py-1.5 text-right">{money(row.accrued)}</td>
+                  <td className="px-3 py-1.5 text-right text-gray-600">{money(row.earned)}</td>
                   <td className="px-3 py-1.5 text-right">{money(row.paid)}</td>
                   <td className="px-3 py-1.5 text-right">{row.payRuns}</td>
                   <td className={`px-3 py-1.5 text-right ${row.difference < -0.5 ? 'text-gray-900' : ''}`}>{money(row.difference)}</td>
@@ -107,6 +114,7 @@ const PayrollBridge = ({ bridge, loading = false, window, onWindowChange, payFre
               <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
                 <td className="px-3 py-1.5 text-left">Total</td>
                 <td className="px-3 py-1.5 text-right">{money(bridge.totals.accrued)}</td>
+                <td className="px-3 py-1.5 text-right">{money(bridge.totals.earned)}</td>
                 <td className="px-3 py-1.5 text-right">{money(bridge.totals.paid)}</td>
                 <td className="px-3 py-1.5 text-right">{bridge.totals.payRuns}</td>
                 <td className="px-3 py-1.5 text-right">{money(bridge.totals.difference)}</td>
@@ -115,11 +123,6 @@ const PayrollBridge = ({ bridge, loading = false, window, onWindowChange, payFre
             </tfoot>
           </table>
         </div>
-      )}
-      {bridge && bridge.rows.some(r => r.balance < -0.5) && (
-        <p className="mt-2 text-xs text-gray-600" data-testid="paid-ahead-note">
-          A negative amount owed means the pay dates have paid more than the income statement has recorded so far.
-        </p>
       )}
       {bridge && bridge.rows.length === 12 && bridge.runsPerYear && bridge.totals.payRuns > bridge.runsPerYear && (
         <p className="mt-2 text-xs text-gray-600" data-testid="extra-payday-note">

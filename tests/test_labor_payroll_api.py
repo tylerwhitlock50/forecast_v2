@@ -228,13 +228,19 @@ def test_bridge_biweekly_shows_the_timing_difference(api):
     assert rows["2027-01"]["difference"] == pytest.approx(MONTHLY_ACCRUAL - 3 * PER_BIWEEKLY_RUN, abs=0.01)
     # The 1 Jan run pays 19 Dec - 1 Jan: 13 of its 14 days were worked before the window.
     assert data["opening_accrued_payroll"] == pytest.approx(13 / 14 * PER_BIWEEKLY_RUN, abs=0.01)
-    running = 0.0
+    # Owed at 31 Jan: 30-31 Jan, paid on 12 Feb (pay earned but not yet paid, the same in any window).
+    assert rows["2027-01"]["accrued_payroll_balance"] == pytest.approx(2 / 14 * PER_BIWEEKLY_RUN, abs=0.01)
+    # Earned by day: 31 days of Jan at annual / 364 a day.
+    assert rows["2027-01"]["earned"] == pytest.approx(31 / 14 * PER_BIWEEKLY_RUN, abs=0.01)
+    running = owed = 0.0
     for p in ("2027-01", "2027-02", "2027-03"):
         r = rows[p]
         running += r["accrued"] - r["paid"]
+        owed += r["earned"] - r["paid"]
         assert r["difference"] == pytest.approx(r["accrued"] - r["paid"], abs=0.01)
         assert r["cumulative_difference"] == pytest.approx(running, abs=0.02)
-        assert r["accrued_payroll_balance"] == pytest.approx(data["opening_accrued_payroll"] + running, abs=0.02)
+        # The balance moves by pay earned less pay paid.
+        assert r["accrued_payroll_balance"] == pytest.approx(data["opening_accrued_payroll"] + owed, abs=0.02)
     totals = data["totals"]
     assert totals["accrued"] == pytest.approx(3 * MONTHLY_ACCRUAL, abs=0.02)
     assert totals["paid"] == pytest.approx(7 * PER_BIWEEKLY_RUN, abs=0.02)

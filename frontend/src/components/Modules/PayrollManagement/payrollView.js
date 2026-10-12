@@ -66,12 +66,16 @@ export const bridgeToView = (bridge) => {
     runsPerYear: bridge.runs_per_year || null,
     start: bridge.start_period,
     end: bridge.end_period,
+    // A known biweekly payday: every other Friday from it is a payday, in any window.
+    anchor: bridge.pay_anchor_date || null,
     opening: Number(bridge.opening_accrued_payroll) || 0,
     closing: Number(bridge.closing_accrued_payroll) || 0,
     note: bridge.note || '',
     rows: bridge.by_period.map(r => ({
       period: r.period,
       accrued: Number(r.accrued) || 0,
+      // Pay for the month's days at the pay period's daily rate: owed moves by earned - paid.
+      earned: Number(r.earned) || 0,
       paid: Number(r.paid) || 0,
       payRuns: r.pay_runs || 0,
       difference: Number(r.difference) || 0,
@@ -79,6 +83,7 @@ export const bridgeToView = (bridge) => {
     })),
     totals: {
       accrued: Number(bridge.totals?.accrued) || 0,
+      earned: Number(bridge.totals?.earned) || 0,
       paid: Number(bridge.totals?.paid) || 0,
       payRuns: bridge.totals?.pay_runs || 0,
       difference: Number(bridge.totals?.difference) || 0

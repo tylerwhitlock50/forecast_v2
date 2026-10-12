@@ -668,10 +668,12 @@ export const ForecastProvider = ({ children }) => {
       return payroll;
     },
 
+    // One toast per action: the Payroll screen's own success / error toast,
+    // not the API client's as well.
     createEmployee: async (employee) => {
       const payload = { ...employee, labor_type: employee.labor_type || employee.department };
       if (!('forecast_id' in payload)) payload.forecast_id = state.activeScenario || null;
-      const res = await api.post('/payroll/employees', payload, { suppressErrorToast: true });
+      const res = await api.post('/payroll/employees', payload, { suppressSuccessToast: true, suppressErrorToast: true });
       await actions.refreshPayroll();
       return res?.data;
     },
@@ -680,13 +682,13 @@ export const ForecastProvider = ({ children }) => {
       const payload = { ...employee, labor_type: employee.labor_type || employee.department };
       delete payload.employee_id;
       delete payload.status;
-      const res = await api.put(`/payroll/employees/${employeeId}`, payload, { suppressErrorToast: true });
+      const res = await api.put(`/payroll/employees/${employeeId}`, payload, { suppressSuccessToast: true, suppressErrorToast: true });
       await actions.refreshPayroll();
       return res?.data;
     },
 
     deleteEmployee: async (employeeId) => {
-      const res = await api.delete(`/payroll/employees/${employeeId}`, { suppressErrorToast: true });
+      const res = await api.delete(`/payroll/employees/${employeeId}`, { suppressSuccessToast: true, suppressErrorToast: true });
       await actions.refreshPayroll();
       return res?.data;
     },
