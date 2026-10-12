@@ -2,13 +2,15 @@
 
 A budgeting and cash flow forecasting application for a manufacturing business, built with FastAPI, SQLite, and React.
 
-It forecasts revenue by customer and product, rolls product cost up from bills of materials and routings, schedules payroll, operating expenses, loans and capital purchases, and produces a period-by-period income statement, balance sheet and cash flow statement plus a budget-vs-actual report.
+It forecasts revenue by customer and product, prices it by customer and customer type, takes gross sales to net sales through terms, chargebacks, other allowances and embedded excise tax, rolls product cost up from bills of materials and routings into a COGS and labor forecast, schedules payroll, operating expenses, loans and capital purchases, and produces a period-by-period income statement, balance sheet and cash flow statement plus a budget-vs-actual report and an Excel export.
+
+**First budget?** Follow [documentation/budget_2027_quickstart.md](documentation/budget_2027_quickstart.md): import your files, set prices and deductions, read COGS and labor. To rehearse first, use the fictional files in [examples/sample_import_2027](examples/sample_import_2027/).
 
 ## Quick Start
 
 ### Prerequisites
 - Docker and Docker Compose, or
-- Python 3.12+ and Node.js 18+ for local development
+- Python 3.12+ and Node.js 20+ for local development
 
 ### Run with Docker
 ```bash
