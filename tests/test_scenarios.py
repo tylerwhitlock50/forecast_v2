@@ -345,3 +345,19 @@ def test_expense_update_clears_optional_fields_with_null(client):
     assert client.put("/expenses/X1", json={"expense_name": None, "amount": 150}).status_code == 200
     row = next(e for e in client.get("/expenses/").json()["data"]["expenses"] if e["expense_id"] == "X1")
     assert row["expense_name"] == "Scenario tool" and row["amount"] == 150
+
+
+def test_fresh_database_seeded_from_legacy_forecast_csv_gets_a_base():
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "forecast.csv"), "w") as f:
+        f.write("forecast_id,name,description\nF009,Nine,\nF003,Three,\n")
+    try:
+        mgr = DatabaseManager(database_path=os.path.join(tmp, "fresh.db"), data_dir=tmp)
+        mgr.initialize()   # migration runs on an empty table, then the CSV is imported
+        conn = _sqlite3.connect(os.path.join(tmp, "fresh.db"))
+        rows = conn.execute("SELECT forecast_id, COALESCE(is_base, 0) FROM forecast ORDER BY forecast_id").fetchall()
+        conn.close()
+        assert rows == [("F003", 1), ("F009", 0)]
+        mgr.close_all_connections()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
