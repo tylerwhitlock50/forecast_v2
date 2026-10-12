@@ -29,6 +29,7 @@ end_period to get the statements' own accrual for a window as well.
   accrual with the cash paid on pay dates.
 """
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import ConfigDict
 from typing import Optional, Dict, Any, List, Sequence, Tuple
 from datetime import date, datetime, timedelta
@@ -41,7 +42,7 @@ from db.models import (
     ForecastResponse
 )
 from db.database import db_manager
-from services.governance import is_lock_error, locked_message
+from services.governance import LOCK_TOKEN, is_lock_error, locked_message
 from services.financial_statements import (
     ANNUAL_SALARY_THRESHOLD,
     EMPLOYER_BURDEN_KEYS,
@@ -1476,7 +1477,9 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
     validation is reported per item in `errors`. A batch that touches an
     employee of an approved and locked scenario (or moves one into it) is
     refused as a whole with 409 and nothing is written, like every other
-    write to a locked scenario.
+    write to a locked scenario: the body is {detail, code: SCENARIO_LOCKED,
+    forecast_id} and the change history files the refusal under that
+    scenario.
     """
     try:
         conn = db_manager.get_connection()
@@ -1484,7 +1487,9 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
         errors = []
         try:
             cursor = conn.cursor()
-            _refuse_locked_employee_updates(cursor, updates)
+            refusal = _refuse_locked_employee_updates(cursor, updates)
+            if refusal is not None:
+                return refusal
             for update in updates:
                 employee_id = update.get("employee_id") if isinstance(update, dict) else None
                 try:
@@ -1524,8 +1529,8 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
                     if is_lock_error(e):
                         # A lock the pre-check could not see: refuse the whole batch, write nothing.
                         conn.rollback()
-                        raise HTTPException(status_code=409, detail=f"{locked_message(None)} (Updating employee "
-                                                                    f"{employee_id} refused; nothing was changed.)")
+                        forecast_id, name = _locked_scenario_of(cursor, employee_id, update.get("forecast_id"))
+                        return _locked_employees_response(forecast_id, name, [employee_id])
                     errors.append(f"Error updating {employee_id}: {str(e)}")
             conn.commit()
         finally:
@@ -1542,11 +1547,40 @@ async def bulk_update_employees(updates: List[Dict[str, Any]]):
         raise HTTPException(status_code=500, detail=f"Error in bulk update: {str(e)}")
 
 
-def _refuse_locked_employee_updates(cursor, updates: List[Any]) -> None:
+def _locked_employees_response(forecast_id: Optional[str], name: Optional[str],
+                               employee_ids: List[Any]) -> JSONResponse:
     """
-    409 (nothing written) when a bulk update touches an employee of an
+    The 409 for a bulk update refused by a scenario lock, in the shape of
+    every other lock refusal: {detail, code: SCENARIO_LOCKED, forecast_id}
+    (the change history files it under that scenario).
+    """
+    who = ", ".join(str(e) for e in employee_ids)
+    detail = (f"{locked_message(name)} (Updating employee{'s' if len(employee_ids) != 1 else ''} {who} refused; "
+              f"nothing was changed.)")
+    return JSONResponse(status_code=409, content={"detail": detail, "code": LOCK_TOKEN, "forecast_id": forecast_id})
+
+
+def _locked_scenario_of(cursor, employee_id: Any, target: Any = None) -> Tuple[Optional[str], Optional[str]]:
+    """(forecast_id, name) of the locked scenario an employee update hit: the employee's own, else the one the
+    update moves it into; (None, None) when neither is locked."""
+    cursor.execute("SELECT forecast_id FROM payroll WHERE employee_id = ?", (employee_id,))
+    row = cursor.fetchone()
+    for forecast_id in ((row[0] if row else None), target):
+        if forecast_id in (None, ""):
+            continue
+        cursor.execute("SELECT forecast_id, name FROM forecast WHERE forecast_id = ? AND locked = 1", (forecast_id,))
+        found = cursor.fetchone()
+        if found:
+            return found[0], found[1]
+    return None, None
+
+
+def _refuse_locked_employee_updates(cursor, updates: List[Any]) -> Optional[JSONResponse]:
+    """
+    The 409 (nothing written) when a bulk update touches an employee of an
     approved and locked scenario, or moves an employee into one, with the
-    same readable message as the other lock refusals.
+    same readable message and body ({detail, code, forecast_id}) as the
+    other lock refusals; None when no locked scenario is touched.
     """
     ids = [u.get("employee_id") for u in updates if isinstance(u, dict) and u.get("employee_id")]
     targets = [u.get("forecast_id") for u in updates if isinstance(u, dict) and u.get("forecast_id")]
@@ -1572,12 +1606,9 @@ def _refuse_locked_employee_updates(cursor, updates: List[Any]) -> None:
                         and u["employee_id"] not in bucket:
                     bucket.append(u["employee_id"])
     if not locked:
-        return
+        return None
     forecast_id = sorted(locked)[0]
-    who = ", ".join(str(e) for e in locked[forecast_id])
-    raise HTTPException(status_code=409, detail=f"{locked_message(names.get(forecast_id))} (Updating employee"
-                                                f"{'s' if len(locked[forecast_id]) != 1 else ''} {who} refused; "
-                                                f"nothing was changed.)")
+    return _locked_employees_response(forecast_id, names.get(forecast_id), locked[forecast_id])
 
 
 # ========================

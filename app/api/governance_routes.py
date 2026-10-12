@@ -9,7 +9,10 @@ side of scenario locking.
   (client, actor, method, path, query, status, scenario, summary, a short
   body excerpt that never contains file contents, duration) and turns any
   error response that mentions ``SCENARIO_LOCKED`` into HTTP 409 with a
-  plain explanation. The MCP transport (``/mcp``) itself is not recorded;
+  plain explanation naming the scenario (the ``forecast_id`` the route put
+  in its error body, else the one the request addresses). A route that
+  already answers ``{detail, code: SCENARIO_LOCKED, forecast_id}`` keeps
+  its own wording. The MCP transport (``/mcp``) itself is not recorded;
   the REST calls the MCP tools make in-process are, with client 'mcp'
   (header ``X-Forecast-Client: mcp``). Logging never breaks a request.
   Restoring a snapshot (load / revert) keeps the history recorded since
@@ -40,6 +43,7 @@ from services.governance import (
     LOCK_TOKEN,
     GovernanceError,
     body_excerpt,
+    body_names_target,
     client_kind,
     extract_actor,
     extract_forecast_id,
@@ -89,6 +93,26 @@ def lock_response_body(forecast_id: Optional[str]) -> Dict[str, Any]:
     return body
 
 
+def worded_lock_body(original: Any) -> bool:
+    """
+    True for an error body a route already answered in the lock body's shape
+    ({detail, code: SCENARIO_LOCKED, forecast_id}, the detail worded for
+    people): the middleware keeps it instead of rewriting it.
+    """
+    return (isinstance(original, dict) and original.get("code") == LOCK_TOKEN
+            and original.get("forecast_id") not in (None, "") and isinstance(original.get("detail"), str)
+            and LOCK_TOKEN not in original["detail"])
+
+
+def _body_forecast_id(original: Any) -> Optional[str]:
+    """The scenario an error body names at its top level (a route's hint for the lock message), or None."""
+    if isinstance(original, dict):
+        value = original.get("forecast_id")
+        if value not in (None, "") and not isinstance(value, (dict, list)):
+            return str(value)[:40]
+    return None
+
+
 class GovernanceMiddleware:
     """Pure ASGI middleware (no BaseHTTPMiddleware: streaming and the MCP transport pass through untouched)."""
 
@@ -117,6 +141,10 @@ class GovernanceMiddleware:
                     state["body"].extend(chunk[:room])
                 if len(chunk) > max(room, 0):
                     state["truncated"] = True
+                if not message.get("more_body") and "target" not in state and body_names_target(method, path):
+                    # POST /forecast/update {table, id}: the row's scenario, read before the route changes it.
+                    parsed = parse_json_body(bytes(state["body"])) if not state["truncated"] else None
+                    state["target"] = await anyio.to_thread.run_sync(target_forecast_id, method, path, parsed)
             return message
 
         held: Dict[str, Any] = {"start": None, "chunks": [], "size": 0}
@@ -161,9 +189,15 @@ class GovernanceMiddleware:
                 body = b"".join(held["chunks"])
                 held["chunks"] = []
                 start = held["start"]
-                if state["status"] >= 400 and LOCK_TOKEN.encode() in body:
+                lock_error = state["status"] >= 400 and LOCK_TOKEN.encode() in body
+                original = parse_json_body(body) if lock_error else None
+                if lock_error and not worded_lock_body(original):
                     try:
-                        new_body = json.dumps(lock_response_body(request_forecast_id())).encode()
+                        # A locked scenario the route named (the row it refused) beats a guess from the request.
+                        hint = _body_forecast_id(original)
+                        if not hint or locked_scenario_name(hint)[0] != hint:
+                            hint = request_forecast_id()
+                        new_body = json.dumps(lock_response_body(hint)).encode()
                         new_headers = [(k, v) for k, v in start.get("headers") or []
                                        if k.decode("latin-1").lower() != "content-length"]
                         new_headers.append((b"content-length", str(len(new_body)).encode()))
@@ -207,12 +241,12 @@ class GovernanceMiddleware:
             record = False
         if record:
             try:
-                entry = self._entry(scope, headers, method, path, state, started)
-                if entry["forecast_id"] is None and method == "POST":
-                    # POST /forecast/update {table, id}: the updated row names the scenario.
-                    target = await anyio.to_thread.run_sync(target_forecast_id, method, path,
-                                                            self._parsed_body(headers, state))
-                    entry["forecast_id"] = target
+                if "target" not in state and body_names_target(method, path):
+                    # The route never read the body (it failed first): look the row up now.
+                    state["target"] = await anyio.to_thread.run_sync(target_forecast_id, method, path,
+                                                                     self._parsed_body(headers, state))
+                # In a worker thread: the scenario ids found nested in a body / response are checked in the database.
+                entry = await anyio.to_thread.run_sync(self._entry, scope, headers, method, path, state, started)
                 await anyio.to_thread.run_sync(record_audit, entry)
             except Exception:  # never break a request over the history
                 logger.exception("Could not record %s %s in the change history", method, path)

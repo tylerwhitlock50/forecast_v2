@@ -493,8 +493,10 @@ def test_bulk_update_refuses_a_locked_scenarios_employee_and_writes_nothing(app_
     res = client.post("/payroll/bulk-update", json=[{"employee_id": scoped, "labor_class": "admin"}])
     assert res.status_code == 409
     detail = res.json()["detail"]
-    assert "Scenario '2027 Budget' " + LOCKED in detail and "SCENARIO_LOCKED" not in res.text
+    assert "Scenario '2027 Budget' " + LOCKED in detail and "SCENARIO_LOCKED" not in detail
     assert "nothing was changed" in detail
+    # The same body as every other lock refusal (LAB7-AUDIT).
+    assert res.json()["code"] == "SCENARIO_LOCKED" and res.json()["forecast_id"] == BASE
 
     mixed = client.post("/payroll/bulk-update", json=[{"employee_id": shared, "weekly_hours": 30},
                                                       {"employee_id": scoped, "weekly_hours": 20}])
@@ -505,12 +507,15 @@ def test_bulk_update_refuses_a_locked_scenarios_employee_and_writes_nothing(app_
     conn = sqlite3.connect(mgr.database_path)
     try:
         rows = dict(conn.execute("SELECT employee_id, weekly_hours FROM payroll").fetchall())
-        audit = conn.execute("SELECT status, summary FROM audit_log WHERE path = '/payroll/bulk-update'").fetchall()
+        audit = conn.execute("SELECT status, summary, forecast_id FROM audit_log "
+                             "WHERE path = '/payroll/bulk-update'").fetchall()
         assert conn.execute("SELECT forecast_id FROM payroll WHERE employee_id = ?", (shared,)).fetchone()[0] is None
     finally:
         conn.close()
     assert rows[shared] == 40 and rows[scoped] == 40
-    assert audit and all(status == 409 and summary.startswith("Refused (409)") for status, summary in audit)
+    # Every refusal (the mixed company-wide + scenario batch included) is filed under the locked scenario.
+    assert len(audit) == 3 and all(status == 409 and summary.startswith("Refused (409)") and fid == BASE
+                                   for status, summary, fid in audit)
     # A company-wide employee alone still updates.
     ok = _data(client.post("/payroll/bulk-update", json=[{"employee_id": shared, "weekly_hours": 37.5}]))
     assert ok["updated_count"] == 1 and not ok["errors"]

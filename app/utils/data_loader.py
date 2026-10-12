@@ -292,6 +292,55 @@ def normalize_labor_class_value(value: Any) -> Optional[str]:
         raise ColumnValueError("labor_class", str(exc))
 
 
+#: Payroll amounts every write path checks: (column, upper limit or None). Same rules and messages as
+#: api.payroll_routes._check_amounts (POST / PUT /payroll/employees and /payroll/bulk-update).
+PAYROLL_AMOUNT_LIMITS: Tuple[Tuple[str, Optional[float]], ...] = (("weekly_hours", 168.0), ("hourly_rate", None))
+PAYROLL_DATE_COLUMNS = ("start_date", "end_date", "next_review_date")
+
+
+def _shown(value: Any) -> Any:
+    """A number as the API echoes it in a message: -25.0 -> -25 (so a CSV cell reads like the JSON value)."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def check_payroll_values(values: Dict[str, Any], stored: Optional[Dict[str, Any]] = None) -> None:
+    """
+    The employee endpoints' rules for a payroll row written by the raw
+    writers (/database/load_table, /forecast/create, /forecast/update):
+    weekly_hours 0..168, hourly_rate 0 or more, start / end / review dates
+    that read as dates, and end_date not before start_date. ``values`` are
+    the columns being written (numbers already parsed); ``stored`` is the
+    row they change, so a new end_date is checked against the stored
+    start_date. A value the write does not touch is never re-checked.
+    Raises ColumnValueError with the same messages as /payroll/employees.
+    """
+    from services.financial_statements import _parse_date
+
+    for column, top in PAYROLL_AMOUNT_LIMITS:
+        value = values.get(column)
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ColumnValueError(column, f"{column} must be a number, got {_shown(value)!r}")
+        if number != number or number < 0 or (top is not None and number > top):
+            limit = f"between 0 and {top:g}" if top is not None else "0 or more"
+            raise ColumnValueError(column, f"{column} must be {limit}, got {_shown(value)!r}")
+    for column in PAYROLL_DATE_COLUMNS:
+        value = values.get(column)
+        if not is_blank(value) and not _parse_date(value):
+            raise ColumnValueError(column, f"{column} '{value}' is not a date (use YYYY-MM-DD)")
+    if "start_date" in values or "end_date" in values:
+        merged = {**(stored or {}), **values}
+        start, end = _parse_date(merged.get("start_date")), _parse_date(merged.get("end_date"))
+        if start and end and end < start:
+            raise ColumnValueError("end_date", f"end_date {end.isoformat()} is before start_date "
+                                               f"{start.isoformat()}: the employee would never be paid")
+
+
 def sales_period_error(raw: Any) -> Optional[str]:
     """None when ``raw`` is a month; otherwise the message to show (sales are monthly)."""
     if is_blank(raw):
@@ -308,8 +357,82 @@ def sales_period_error(raw: Any) -> Optional[str]:
 # CSV loader
 # ---------------------------------------------------------------------------
 
-def _error(code: int, message: str, errors: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    return {"status": "error", "code": code, "error": message, "errors": errors or []}
+def _error(code: int, message: str, errors: Optional[List[Dict[str, Any]]] = None,
+           forecast_id: Any = None) -> Dict[str, Any]:
+    """An error result; ``forecast_id`` names the stored scenario a refusal is about (the 409 body carries it)."""
+    result = {"status": "error", "code": code, "error": message, "errors": errors or []}
+    if forecast_id not in (None, ""):
+        result["forecast_id"] = str(forecast_id)
+    return result
+
+
+def _first_scenario(errors: Iterable[Dict[str, Any]]) -> Optional[str]:
+    """The scenario of the first refused row that names one (file order)."""
+    return next((e["forecast_id"] for e in errors if e.get("forecast_id") not in (None, "")), None)
+
+
+def _stored_row(cursor, table: str, values: Dict[str, Any], conflict: Optional[Sequence[str]]) -> Optional[Dict[str, Any]]:
+    """The existing row an upsert row updates (matched on ``conflict``), or None."""
+    if not conflict or any(values.get(c) is None for c in conflict):
+        return None
+    cursor.execute(f"SELECT * FROM {table} WHERE {' AND '.join(f'{c} = ?' for c in conflict)}",
+                   [values[c] for c in conflict])
+    row = cursor.fetchone()
+    return dict(zip([d[0] for d in cursor.description], row)) if row else None
+
+
+def _is_locked(cursor, forecast_id: Any) -> bool:
+    cursor.execute("SELECT 1 FROM forecast WHERE forecast_id = ? AND locked = 1", (forecast_id,))
+    return cursor.fetchone() is not None
+
+
+def _refused_row_scenario(cursor, table: str, values: Dict[str, Any],
+                          conflict: Optional[Sequence[str]]) -> Optional[str]:
+    """
+    The approved (locked) scenario a row the lock triggers refused belongs to:
+    the scenario the row names, else (an upsert) the stored row's, else the
+    scenario of an allocation's expense. None when it cannot be told.
+    """
+    candidates: List[Any] = [values.get("forecast_id")]
+    stored = _stored_row(cursor, table, values, conflict)
+    if stored:
+        candidates.append(stored.get("forecast_id"))
+    if table == "expense_allocations":
+        for expense_id in (values.get("expense_id"), (stored or {}).get("expense_id")):
+            if expense_id is not None:
+                cursor.execute("SELECT forecast_id FROM expenses WHERE expense_id = ?", (expense_id,))
+                found = cursor.fetchone()
+                candidates.append(found[0] if found else None)
+    candidates = [c for c in candidates if c not in (None, "")]
+    return next((str(c) for c in candidates if _is_locked(cursor, c)), None)
+
+
+def _locked_scenario_in(cursor, table: str) -> Optional[str]:
+    """The first approved (locked) scenario that owns rows of ``table`` (a replace cannot delete them)."""
+    if table == "forecast":
+        cursor.execute("SELECT forecast_id FROM forecast WHERE locked = 1 ORDER BY forecast_id LIMIT 1")
+    elif table == "expense_allocations":
+        cursor.execute("SELECT DISTINCT e.forecast_id FROM expense_allocations a JOIN expenses e "
+                       "ON e.expense_id = a.expense_id JOIN forecast f ON f.forecast_id = e.forecast_id "
+                       "WHERE f.locked = 1 ORDER BY 1 LIMIT 1")
+    elif "forecast_id" in {c[1] for c in table_info(cursor, table)}:
+        cursor.execute(f"SELECT DISTINCT t.forecast_id FROM {table} t JOIN forecast f "
+                       f"ON f.forecast_id = t.forecast_id WHERE f.locked = 1 ORDER BY 1 LIMIT 1")
+    else:
+        return None
+    found = cursor.fetchone()
+    return str(found[0]) if found and found[0] is not None else None
+
+
+def _shared_scenario(table: str, columns: Sequence[str], rows: List[Tuple[int, Dict[str, Any]]]) -> Optional[str]:
+    """The scenario every loaded row belongs to (the change history files the load under it), else None."""
+    if "forecast_id" not in columns:
+        return None
+    found = {values.get("forecast_id") for _, values in rows}
+    if len(found) != 1:
+        return None
+    only = next(iter(found))
+    return None if only in (None, "") else str(only)
 
 
 def loadable_tables(cursor) -> List[str]:
@@ -430,7 +553,9 @@ def _forecast_refusals(cursor, rows: List[Tuple[int, Dict[str, Any]]], mode: str
             else values
         message = forecast_write_refusal(current, written, fid)
         if message:
-            refusals.append({"row": index, "error": message})
+            # Named only for a stored scenario: a refused new row is not a scenario (yet).
+            refusals.append({"row": index, "error": message,
+                             "forecast_id": current.get("forecast_id") if current is not None else None})
         elif current is not None and mode == "upsert":
             for column in GOVERNED_FORECAST_COLUMNS:
                 values.pop(column, None)
@@ -520,16 +645,21 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
     Load a CSV file into an existing table (modes in the module docstring).
 
     Returns ``{status: 'success', table, mode, rows_loaded, inserted, updated,
-    deleted, ignored_columns, column_map, warnings}`` or ``{status: 'error',
-    code, error, errors: [{row, error}]}`` where code is 400 (unknown table,
-    mode or columns), 409 (the load would orphan rows of another table) or
-    422 (row errors). Nothing is written when there is an error.
+    deleted, forecast_id, ignored_columns, column_map, warnings}``
+    (``forecast_id``: the scenario every row of the file belongs to, else
+    None) or ``{status: 'error', code, error, errors: [{row, error}],
+    forecast_id?}`` where code is 400 (unknown table, mode or columns), 409
+    (the load would orphan rows of another table, change a scenario's
+    approval or touch an approved scenario) or 422 (row errors);
+    ``forecast_id`` names the approved scenario a refused row belongs to.
+    Payroll rows follow the employee endpoints' pay, hours and date rules
+    (``check_payroll_values``). Nothing is written when there is an error.
     """
     mode = (if_exists or "").strip().lower()
     if mode not in LOAD_MODES:
         return _error(400, f"mode must be one of {', '.join(LOAD_MODES)}, got '{if_exists}'")
 
-    from services.governance import governed_table_message
+    from services.governance import governed_table_message, is_lock_error
 
     governed = governed_table_message(table_name)
     if governed:
@@ -573,6 +703,14 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
                 continue
             try:
                 values = _prepare_row(table_name, raw, columns)
+                if table_name == "payroll":
+                    # The employee endpoints' pay / hours / date rules; an upsert never writes blank cells,
+                    # so its dates are checked against the stored row.
+                    if mode == "upsert":
+                        check_payroll_values({k: v for k, v in values.items() if v is not None},
+                                             _stored_row(cursor, table_name, values, conflict))
+                    else:
+                        check_payroll_values(values)
             except ColumnValueError as exc:
                 errors.append({"row": index, "error": str(exc)})
                 continue
@@ -592,7 +730,8 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
         if table_name == "forecast":
             refusals = _forecast_refusals(cursor, rows, mode)
             if refusals:
-                return _error(409, f"Nothing loaded: {summarize_errors(refusals)}", refusals)
+                return _error(409, f"Nothing loaded: {summarize_errors(refusals)}", refusals,
+                              forecast_id=_first_scenario(refusals))
 
         bom_names: Dict[str, str] = {}
         if table_name == "bom":
@@ -619,7 +758,16 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
         if mode == "replace":
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             deleted = cursor.fetchone()[0]
-            cursor.execute(f"DELETE FROM {table_name}")
+            try:
+                cursor.execute(f"DELETE FROM {table_name}")
+            except sqlite3.IntegrityError as exc:
+                if not is_lock_error(exc):
+                    raise
+                # Rows of an approved scenario cannot be deleted: refused whole, naming that scenario.
+                locked_fid = _locked_scenario_in(cursor, table_name)
+                conn.rollback()
+                return _error(409, f"Nothing loaded: replacing {table_name} would delete rows of an approved "
+                                   f"scenario ({exc})", forecast_id=locked_fid)
         for index, values in rows:
             values = {k: v for k, v in values.items() if k in column_names}
             try:
@@ -634,11 +782,15 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
                                    f"({', '.join('?' for _ in cols)})", [values[c] for c in cols])
                     inserted += 1
             except sqlite3.IntegrityError as exc:
-                errors.append({"row": index, "error": _integrity_message(table_name, values, exc, mode)})
+                error = {"row": index, "error": _integrity_message(table_name, values, exc, mode)}
+                if is_lock_error(exc):  # name the approved scenario the row belongs to
+                    error["forecast_id"] = _refused_row_scenario(cursor, table_name, values, conflict)
+                errors.append(error)
         if errors:  # validation and database errors of every row, so the file can be fixed in one go
             errors.sort(key=lambda e: e["row"])
             conn.rollback()
-            return _error(422, f"{len(errors)} row(s) rejected, nothing loaded: {summarize_errors(errors)}", errors)
+            return _error(422, f"{len(errors)} row(s) rejected, nothing loaded: {summarize_errors(errors)}", errors,
+                          forecast_id=_first_scenario(errors))
 
         new_violations = _fk_violations(cursor, table_name) - before
         if new_violations:
@@ -662,6 +814,7 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
         return {
             "status": "success", "table": table_name, "mode": mode, "rows_loaded": len(rows),
             "inserted": inserted, "updated": updated, "deleted": deleted,
+            "forecast_id": _shared_scenario(table_name, column_names, rows),
             "ignored_columns": ignored, "column_map": mapping, "warnings": warnings,
         }
     except Exception as exc:

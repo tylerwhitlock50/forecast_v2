@@ -174,6 +174,10 @@ GOVERNED_TABLES: Dict[str, str] = {
     "actuals_periods": ("Month-end close changes only through POST /reporting/actuals/periods/{period}/close and "
                         "/reopen {{reason}} (a reason is required to reopen a month)."),
     "governance_guard": "governance_guard is internal to approve / unlock and is never written directly.",
+    "execution_log": ("execution_log is an internal log: the API never stores SQL for later execution, so it "
+                      "cannot be written, edited or deleted here. Change data through the record endpoints."),
+    "forecast_results": ("forecast_results is an internal cache of computed forecast rows (GET /forecast "
+                         "computes them); it is never written directly."),
 }
 
 #: forecast columns that change only through approve / unlock.
@@ -183,8 +187,15 @@ LOCKED_FORECAST_COLUMNS: Tuple[str, ...] = ("forecast_id", "name", "description"
 
 
 def governed_table_message(table: Any, record_id: Any = None) -> Optional[str]:
-    """Why a generic write to ``table`` is refused and which endpoint to use, or None for any other table."""
-    template = GOVERNED_TABLES.get(str(table or ""))
+    """
+    Why a generic write to ``table`` is refused and which endpoint to use, or
+    None for any other table. SQLite's own tables (sqlite_sequence ...) are
+    refused too.
+    """
+    name = str(table or "")
+    if name.lower().startswith("sqlite_"):
+        return f"{name} is SQLite's own bookkeeping table and is never written through the API."
+    template = GOVERNED_TABLES.get(name)
     if template is None:
         return None
     period = str(record_id) if record_id not in (None, "") else "{YYYY-MM}"
@@ -683,22 +694,64 @@ def _own_forecast_id(obj: Any) -> Optional[str]:
     return None
 
 
-def _nested_forecast_id(obj: Any, depth: int = 0) -> Optional[str]:
-    """The first ``forecast_id`` inside a body's lists / objects (e.g. ``forecasts[].forecast_id``), depth-limited."""
+#: Keys of objects that map names (CSV headers to columns, ...) or list problems rather than hold a record:
+#: a ``{'forecast_id': 'forecast_id'}`` column map names a column, not a scenario.
+_NON_RECORD_KEYS = frozenset({"column_map", "mapping", "field_map", "header_map", "columns", "ignored_columns",
+                              "warnings", "errors"})
+
+
+def _record_forecast_id(obj: Any) -> Optional[str]:
+    """
+    ``forecast_id`` of a record-shaped dict, or None: the id must be a value
+    the record holds, not a name it maps (a column map's ``forecast_id``
+    entry names the column itself).
+    """
+    found = _own_forecast_id(obj)
+    if found is None or found in obj or found in ("forecast_id", "forecast_ids"):
+        return None
+    return found
+
+
+def _scenario_checker() -> Any:
+    """``accept(forecast_id)``: True when that scenario exists (memoised per call; never raises)."""
+    seen: Dict[str, bool] = {}
+
+    def accept(forecast_id: str) -> bool:
+        if forecast_id not in seen:
+            try:
+                with _manager().connection() as conn:
+                    seen[forecast_id] = conn.execute("SELECT 1 FROM forecast WHERE forecast_id = ?",
+                                                     (forecast_id,)).fetchone() is not None
+            except Exception:  # the history must never break a request
+                seen[forecast_id] = False
+        return seen[forecast_id]
+
+    return accept
+
+
+def _nested_forecast_id(obj: Any, accept: Any, depth: int = 0) -> Optional[str]:
+    """
+    The first real scenario id inside a body's lists / objects (e.g.
+    ``forecasts[].forecast_id``), depth-limited: only record-shaped objects
+    count (``_record_forecast_id``), only ids ``accept`` knows, and mapping
+    objects (``_NON_RECORD_KEYS``) are skipped.
+    """
     if depth > 3:
         return None
     if isinstance(obj, dict):
-        own = _own_forecast_id(obj) if depth else None
-        if own:
+        own = _record_forecast_id(obj) if depth else None
+        if own and accept(own):
             return own
-        for value in obj.values():
+        for key, value in obj.items():
+            if key in _NON_RECORD_KEYS:
+                continue
             if isinstance(value, (dict, list)):
-                found = _nested_forecast_id(value, depth + 1)
+                found = _nested_forecast_id(value, accept, depth + 1)
                 if found:
                     return found
     elif isinstance(obj, list):
         for item in obj[:500]:
-            found = _nested_forecast_id(item, depth + 1)
+            found = _nested_forecast_id(item, accept, depth + 1)
             if found:
                 return found
     return None
@@ -714,8 +767,11 @@ def extract_forecast_id(path: str, query: Dict[str, List[str]], parsed_body: Any
     see ``target_forecast_id``); a ``forecast_id`` inside the body's rows
     (``forecasts[].forecast_id``); the response (top level, ``data`` or one
     object down in ``data``). None means the request names no scenario
-    (company-wide rows, master data).
+    (company-wide rows, master data). A scenario id found nested in the
+    body or the response counts only from a record-shaped object (never
+    from a column map) and only when that scenario exists.
     """
+    accept = _scenario_checker()
     match = _SCENARIO_PATH.search(path or "")
     if match and match.group(1) not in ("compare", "comparison"):
         return match.group(1)[:40]
@@ -732,7 +788,7 @@ def extract_forecast_id(path: str, query: Dict[str, List[str]], parsed_body: Any
     if target not in (None, ""):
         return str(target)[:40]
     if isinstance(parsed_body, (dict, list)):
-        found = _nested_forecast_id(parsed_body)
+        found = _nested_forecast_id(parsed_body, accept)
         if found:
             return found
     elif raw_body and parsed_body is None:
@@ -745,9 +801,12 @@ def extract_forecast_id(path: str, query: Dict[str, List[str]], parsed_body: Any
             if _own_forecast_id(source):
                 return _own_forecast_id(source)
         if isinstance(data, dict):
-            for value in data.values():
-                if _own_forecast_id(value):
-                    return _own_forecast_id(value)
+            for key, value in data.items():
+                if key in _NON_RECORD_KEYS:
+                    continue
+                found = _record_forecast_id(value)
+                if found and accept(found):
+                    return found
     return None
 
 
@@ -782,14 +841,20 @@ def _row_forecast_id(conn, table: str, record_id: Any, column: Optional[str] = N
     return str(row[0])[:40] if row and row[0] not in (None, "") else None
 
 
+def body_names_target(method: str, path: str) -> bool:
+    """True for a write that names the row it addresses in its JSON body: POST /forecast/update {table, id}."""
+    return str(method or "").upper() == "POST" and (path or "").rstrip("/") == "/forecast/update"
+
+
 def target_forecast_id(method: str, path: str, parsed_body: Any = None) -> Optional[str]:
     """
     The scenario of the row a write addresses by id: PUT / PATCH / DELETE of
     /expenses/{id}, /payroll/employees/{id}, /pricing/prices/{id},
     /pricing/deductions/{id}, /reporting/capex/{id} and
     /forecast/delete/{table}/{id}, and POST /forecast/update {table, id}.
-    Look it up BEFORE the request runs (a delete removes the row). None for a
-    company-wide row, an unknown row or any other request. Never raises.
+    Look it up BEFORE the request runs (a delete removes the row, an update
+    may move it to another scenario). None for a company-wide row, an
+    unknown row or any other request. Never raises.
     """
     try:
         method = str(method or "").upper()
@@ -805,7 +870,7 @@ def target_forecast_id(method: str, path: str, parsed_body: Any = None) -> Optio
                     if hit:
                         found = (table, hit.group(1), column)
                         break
-        elif method == "POST" and path.rstrip("/") == "/forecast/update" and isinstance(parsed_body, dict):
+        elif body_names_target(method, path) and isinstance(parsed_body, dict):
             table, record_id = parsed_body.get("table"), parsed_body.get("id")
             if isinstance(table, str) and record_id not in (None, "") and not isinstance(record_id, (dict, list)):
                 found = (table, record_id, None)
