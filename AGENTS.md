@@ -10,7 +10,7 @@
 - Python setup: `pip install -r app/requirements.txt` (use `python -m venv .venv && source .venv/bin/activate`).
 - Run backend (dev): `python main.py` (or `uvicorn app.main:app --reload`).
 - Run frontend (dev): `cd frontend && npm install && npm run dev` (alias of `start`).
-- Full stack (Docker): `docker-compose up --build` (services: API, frontend, Ollama, Whisper).
+- Full stack (Docker): `docker-compose up --build` (services: API, frontend).
 - Tests: `pytest -v` (examples: `pytest -m "unit"`, `pytest -m "not slow"`).
 
 ## Coding Style & Naming Conventions
@@ -34,6 +34,7 @@
 - Data volumes mount `./data`; verify file permissions before running in Docker.
 
 ## Agent-Specific Instructions
-- Useful scripts: `python scripts/run_tests.py`, quick agent checks: `python scripts/test_agents_minimal.py`.
+- Useful scripts: `python scripts/run_tests.py`.
+- Reporting numbers must come from `app/services/financial_statements.py`; do not re-implement statement maths in routes or in the frontend.
 - When adding routes, register the router in `app/main.py` and add tests in `tests/`.
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
+import api from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
 import './PayrollManagement.css';
@@ -7,9 +8,7 @@ import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { StatsCard } from '../../ui/stats-card';
-import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
-import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
 import { DataTable } from '../../ui/data-table';
@@ -19,15 +18,66 @@ import DepartmentAnalytics from './DepartmentAnalytics';
 import PayrollReports from './PayrollReports';
 import { EmployeeModal, AllocationModal, ConfigurationModal } from './PayrollModals';
 
+const PAY_RUNS_PER_YEAR = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
+
+const serverConfigToForm = (cfg) => ({
+  federalTaxRate: Number(cfg.federal_tax_rate ?? 0.22),
+  stateTaxRate: Number(cfg.state_tax_rate ?? 0.06),
+  socialSecurityRate: Number(cfg.social_security_rate ?? 0.062),
+  medicareRate: Number(cfg.medicare_rate ?? 0.0145),
+  unemploymentRate: Number(cfg.unemployment_rate ?? 0.006),
+  benefitsRate: Number(cfg.benefits_rate ?? 0.25),
+  workersCompRate: Number(cfg.workers_comp_rate ?? 0.015),
+  payFrequency: cfg.pay_frequency || 'biweekly'
+});
+
+const formConfigToServer = (cfg) => ({
+  federal_tax_rate: cfg.federalTaxRate,
+  state_tax_rate: cfg.stateTaxRate,
+  social_security_rate: cfg.socialSecurityRate,
+  medicare_rate: cfg.medicareRate,
+  unemployment_rate: cfg.unemploymentRate,
+  benefits_rate: cfg.benefitsRate,
+  workers_comp_rate: cfg.workersCompRate,
+  pay_frequency: cfg.payFrequency || 'biweekly'
+});
+
+// Shape /payroll/forecast (pay-period mode) into what PayrollForecast renders.
+const serverForecastToView = (forecast, cfg = {}) => forecast.map((run) => ({
+  period: run.period,
+  date: run.date,
+  totalCost: run.total_cost || 0,
+  employeeCount: run.employee_count || 0,
+  employeeDetails: (run.employee_details || []).map((emp) => {
+    const gross = emp.gross_pay || 0;
+    return {
+      employee_id: emp.employee_id,
+      employee_name: emp.employee_name,
+      department: emp.department,
+      compensation: {
+        grossPay: gross,
+        federalTax: gross * (cfg.federal_tax_rate || 0),
+        stateTax: gross * (cfg.state_tax_rate || 0),
+        socialSecurity: gross * (cfg.social_security_rate || 0),
+        medicare: gross * (cfg.medicare_rate || 0),
+        unemployment: gross * (cfg.unemployment_rate || 0),
+        workersComp: gross * (cfg.workers_comp_rate || 0),
+        benefits: Math.max((emp.total_cost || 0) - gross * (1 + (cfg.federal_tax_rate || 0) + (cfg.state_tax_rate || 0)
+          + (cfg.social_security_rate || 0) + (cfg.medicare_rate || 0) + (cfg.unemployment_rate || 0) + (cfg.workers_comp_rate || 0)), 0),
+        totalCost: emp.total_cost || 0
+      }
+    };
+  })
+}));
+
 const PayrollManagement = () => {
-  const { data, actions } = useForecast();
+  const { data, actions, activeScenario } = useForecast();
   const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('employees');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
   const [showAllocationModal, setShowAllocationModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [showRaiseModal, setShowRaiseModal] = useState(false);
   const [forecastHorizon, setForecastHorizon] = useState(26); // 26 pay periods = 1 year
   const [filters, setFilters] = useState({
     department: '',
@@ -42,8 +92,46 @@ const PayrollManagement = () => {
     medicareRate: 0.0145,
     unemploymentRate: 0.006,
     benefitsRate: 0.25, // 25% of gross pay
-    workersCompRate: 0.015
+    workersCompRate: 0.015,
+    payFrequency: 'biweekly'
   });
+  const [payrollForecast, setPayrollForecast] = useState([]);
+  const [forecastLoading, setForecastLoading] = useState(false);
+
+  // Payroll config lives on the server (payroll_config) so the statements
+  // engine and this screen burden payroll with the same rates.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/payroll/config', { suppressErrorToast: true })
+      .then((res) => {
+        if (cancelled || !res?.data?.config) return;
+        setConfig(serverConfigToForm(res.data.config));
+      })
+      .catch(() => { /* keep defaults */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // The forecast tab is served by /payroll/forecast so it matches the
+  // reporting module instead of re-computing payroll in the browser.
+  useEffect(() => {
+    if (activeTab !== 'forecast') return undefined;
+    let cancelled = false;
+    setForecastLoading(true);
+    const query = `periods=${forecastHorizon}${activeScenario ? `&forecast_id=${encodeURIComponent(activeScenario)}` : ''}`;
+    api.get(`/payroll/forecast?${query}`, { suppressErrorToast: true })
+      .then((res) => {
+        if (cancelled) return;
+        setPayrollForecast(serverForecastToView(res?.data?.forecast || [], res?.data?.config));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPayrollForecast([]);
+          toast.error('Failed to load payroll forecast');
+        }
+      })
+      .finally(() => { if (!cancelled) setForecastLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, forecastHorizon, activeScenario, config]);
 
   // Business unit definitions
   const [businessUnits] = useState([
@@ -78,11 +166,11 @@ const PayrollManagement = () => {
 
   // Calculate gross pay for an employee
   const calculateGrossPay = (employee, payPeriods = 1) => {
+    const runsPerYear = PAY_RUNS_PER_YEAR[config.payFrequency] || 26;
     if (employee.rate_type === 'salary') {
-      return (employee.hourly_rate * 40 * 52 / 26) * payPeriods; // Annual salary / 26 pay periods
-    } else {
-      return employee.hourly_rate * employee.weekly_hours * 2 * payPeriods; // Bi-weekly
+      return (employee.hourly_rate * 40 * 52 / runsPerYear) * payPeriods; // Annual salary / pay runs
     }
+    return employee.hourly_rate * employee.weekly_hours * (52 / runsPerYear) * payPeriods;
   };
 
   // Calculate total compensation including taxes and benefits
@@ -125,14 +213,14 @@ const PayrollManagement = () => {
         }
         
         departments[dept].employees++;
-        const compensation = calculateTotalCompensation(emp, 26); // Annual
+        const compensation = calculateTotalCompensation(emp, PAY_RUNS_PER_YEAR[config.payFrequency] || 26); // Annual
         departments[dept].totalCost += compensation.totalCost;
       }
     });
 
     // Calculate average rates
     Object.keys(departments).forEach(dept => {
-      departments[dept].avgRate = departments[dept].totalCost / departments[dept].employees / 26;
+      departments[dept].avgRate = departments[dept].totalCost / departments[dept].employees / (PAY_RUNS_PER_YEAR[config.payFrequency] || 26);
     });
 
     return departments;
@@ -333,7 +421,7 @@ const PayrollManagement = () => {
   // Calculate summary statistics
   const activeEmployees = employees.filter(emp => emp.status === 'active');
   const totalAnnualCost = activeEmployees.reduce((sum, emp) => {
-    const compensation = calculateTotalCompensation(emp, 26);
+    const compensation = calculateTotalCompensation(emp, PAY_RUNS_PER_YEAR[config.payFrequency] || 26);
     return sum + compensation.totalCost;
   }, 0);
   const avgHourlyRate = activeEmployees.length > 0 ? 
@@ -436,11 +524,13 @@ const PayrollManagement = () => {
         </TabsContent>
 
         <TabsContent value="forecast" className="space-y-6">
+          {forecastLoading && (
+            <p className="text-sm text-gray-500">Loading payroll forecast…</p>
+          )}
           <PayrollForecast
-            employees={employees}
-            calculateTotalCompensation={calculateTotalCompensation}
+            forecast={payrollForecast}
             forecastHorizon={forecastHorizon}
-            setForecastHorizon={setForecastHorizon}
+            onHorizonChange={setForecastHorizon}
           />
         </TabsContent>
 
@@ -499,9 +589,15 @@ const PayrollManagement = () => {
       {showConfigModal && (
         <ConfigurationModal
           config={config}
-          onSave={(newConfig) => {
-            setConfig(newConfig);
-            setShowConfigModal(false);
+          onSave={async (newConfig) => {
+            try {
+              await api.post('/payroll/config', formConfigToServer(newConfig));
+              setConfig(newConfig);
+              setShowConfigModal(false);
+              actions.fetchAllData?.(activeScenario);
+            } catch (error) {
+              console.error('Error saving payroll config:', error);
+            }
           }}
           onCancel={() => setShowConfigModal(false)}
         />
