@@ -47,7 +47,7 @@ from api.import_routes import (
 from utils.period_normalizer import normalize_month, normalize_period, period_kind
 
 LOAD_MODES = ("append", "upsert", "replace")
-# Internal tables the loader never writes.
+# Internal tables the loader never writes (the governance records are refused with 409, see load_csv_to_table).
 _NOT_LOADABLE = {"execution_log", "forecast_results", "sqlite_sequence"}
 _FIELD_MAPS: Dict[str, FieldMap] = {
     "bom": BOM_FIELDS,
@@ -278,6 +278,20 @@ def summarize_errors(errors: List[Dict[str, Any]], limit: int = _MAX_LISTED) -> 
     return text
 
 
+def normalize_labor_class_value(value: Any) -> Optional[str]:
+    """
+    A payroll labor_class as stored: 'Direct' / 'direct labor' -> 'direct'
+    (and indirect / admin), blank -> None (not classified). Anything else
+    raises ColumnValueError, as the payroll endpoints answer 422.
+    """
+    from services.financial_statements import normalize_labor_class
+
+    try:
+        return normalize_labor_class(None if is_blank(value) else value)
+    except ValueError as exc:
+        raise ColumnValueError("labor_class", str(exc))
+
+
 def sales_period_error(raw: Any) -> Optional[str]:
     """None when ``raw`` is a month; otherwise the message to show (sales are monthly)."""
     if is_blank(raw):
@@ -299,10 +313,13 @@ def _error(code: int, message: str, errors: Optional[List[Dict[str, Any]]] = Non
 
 
 def loadable_tables(cursor) -> List[str]:
-    """Every table /database/load_table may write (internal tables excluded)."""
+    """Every table /database/load_table may write (internal tables and the governance records excluded)."""
+    from services.governance import GOVERNED_TABLES
+
     cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
     return [name for (name,) in cursor.fetchall()
-            if name not in _NOT_LOADABLE and not name.startswith("sqlite_") and not name.endswith("__staging")]
+            if name not in _NOT_LOADABLE and name not in GOVERNED_TABLES
+            and not name.startswith("sqlite_") and not name.endswith("__staging")]
 
 
 def _map_headers(table: str, headers: List[str], columns: List[str]) -> Tuple[Dict[str, str], List[str]]:
@@ -374,6 +391,9 @@ def _prepare_row(table: str, raw: Dict[str, Any], columns: Sequence[Tuple]) -> D
         for column in ("bom_version", "router_version"):
             if values.get(column) is not None:
                 values[column] = normalize_version(values[column])
+    elif table == "payroll":
+        if "labor_class" in values:
+            values["labor_class"] = normalize_labor_class_value(values["labor_class"])
     elif table == "sales":
         if "period" in values:
             problem = sales_period_error(values["period"])
@@ -386,6 +406,35 @@ def _prepare_row(table: str, raw: Dict[str, Any], columns: Sequence[Tuple]) -> D
                 and values.get("unit_price") is not None:
             values["total_revenue"] = round(values["quantity"] * values["unit_price"], 4)
     return values
+
+
+def _forecast_refusals(cursor, rows: List[Tuple[int, Dict[str, Any]]], mode: str) -> List[Dict[str, Any]]:
+    """
+    Scenario rows the file may not write: a change to status / locked /
+    approved_* (approve / unlock do that) or to an approved scenario's name,
+    description or notes. Rows sent back unchanged (an exported scenario
+    list) pass; on an upsert the unchanged governance columns are left out
+    of the update.
+    """
+    from services.governance import GOVERNED_FORECAST_COLUMNS, forecast_write_refusal
+
+    cursor.execute("SELECT * FROM forecast")
+    names = [d[0] for d in cursor.description]
+    stored = {str(r[names.index("forecast_id")]): dict(zip(names, r)) for r in cursor.fetchall()}
+    refusals = []
+    for index, values in rows:
+        fid = values.get("forecast_id")
+        current = stored.get(str(fid)) if fid is not None and mode in ("upsert", "replace") else None
+        # An upsert never writes blank cells, so they change nothing.
+        written = {k: v for k, v in values.items() if v is not None} if current is not None and mode == "upsert" \
+            else values
+        message = forecast_write_refusal(current, written, fid)
+        if message:
+            refusals.append({"row": index, "error": message})
+        elif current is not None and mode == "upsert":
+            for column in GOVERNED_FORECAST_COLUMNS:
+                values.pop(column, None)
+    return refusals
 
 
 def _fk_violations(cursor, table: str) -> set:
@@ -480,6 +529,12 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
     if mode not in LOAD_MODES:
         return _error(400, f"mode must be one of {', '.join(LOAD_MODES)}, got '{if_exists}'")
 
+    from services.governance import governed_table_message
+
+    governed = governed_table_message(table_name)
+    if governed:
+        return _error(409, f"{table_name} cannot be loaded from a file. {governed}")
+
     conn = dbmod.db_manager.get_connection()
     try:
         cursor = conn.cursor()
@@ -533,6 +588,11 @@ def load_csv_to_table(table_name: str, csv_bytes: bytes, if_exists: str = "appen
                 return _error(422, f"{len(errors)} row(s) rejected, nothing loaded: {summarize_errors(errors)}",
                               errors)
             return _error(422, "The file has no data rows")
+
+        if table_name == "forecast":
+            refusals = _forecast_refusals(cursor, rows, mode)
+            if refusals:
+                return _error(409, f"Nothing loaded: {summarize_errors(refusals)}", refusals)
 
         bom_names: Dict[str, str] = {}
         if table_name == "bom":

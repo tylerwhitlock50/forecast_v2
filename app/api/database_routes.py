@@ -22,8 +22,11 @@ from db import (
     get_current_database_path
 )
 from db.database import (
+    AUTOSAVE_PREFIX,
     SNAPSHOT_KIND_LABELS,
+    SYSTEM_BACKUP_PREFIXES,
     database_contents,
+    is_approval_snapshot,
     is_sqlite_file,
     snapshot_contents,
     snapshot_detail_kind,
@@ -184,6 +187,24 @@ def _safe_name(raw: Any) -> str:
     return "".join(c for c in str(raw or "") if c.isalnum() or c in ('-', '_', ' ')).strip()
 
 
+#: File-name prefixes of the copies the app makes on its own; a user's save may not start with one.
+RESERVED_SNAPSHOT_PREFIXES = (AUTOSAVE_PREFIX,) + SYSTEM_BACKUP_PREFIXES
+
+
+def _reserved_name_problem(save_name: str) -> Optional[str]:
+    """Why a user's save name is reserved for a copy the app makes itself, or None."""
+    filename = f"{save_name}.db"
+    lowered = filename.lower()
+    prefix = next((p for p in RESERVED_SNAPSHOT_PREFIXES if lowered.startswith(p)), None)
+    if prefix:
+        return (f"Names starting with '{prefix}' are reserved for the copies the app makes on its own "
+                f"(autosaves and automatic backups). Choose another name, e.g. 'my {save_name}'.")
+    if is_approval_snapshot(filename) or is_approval_snapshot(lowered):
+        return ("Names of the form approved_<scenario>_<YYYYMMDD_HHMMSS> are reserved for the copy taken when a "
+                "scenario is approved. Choose another name, e.g. 'approved budget'.")
+    return None
+
+
 def _snapshot_path(filename: str) -> str:
     """Path of a saved snapshot by file name (with or without .db); 400 on anything path-like."""
     name = str(filename or "").strip()
@@ -307,13 +328,23 @@ async def save_database(request: dict):
     Save a named snapshot of the live database to saved_databases/<name>.db.
     Body: ``{"name": "before-june-cut", "overwrite": false}``. A name that is
     already taken is refused with 409 unless ``overwrite`` is true. Without a
-    name a ``database_backup_<timestamp>`` name is used.
+    name a ``database_backup_<timestamp>`` name is used. Names the app uses
+    for its own copies are refused with 400 (``autosave_``,
+    ``current_backup_``, ``pre_revert_backup_``, ``reset_backup_``,
+    ``start_clean_backup_``, ``clear_data_backup_``, ``force_reload_backup_``
+    and ``approved_<scenario>_<YYYYMMDD_HHMMSS>``), so a user's save is
+    always listed and reverted to as a named save and never replaces an
+    approval's evidence; 'approved budget' is an ordinary name.
     """
     try:
         mgr = _manager()
         save_name = _safe_name(request.get("name"))
         overwrite = bool(request.get("overwrite", False))
-        if not save_name:
+        if save_name:
+            reserved = _reserved_name_problem(save_name)
+            if reserved:
+                raise HTTPException(status_code=400, detail=reserved)
+        else:
             save_name = f"database_backup_{timestamp_slug()}"
         backup_filename = f"{save_name}.db"
         backup_path = os.path.join(mgr.snapshot_dir, backup_filename)

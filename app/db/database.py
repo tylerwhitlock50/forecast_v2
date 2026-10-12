@@ -12,17 +12,25 @@ from typing import Dict, Any, Iterator, List, Optional, Tuple
 # a revert, a reset ...). /database/list reports them as "system_backup".
 SYSTEM_BACKUP_PREFIXES = (
     'current_backup_', 'pre_revert_backup_', 'reset_backup_', 'start_clean_backup_',
-    'clear_data_backup_', 'force_reload_backup_', 'approved_',
+    'clear_data_backup_', 'force_reload_backup_',
 )
 AUTOSAVE_PREFIX = 'autosave_'
 SQLITE_HEADER = b'SQLite format 3\x00'
+#: The copy services.governance.approve_scenario writes: approved_<id>_<YYYYMMDD_HHMMSS>[_n].db. Matched
+#: exactly, so a user's own save called 'approved_budget' stays a named save.
+APPROVAL_SNAPSHOT_RE = re.compile(r'^approved_[A-Za-z0-9_-]+_\d{8}_\d{6}(?:_\d+)?\.db$')
+
+
+def is_approval_snapshot(filename: str) -> bool:
+    """True for the snapshot an approval writes (``approved_<id>_<YYYYMMDD_HHMMSS>[_n].db``)."""
+    return bool(APPROVAL_SNAPSHOT_RE.match(filename or ''))
 
 
 def snapshot_kind(filename: str) -> str:
     """manual_save / autosave / system_backup, from a snapshot's file name."""
     if filename.startswith(AUTOSAVE_PREFIX):
         return 'autosave'
-    if filename.startswith(SYSTEM_BACKUP_PREFIXES):
+    if filename.startswith(SYSTEM_BACKUP_PREFIXES) or is_approval_snapshot(filename):
         return 'system_backup'
     return 'manual_save'
 
@@ -34,7 +42,6 @@ SNAPSHOT_KIND_PREFIXES = (
     ('start_clean_backup_', 'start_clean_backup'),
     ('current_backup_', 'before_load_backup'),
     ('pre_revert_backup_', 'before_revert_backup'),
-    ('approved_', 'approval_snapshot'),
 )
 SNAPSHOT_KIND_LABELS = {
     'manual_save': 'Named save',
@@ -48,9 +55,28 @@ SNAPSHOT_KIND_LABELS = {
 #: Tables that hold logs, caches or the change history, not model data: ignored when deciding whether a database is empty.
 NON_DATA_TABLES = ('execution_log', 'forecast_results', 'audit_log')
 
+#: One-row switch the approve / unlock paths (and clear_all_data) set INSIDE their own transaction and clear
+#: before it commits, so no other connection ever sees it: while it holds a row the forecast triggers let the
+#: governance columns change. Every other writer is refused (migrate_governance_guards).
+GOVERNANCE_GUARD_TABLE = 'governance_guard'
+#: Text the forecast triggers raise when status / locked / approved_* would change outside approve / unlock.
+GOVERNANCE_TOKEN = 'SCENARIO_GOVERNED'
+
+
+def governance_guard_on(conn: sqlite3.Connection) -> None:
+    """Let the forecast governance columns change in the CURRENT transaction (pair with governance_guard_off)."""
+    conn.execute(f"INSERT INTO {GOVERNANCE_GUARD_TABLE} (active) VALUES (1)")
+
+
+def governance_guard_off(conn: sqlite3.Connection) -> None:
+    """Close the switch again, before the transaction commits."""
+    conn.execute(f"DELETE FROM {GOVERNANCE_GUARD_TABLE}")
+
 
 def snapshot_detail_kind(filename: str) -> str:
     """manual_save / autosave / start_clean_backup / before_load_backup / before_revert_backup / approval_snapshot / system_backup."""
+    if is_approval_snapshot(filename):
+        return 'approval_snapshot'
     for prefix, kind in SNAPSHOT_KIND_PREFIXES:
         if filename.startswith(prefix):
             return kind
@@ -756,6 +782,8 @@ class DatabaseManager:
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at)')
+        # Always empty outside a transaction: see migrate_governance_guards.
+        cursor.execute(f'CREATE TABLE IF NOT EXISTS {GOVERNANCE_GUARD_TABLE} (active INTEGER NOT NULL DEFAULT 1)')
         # Discounts and allowances off gross sales, embedded excise tax and
         # commissions (see services.pricing for matching and precedence).
         # forecast_id NULL = company-wide; NULL scope fields mean "any".
@@ -887,11 +915,23 @@ class DatabaseManager:
                 """)
             alloc_locked = ("EXISTS (SELECT 1 FROM expenses e JOIN forecast f ON f.forecast_id = e.forecast_id "
                             "WHERE e.expense_id = {ref}.expense_id AND f.locked = 1)")
-            for event, ref in (("INSERT", "NEW"), ("UPDATE", "OLD"), ("DELETE", "OLD")):
+            # An UPDATE checks both sides: moving an allocation INTO a locked expense changes it too.
+            alloc_when = {
+                "INSERT": alloc_locked.format(ref="NEW"),
+                "UPDATE": f"{alloc_locked.format(ref='OLD')} OR {alloc_locked.format(ref='NEW')}",
+                "DELETE": alloc_locked.format(ref="OLD"),
+            }
+            # The first version of the UPDATE trigger checked OLD only: replace it where it is still installed.
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+                           "AND name = 'trg_lock_expense_allocations_update'")
+            installed = cursor.fetchone()
+            if installed and "NEW.expense_id" not in (installed[0] or ""):
+                cursor.execute("DROP TRIGGER trg_lock_expense_allocations_update")
+            for event, when in alloc_when.items():
                 cursor.execute(f"""
                     CREATE TRIGGER IF NOT EXISTS trg_lock_expense_allocations_{event.lower()}
                     BEFORE {event} ON expense_allocations
-                    WHEN {alloc_locked.format(ref=ref)}
+                    WHEN {when}
                     BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
                 """)
             cursor.execute("""
@@ -902,6 +942,57 @@ class DatabaseManager:
             conn.commit()
         except Exception as e:
             print(f"Error migrating governance / controls schema: {e}")
+            conn.rollback()
+        finally:
+            self.close_connection(conn)
+
+    def migrate_governance_guards(self):
+        """
+        Triggers that keep a scenario's approval state in the hands of
+        approve / unlock (idempotent; after migrate_governance_and_controls,
+        which adds the columns):
+
+        * ``status``, ``locked``, ``approved_by``, ``approved_at`` and
+          ``approval_note`` change, and a scenario is created approved or
+          locked, only while ``governance_guard`` holds a row: the approve /
+          unlock paths of services.governance (and clear_all_data) set it
+          inside their own transaction and clear it before committing.
+          Anything else raises ``SCENARIO_GOVERNED``.
+        * A locked scenario keeps its id, name, description and notes
+          (``SCENARIO_LOCKED``); its base flag can still move.
+
+        A guard row left by a crashed writer cannot survive: it is cleared
+        here on every start.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {GOVERNANCE_GUARD_TABLE} (active INTEGER NOT NULL DEFAULT 1)")
+            cursor.execute(f"DELETE FROM {GOVERNANCE_GUARD_TABLE}")
+            unguarded = f"NOT EXISTS (SELECT 1 FROM {GOVERNANCE_GUARD_TABLE})"
+            message = (f"{GOVERNANCE_TOKEN}: the status, lock and approval fields of a scenario change only "
+                       f"through POST /forecast/scenario/{{id}}/approve and /unlock")
+            changed = " OR ".join(f"NEW.{c} IS NOT OLD.{c}"
+                                  for c in ("locked", "status", "approved_by", "approved_at", "approval_note"))
+            cursor.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS trg_guard_forecast_governance BEFORE UPDATE ON forecast
+                WHEN {unguarded} AND ({changed})
+                BEGIN SELECT RAISE(ABORT, '{message}'); END
+            """)
+            cursor.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS trg_guard_forecast_insert BEFORE INSERT ON forecast
+                WHEN {unguarded} AND (COALESCE(NEW.locked, 0) <> 0 OR NEW.status = 'approved')
+                BEGIN SELECT RAISE(ABORT, '{message}'); END
+            """)
+            identity = " OR ".join(f"NEW.{c} IS NOT OLD.{c}" for c in ("forecast_id", "name", "description", "notes"))
+            cursor.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS trg_lock_forecast_update BEFORE UPDATE ON forecast
+                WHEN OLD.locked = 1 AND {unguarded} AND ({identity})
+                BEGIN SELECT RAISE(ABORT, 'SCENARIO_LOCKED'); END
+            """)
+            conn.commit()
+        except Exception as e:
+            print(f"Error migrating the scenario governance triggers: {e}")
             conn.rollback()
         finally:
             self.close_connection(conn)
@@ -1646,6 +1737,7 @@ class DatabaseManager:
         self.migrate_financial_assumptions_table()
         self.migrate_price_list_table()
         self.migrate_governance_and_controls()
+        self.migrate_governance_guards()
         self.ensure_base_scenario()
 
     def _has_seed_data(self) -> bool:
@@ -1927,7 +2019,13 @@ class DatabaseManager:
             try:
                 # Approved scenarios are locked by triggers; a reset clears them too.
                 if any(r[1] == "locked" for r in conn.execute("PRAGMA table_info(forecast)")):
+                    guarded = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                                           (GOVERNANCE_GUARD_TABLE,)).fetchone() is not None
+                    if guarded:
+                        governance_guard_on(conn)
                     conn.execute("UPDATE forecast SET locked = 0")
+                    if guarded:
+                        governance_guard_off(conn)
                 counts: Dict[str, int] = {}
                 for name in self.tables_children_first(conn):
                     if name in exclude or name in self.KEEP_ON_CLEAR:

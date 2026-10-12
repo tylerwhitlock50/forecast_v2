@@ -13,6 +13,7 @@ from utils.data_loader import (
     is_blank,
     missing_references,
     next_bom_line,
+    normalize_labor_class_value,
     parse_number,
     referencing_rows,
     sales_period_error,
@@ -25,6 +26,8 @@ from utils.data_loader import (
 import uuid
 import sqlite3
 from datetime import datetime
+
+from services.governance import forecast_write_refusal, governed_table_message, GOVERNED_FORECAST_COLUMNS
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
@@ -339,6 +342,14 @@ def _table_columns(cursor, table_name: Any) -> List[Tuple]:
     return table_info(cursor, table_name)
 
 
+def _refuse_governed_table(table_name: Any, record_id: Any = None) -> None:
+    """409 for the governance records (change history, approvals, actuals and their batches / close): each
+    has its own endpoint, which keeps the evidence and the rules (see services.governance.GOVERNED_TABLES)."""
+    message = governed_table_message(table_name, record_id)
+    if message:
+        raise HTTPException(status_code=409, detail=f"{table_name} cannot be written here. {message}")
+
+
 def _primary_key(table_name: str, columns: List[Tuple]) -> str:
     pk = [col[1] for col in sorted(columns, key=lambda c: c[5]) if col[5]]
     if pk:
@@ -456,6 +467,8 @@ def _clean_values(table_name: str, columns: List[Tuple], values: Dict[str, Any])
         if problem:
             raise ColumnValueError("period", problem)
         values["period"] = normalize_month(values["period"])
+    if table_name == "payroll" and "labor_class" in values:
+        values["labor_class"] = normalize_labor_class_value(values["labor_class"])
     return values
 
 
@@ -533,9 +546,12 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
     * ``{sales: {...}}`` - a sales row; the period must be a month (YYYY-MM,
       2027-01-01, Jan-27 ...; quarters / weeks are rejected) and
       total_revenue defaults to quantity x unit_price.
-    * ``{table, data}`` - any table. Unknown columns are ignored; numeric
+    * ``{table, data}`` - any model table. Unknown columns are ignored; numeric
       columns accept '$1,050.00' style text (422 naming the column when not a
-      number); unknown references are a 422 naming them. BOM lines get
+      number); unknown references are a 422 naming them. The governance
+      records (change history, approvals, actuals, their batches and
+      month-end close) are refused with 409 naming their own endpoint, and a
+      scenario cannot be created approved or locked. BOM lines get
       material_cost = qty x unit_price, a normalized version ('1' -> '1.0'),
       the next bom_line when none is given and a bom_definitions header (moved
       to the newest version). A bom_definitions row for an existing BOM with
@@ -581,6 +597,7 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
             data = forecast_data['data']
             if not isinstance(data, dict):
                 raise HTTPException(status_code=400, detail="data must be an object of column: value")
+            _refuse_governed_table(table_name)
 
             columns = _table_columns(cursor, table_name)
             column_names = [col[1] for col in columns]
@@ -615,6 +632,10 @@ async def create_forecast_endpoint(forecast_data: Dict[str, Any]):
                                             message=handled)
             elif table_name == "sales":
                 valid_data = _prepare_sale(valid_data)
+            elif table_name == "forecast":
+                refusal = forecast_write_refusal(None, valid_data)
+                if refusal:  # a scenario is born a draft; approve it with its evidence
+                    raise HTTPException(status_code=409, detail=refusal)
 
             _check_references(cursor, table_name, valid_data)
             _insert(cursor, table_name, valid_data)
@@ -662,7 +683,10 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
     change; unknown columns are ignored and named in the message; numeric
     columns accept '$1,050.00' style text (422 naming the column otherwise).
     BOM lines keep material_cost = qty x unit_price; sales rows keep
-    total_revenue = quantity x unit_price unless it is given.
+    total_revenue = quantity x unit_price unless it is given. 409 for the
+    governance records (see /forecast/create), for a scenario's status /
+    locked / approved_* (approve / unlock change those) and for the name,
+    description or notes of an approved scenario.
     """
     conn = None
     try:
@@ -682,6 +706,7 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="updates must be an object of column: value")
         if key_fields is not None and not isinstance(key_fields, dict):
             raise HTTPException(status_code=400, detail="key must be an object of key column: value")
+        _refuse_governed_table(table_name, record_id)
 
         columns = _table_columns(cursor, table_name)
 
@@ -717,6 +742,16 @@ async def update_forecast_endpoint(update_data: Dict[str, Any]):
             merged = {**current, **updates}
             if merged.get("quantity") is not None and merged.get("unit_price") is not None:
                 updates["total_revenue"] = merged["quantity"] * merged["unit_price"]
+        elif table_name == "forecast":
+            refusal = forecast_write_refusal(current, updates)
+            if refusal:
+                raise HTTPException(status_code=409, detail=refusal)
+            # Sent back unchanged (a form posting the whole row): nothing to write for these.
+            updates = {k: v for k, v in updates.items() if k not in GOVERNED_FORECAST_COLUMNS}
+            if not updates:
+                return ForecastResponse(status="success",
+                                        data={"table": table_name, "key": key, "updated": 0, "changes": {}},
+                                        message="Nothing to change in forecast (the values sent are the stored ones)")
 
         merged = {**current, **updates}
         _check_references(cursor, table_name, {k: merged.get(k) for k in updates})
@@ -820,8 +855,10 @@ async def delete_forecast_record(
     Composite ids as for /forecast/update (or pass the key columns as query
     parameters). A record still used elsewhere is a 409 naming what uses it
     (machines / labor rates: the routing operations; routings: operations and
-    products; BOM headers: products) unless ``cascade`` applies.
+    products; BOM headers: products) unless ``cascade`` applies. The
+    governance records are refused with 409 (see /forecast/create).
     """
+    _refuse_governed_table(table_name, record_id)
     if table_name == "forecast":
         # A scenario owns sales, rules, prices, assumptions and more; delete it
         # exactly as the Scenarios page does so nothing is orphaned and a base

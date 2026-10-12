@@ -241,7 +241,8 @@ const MainNavigation = ({ isCollapsed, onToggle }) => {
       if (data.status === 'success') {
         toast.success(data.message);
       } else {
-        toast.error('Failed to save database');
+        // The server says why (a name already taken, or one reserved for the app's own copies).
+        toast.error(typeof data.detail === 'string' ? `Not saved: ${data.detail}` : 'Failed to save database');
       }
     } catch (error) {
       console.error('Error saving database:', error);

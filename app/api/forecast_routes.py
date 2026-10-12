@@ -320,7 +320,8 @@ async def update_forecast_scenario(forecast_id: str, scenario_data: Dict[str, An
                     detail="This is the base scenario. Mark another scenario as the base instead of clearing this one.",
                 )
         conn.commit()
-        record = _scenario_row(cursor, forecast_id)
+        # Same governance block as GET (drift of an approved scenario included), never a misleading null.
+        record = _scenario_row(cursor, forecast_id, with_drift=True)
     except HTTPException:
         conn.rollback()
         raise
@@ -666,11 +667,12 @@ def _governance_http(exc) -> HTTPException:
 
 
 def _scenario_record(forecast_id: str) -> Optional[Dict[str, Any]]:
+    """The approve / unlock response record: as GET /forecast/scenario/{id} (drift of an approved one included)."""
     from db.database import db_manager
 
     conn = db_manager.get_connection()
     try:
-        return _scenario_row(conn.cursor(), forecast_id)
+        return _scenario_row(conn.cursor(), forecast_id, with_drift=True)
     finally:
         db_manager.close_connection(conn)
 

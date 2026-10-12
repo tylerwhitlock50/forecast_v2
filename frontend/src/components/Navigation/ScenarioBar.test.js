@@ -46,6 +46,23 @@ describe('ScenarioBar', () => {
     expect(screen.getByTestId('approved-badge')).toBeInTheDocument();
   });
 
+  it('lets its groups wrap instead of pushing the Approved badge off-screen or under "Manage scenarios"', () => {
+    renderAt('/payroll');
+    const row = screen.getByTestId('scenario-bar').firstElementChild;
+    expect(row).toHaveClass('flex-wrap');
+    expect(row.className).not.toMatch(/flex-nowrap/);
+    // The scenario group may shrink and wrap (phone width): the badge goes to its own line, not past the edge.
+    const group = screen.getByTestId('scenario-group');
+    expect(group).toContainElement(screen.getByTestId('approved-badge'));
+    expect(group).toHaveClass('flex-wrap', 'min-w-0', 'max-w-full');
+    expect(group).not.toHaveClass('flex-none');
+    // The link group keeps its own width, so it wraps to a new row rather than sliding under the scope badge.
+    const actions = screen.getByTestId('scenario-bar-actions');
+    expect(actions).toContainElement(screen.getByRole('link', { name: 'Manage scenarios' }));
+    expect(actions).toHaveClass('flex-none', 'ml-auto');
+    expect(actions.className).not.toMatch(/flex-1|min-w-0/);
+  });
+
   it('shows no lock for a draft', () => {
     mockForecast.activeScenario = 'F002';
     renderAt('/sales-forecast');
