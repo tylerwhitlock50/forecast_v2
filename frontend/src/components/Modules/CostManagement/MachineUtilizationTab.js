@@ -2,83 +2,123 @@ import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 import MiniTrendChart from './MiniTrendChart';
+import { ALL, machineView, periodLabel } from './costViews';
 
+const Row = ({ label, children, help, className = '' }) => (
+  <div className="flex items-baseline justify-between gap-3">
+    <span className={`text-gray-600 ${help ? 'cursor-help border-b border-dotted border-gray-300' : ''}`} title={help}>{label}</span>
+    <span className={`text-right font-semibold tabular-nums ${className}`}>{children}</span>
+  </div>
+);
+
+const utilClass = (pct) => (pct === null || pct === undefined ? 'text-gray-500' : pct > 100 ? 'text-red-600' : pct >= 85 ? 'text-amber-600' : 'text-green-700');
+
+/**
+ * Machine hours against MONTHLY capacity. "All months" shows the average
+ * month and the busiest month (never the window total over one month of
+ * capacity); a single month shows that month.
+ */
 const MachineUtilizationTab = ({
-  machineUtilization,
+  machines = [],
+  periods = [],
   selectedPeriod,
-  getDataForPeriod,
-  getMonthlyTrends,
+  machineRates = {},
   formatCurrency,
   formatNumber,
-  formatPercent,
-}) => (
-  <div className="space-y-6">
+}) => {
+  const all = selectedPeriod === ALL;
+  const cards = machines
+    .map(machine => ({ machine, view: machineView(machine, selectedPeriod, periods) }))
+    .filter(({ view }) => all || view.minutes > 0)
+    .sort((a, b) => (b.view.peakUtilization ?? -1) - (a.view.peakUtilization ?? -1));
+
+  return (
     <Card>
-      <CardHeader>
-        <CardTitle>
-          Machine Utilization Details - {selectedPeriod === 'all' ? 'All Periods' : selectedPeriod}
+      <CardHeader className="pb-3">
+        <CardTitle className="text-xl">
+          Machine utilization · {all ? `average month, ${periods.length ? `${periodLabel(periods[0])} – ${periodLabel(periods[periods.length - 1])}` : 'all months'}` : periodLabel(selectedPeriod)}
         </CardTitle>
+        <p className="text-sm text-gray-600">
+          Capacity is per month, so each machine is compared month by month.
+          {all ? ' The busiest month is what limits output.' : ''}
+        </p>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {getDataForPeriod(machineUtilization, selectedPeriod).map((machine, index) => {
-            const monthlyTrends = getMonthlyTrends(machine.machine_id, machineUtilization);
-            return (
-              <Card key={index} className={machine.capacity_exceeded ? 'border-red-500 bg-red-50' : ''}>
-                <CardHeader>
-                  <div className="flex justify-between items-center">
-                    <CardTitle className="text-lg">{machine.machine_name}</CardTitle>
-                    {machine.capacity_exceeded && (
-                      <Badge variant="destructive">Over Capacity</Badge>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 gap-2 text-sm">
-                      <div className="flex justify-between">
-                        <span>Required Minutes:</span>
-                        <span className="font-semibold">{formatNumber(machine.total_minutes_required)}</span>
+        {cards.length === 0 ? (
+          <p className="py-8 text-center text-sm text-gray-500">
+            No machine time {all ? 'in this scenario' : `in ${periodLabel(selectedPeriod)}`}. Machine time comes from the routings of the products in the sales forecast.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
+            {cards.map(({ machine, view }) => {
+              const noCapacity = !(view.capacity > 0);
+              const rate = machineRates[machine.machine_id];
+              return (
+                <Card key={machine.machine_id} className={view.overCapacity ? 'border-red-300' : ''}>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CardTitle className="truncate text-lg" title={machine.machine_name}>{machine.machine_name || machine.machine_id}</CardTitle>
+                        <div className="font-mono text-xs text-gray-500">{machine.machine_id}</div>
                       </div>
-                      <div className="flex justify-between">
-                        <span>Available Minutes:</span>
-                        <span className="font-semibold">{formatNumber(machine.available_minutes_per_month)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Utilization:</span>
-                        <span className={`font-semibold ${machine.utilization_percent > 100 ? 'text-red-600' : 'text-green-600'}`}>
-                          {formatPercent(machine.utilization_percent)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Total Cost:</span>
-                        <span className="font-semibold">{formatCurrency(machine.total_cost)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Machine Rate:</span>
-                        <span className="font-semibold">{formatCurrency(machine.machine_rate)}/hr</span>
-                      </div>
+                      {noCapacity ? (
+                        <Badge variant="outline" className="flex-none whitespace-nowrap">No capacity set</Badge>
+                      ) : view.overCapacity ? (
+                        <Badge variant="destructive" className="flex-none whitespace-nowrap">
+                          {all ? `Over capacity ${view.overPeriods.length} mo` : 'Over capacity'}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="flex-none whitespace-nowrap border-green-300 text-green-700">Within capacity</Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-1.5 text-sm">
+                      <Row label={all ? 'Avg minutes / month' : 'Minutes required'}>{formatNumber(view.minutes)}</Row>
+                      <Row label="Capacity / month">{noCapacity ? '—' : formatNumber(view.capacity)}</Row>
+                      <Row label={all ? 'Avg utilization' : 'Utilization'} className={utilClass(view.utilization)}>
+                        {view.utilization === null ? '—' : `${view.utilization.toFixed(1)}%`}
+                      </Row>
+                      {all && (
+                        <Row label="Peak month" className={utilClass(view.peakUtilization)} help="The busiest month in the window">
+                          {view.peakPeriod
+                            ? `${periodLabel(view.peakPeriod)}${view.peakUtilization !== null ? ` · ${view.peakUtilization.toFixed(1)}%` : ''}`
+                            : '—'}
+                        </Row>
+                      )}
+                      <Row label={all ? 'Machine cost (window)' : 'Machine cost'}>{formatCurrency(view.cost)}</Row>
+                      {rate !== undefined && rate !== null && <Row label="Machine rate">{formatCurrency(rate)}/hr</Row>}
                     </div>
 
                     <div>
-                      <div className="text-sm font-medium mb-2">Monthly Utilization Trend:</div>
-                      <MiniTrendChart data={monthlyTrends} color="orange" />
+                      <div className="mb-1 text-xs font-medium text-gray-600">
+                        {noCapacity ? 'Minutes by month' : 'Utilization by month (dashed line = capacity)'}
+                      </div>
+                      <MiniTrendChart
+                        data={view.trend}
+                        color="orange"
+                        threshold={noCapacity ? null : 100}
+                        highlight={all ? null : selectedPeriod}
+                        formatValue={(v) => (noCapacity ? `${Math.round(v).toLocaleString('en-US')} min` : `${v.toFixed(1)}%`)}
+                      />
                     </div>
 
-                    {machine.capacity_exceeded && (
-                      <div className="p-3 bg-red-100 border border-red-200 rounded text-sm text-red-800">
-                        ⚠️ Capacity Exceeded by {formatPercent(machine.utilization_percent - 100)}
+                    {all && view.overPeriods.length > 0 && (
+                      <div className="rounded border border-red-200 bg-red-50 p-2.5 text-xs text-red-800">
+                        {view.overPeriods.length >= periods.length && periods.length > 1
+                          ? 'Over capacity in every month of the window.'
+                          : `Over capacity in ${view.overPeriods.map(periodLabel).join(', ')}.`}
                       </div>
                     )}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
       </CardContent>
     </Card>
-  </div>
-);
+  );
+};
 
 export default MachineUtilizationTab;

@@ -94,7 +94,7 @@ const MachineModal = ({ isOpen, onClose, onSave, machine }) => {
       await onSave(dataToSave);
     } catch (error) {
       console.error('Error saving machine:', error);
-      toast.error('Failed to save machine');
+      if (!error?.toastShown) toast.error('Could not save machine');
     }
   };
 

@@ -329,15 +329,12 @@ const CustomerSummary = ({ customers }) => {
 // Helper functions for colors
 const getTypeColor = (type) => {
   const colors = {
-    'Enterprise': '#007bff',
-    'SMB': '#28a745',
-    'Startup': '#ffc107',
-    'Government': '#6f42c1',
-    'Education': '#17a2b8',
-    'Healthcare': '#e83e8c',
-    'Retail': '#fd7e14',
-    'Manufacturing': '#6c757d',
-    'Other': '#6c757d',
+    'Dealer': '#ea580c',
+    'Distributor': '#2563eb',
+    'Direct': '#16a34a',
+    'OEM': '#7c3aed',
+    'Government': '#0891b2',
+    'Export': '#db2777',
     'Unspecified': '#6c757d'
   };
   return colors[type] || '#6c757d';

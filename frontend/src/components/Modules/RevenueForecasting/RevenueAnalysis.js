@@ -1,125 +1,85 @@
 import React, { useMemo } from 'react';
-import { useForecast } from '../../../context/ForecastContext';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Badge } from '../../ui/badge';
+import { formatMoney, formatPrice, formatQty, formatShare, summarizeBySegment } from './revenueData';
 
-const RevenueAnalysis = ({ data, timePeriods }) => {
-  const { activeScenario } = useForecast();
-  // Get unique segments
-  const segments = useMemo(() => {
-    const customers = Array.isArray(data.customers) ? data.customers : [];
-    return [...new Set(customers.map(c => c.customer_type || c.region || 'General'))];
-  }, [data.customers]);
-
-  // Generate matrix data for analysis
-  const matrixData = useMemo(() => {
-    const matrix = [];
-    
-    const products = Array.isArray(data.products) ? data.products : [];
-    const customers = Array.isArray(data.customers) ? data.customers : [];
-    const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
-    
-    products.forEach(product => {
-      customers.forEach(customer => {
-        const productId = product.unit_id || product.id;
-        const baseRow = {
-          id: `${productId}-${customer.customer_id}`,
-          product_id: productId,
-          product_name: product.unit_name || product.name,
-          customer_id: customer.customer_id,
-          customer_name: customer.customer_name,
-          segment: customer.customer_type || customer.region || 'General',
-          total_quantity: 0,
-          total_revenue: 0
-        };
-
-        // Add time period columns
-        timePeriods.forEach(period => {
-          // Find existing sale with flexible matching (by ID or name)
-          const existingSale = sales.find(s => 
-            (s.unit_id === productId || s.unit_id === product.unit_name) && 
-            s.customer_id === customer.customer_id && 
-            s.period === period.key &&
-            s.forecast_id === activeScenario
-          );
-          
-          baseRow[`quantity_${period.key}`] = existingSale?.quantity || 0;
-          baseRow[`price_${period.key}`] = existingSale?.unit_price || 0; // Only use actual sale price, not base price
-          baseRow[`revenue_${period.key}`] = (existingSale?.quantity || 0) * (existingSale?.unit_price || 0);
-          
-          baseRow.total_quantity += existingSale?.quantity || 0;
-          baseRow.total_revenue += (existingSale?.quantity || 0) * (existingSale?.unit_price || 0);
-        });
-
-        matrix.push(baseRow);
-      });
-    });
-
-    return matrix;
-  }, [data.products, data.customers, data.sales_forecast, timePeriods, activeScenario]);
+/**
+ * Revenue by customer type for the months on screen. Counts include only
+ * customers and products that actually have units in the window.
+ */
+const RevenueAnalysis = ({ lines, months }) => {
+  const segments = useMemo(() => summarizeBySegment(lines, months), [lines, months]);
+  const totals = useMemo(() => segments.reduce((acc, s) => ({
+    revenue: acc.revenue + s.revenue,
+    quantity: acc.quantity + s.quantity,
+    lines: acc.lines + s.lines,
+  }), { revenue: 0, quantity: 0, lines: 0 }), [segments]);
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          📈 Segment Analysis
-        </CardTitle>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <CardTitle className="text-lg">Revenue by customer type</CardTitle>
+          <Link to="/reporting/cogs-labor" className="text-sm font-medium text-orange-700 hover:underline">
+            Net sales and gross margin by customer type →
+          </Link>
+        </div>
+        <p className="text-sm text-gray-600">
+          Gross sales (quantity × unit price) in the selected months. Customer type comes from Customer Setup and drives the price list and discounts.
+        </p>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {segments.map(segment => {
-            const segmentData = matrixData.filter(row => row.segment === segment);
-            const segmentRevenue = segmentData.reduce((sum, row) => sum + row.total_revenue, 0);
-            const segmentQuantity = segmentData.reduce((sum, row) => sum + row.total_quantity, 0);
-            const uniqueProducts = new Set(segmentData.map(row => row.product_id)).size;
-            const uniqueCustomers = new Set(segmentData.map(row => row.customer_id)).size;
-            
-            return (
-              <Card key={segment} className="hover:shadow-lg transition-shadow">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <span className="text-orange-600">📊</span>
-                    {segment}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Revenue:</span>
-                    <span className="font-semibold text-green-600">
-                      ${segmentRevenue.toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Quantity:</span>
-                    <span className="font-semibold text-blue-600">
-                      {segmentQuantity.toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Products:</span>
-                    <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-                      {uniqueProducts}
-                    </Badge>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Customers:</span>
-                    <Badge variant="secondary" className="bg-purple-100 text-purple-800">
-                      {uniqueCustomers}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-        
-        {segments.length === 0 && (
-          <div className="text-center py-8">
-            <div className="text-4xl mb-4">📊</div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">No segments found</h3>
-            <p className="text-gray-600">
-              No customer segments are available for analysis.
-            </p>
+        {segments.length === 0 ? (
+          <div className="py-10 text-center text-sm text-gray-600">No sales in the selected months.</div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-gray-200">
+            <table className="min-w-full text-sm tabular-nums">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th scope="col" className="whitespace-nowrap px-3 py-2 text-left font-medium">Customer type</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Gross sales</th>
+                  <th scope="col" className="w-48 px-3 py-2 text-left font-medium">Share</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Units</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Avg price</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Customers</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Products</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">Lines</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {segments.map(s => (
+                  <tr key={s.key} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-900">{s.name}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(s.revenue)}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
+                          <div className="h-full rounded-full bg-orange-500" style={{ width: `${Math.max(1, s.share * 100)}%` }} />
+                        </div>
+                        <span className="w-12 text-right text-xs text-gray-600">{formatShare(s.share)}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-right">{formatQty(s.quantity)}</td>
+                    <td className="px-3 py-2 text-right">{formatPrice(s.averagePrice)}</td>
+                    <td className="px-3 py-2 text-right">{s.customers}</td>
+                    <td className="px-3 py-2 text-right">{s.products}</td>
+                    <td className="px-3 py-2 text-right">{s.lines}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="border-t-2 border-gray-200 bg-gray-50 font-semibold text-gray-900">
+                <tr>
+                  <td className="px-3 py-2">Total</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(totals.revenue)}</td>
+                  <td className="px-3 py-2 text-xs font-normal text-gray-500">100%</td>
+                  <td className="px-3 py-2 text-right">{formatQty(totals.quantity)}</td>
+                  <td className="px-3 py-2 text-right">{formatPrice(totals.quantity > 0 ? totals.revenue / totals.quantity : 0)}</td>
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2" />
+                  <td className="px-3 py-2 text-right">{totals.lines}</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         )}
       </CardContent>
@@ -127,4 +87,4 @@ const RevenueAnalysis = ({ data, timePeriods }) => {
   );
 };
 
-export default RevenueAnalysis; 
+export default RevenueAnalysis;

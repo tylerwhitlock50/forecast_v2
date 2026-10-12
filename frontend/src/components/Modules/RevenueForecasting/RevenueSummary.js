@@ -1,112 +1,47 @@
-import React, { useMemo } from 'react';
-import { useForecast } from '../../../context/ForecastContext';
-import { StatsCard } from '../../ui/stats-card';
-import { TrendingUp, Package, Users, DollarSign, BarChart3 } from 'lucide-react';
+import React from 'react';
+import { cn } from '../../../lib/utils';
+import { formatMoney, formatPrice, formatQty } from './revenueData';
 
-const RevenueSummary = ({ data, timePeriods, selectedSegment, onCardClick }) => {
-  const { activeScenario } = useForecast();
-  
-  // Calculate summary statistics based on visible time periods only
-  const summaryStats = useMemo(() => {
-    const customers = Array.isArray(data.customers) ? data.customers : [];
-    const sales = Array.isArray(data.sales_forecast) ? data.sales_forecast : [];
-    
-    // Filter sales by active scenario first
-    let filteredSales = sales.filter(sale => sale.forecast_id === activeScenario);
-    
-    // Then filter by segment if needed
-    if (selectedSegment !== 'all') {
-      const segmentCustomers = customers.filter(c => 
-        (c.customer_type || c.region || 'General') === selectedSegment
-      );
-      const segmentCustomerIds = segmentCustomers.map(c => c.customer_id);
-      filteredSales = filteredSales.filter(s => segmentCustomerIds.includes(s.customer_id));
-    }
-    
-    // Only include sales for the visible time periods
-    const visiblePeriodKeys = timePeriods.map(period => period.key);
-    const visibleSales = filteredSales.filter(sale => 
-      visiblePeriodKeys.includes(sale.period)
-    );
-    
-    const totalQuantity = visibleSales.reduce((sum, sale) => sum + (sale.quantity || 0), 0);
-    const totalRevenue = visibleSales.reduce((sum, sale) => sum + (sale.total_revenue || 0), 0);
-    const productCount = new Set(visibleSales.map(sale => sale.unit_id)).size;
-    const customerCount = new Set(visibleSales.map(sale => sale.customer_id)).size;
+const TONES = {
+  default: { card: 'border-gray-200 bg-white', value: 'text-gray-900' },
+  primary: { card: 'border-blue-200 bg-blue-50/50', value: 'text-blue-700' },
+};
 
-    return {
-      totalQuantity,
-      totalRevenue,
-      productCount,
-      customerCount,
-      averagePrice: totalQuantity > 0 ? totalRevenue / totalQuantity : 0
-    };
-  }, [data.customers, data.sales_forecast, selectedSegment, activeScenario, timePeriods]);
-
-  const handleCardClick = (cardType) => {
-    if (onCardClick) {
-      onCardClick(cardType);
-    }
-  };
-
+const Kpi = ({ title, value, subtitle, tone = 'default', help }) => {
+  const t = TONES[tone] || TONES.default;
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      <StatsCard
-        title="Total Revenue"
-        value={`$${summaryStats.totalRevenue.toLocaleString()}`}
-        variant="primary"
-        className="border-l-4 border-l-blue-500"
-        onClick={() => handleCardClick('revenue')}
-        onHover={() => {}}
-      >
-        <DollarSign className="h-4 w-4 text-blue-600 mt-2" />
-      </StatsCard>
-      
-      <StatsCard
-        title="Total Quantity"
-        value={summaryStats.totalQuantity.toLocaleString()}
-        variant="success"
-        className="border-l-4 border-l-green-500"
-        onClick={() => handleCardClick('quantity')}
-        onHover={() => {}}
-      >
-        <Package className="h-4 w-4 text-green-600 mt-2" />
-      </StatsCard>
-      
-      <StatsCard
-        title="Products"
-        value={summaryStats.productCount}
-        variant="warning"
-        className="border-l-4 border-l-yellow-500"
-        onClick={() => handleCardClick('products')}
-        onHover={() => {}}
-      >
-        <BarChart3 className="h-4 w-4 text-yellow-600 mt-2" />
-      </StatsCard>
-      
-      <StatsCard
-        title="Customers"
-        value={summaryStats.customerCount}
-        variant="default"
-        className="border-l-4 border-l-gray-500"
-        onClick={() => handleCardClick('customers')}
-        onHover={() => {}}
-      >
-        <Users className="h-4 w-4 text-gray-600 mt-2" />
-      </StatsCard>
-      
-      <StatsCard
-        title="Avg Price"
-        value={`$${summaryStats.averagePrice.toFixed(2)}`}
-        variant="danger"
-        className="border-l-4 border-l-red-500"
-        onClick={() => handleCardClick('price')}
-        onHover={() => {}}
-      >
-        <TrendingUp className="h-4 w-4 text-red-600 mt-2" />
-      </StatsCard>
+    <div className={cn('min-w-0 rounded-lg border px-4 py-3.5 shadow-sm', t.card)} title={help}>
+      <div className="text-sm font-medium text-gray-500">{title}</div>
+      <div className={cn('mt-1 truncate text-[clamp(1.05rem,1.45vw,1.5rem)] font-bold tabular-nums tracking-tight', t.value)}>{value}</div>
+      {subtitle && <div className="mt-0.5 truncate text-xs text-gray-500">{subtitle}</div>}
     </div>
   );
 };
 
-export default RevenueSummary; 
+/**
+ * Headline numbers for the months on screen (and the customer-type filter).
+ * `summary` comes from summarizeLines, so the cards always match the matrix,
+ * in the monthly and the quarterly view alike.
+ */
+const RevenueSummary = ({ summary, windowLabel }) => (
+  <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5" data-testid="revenue-summary">
+    <Kpi
+      title="Gross sales"
+      tone="primary"
+      value={formatMoney(summary.revenue)}
+      subtitle={windowLabel}
+      help="Quantity × unit price, before terms, chargebacks, other allowances and excise tax. Net sales are on the COGS & Labor Forecast screen."
+    />
+    <Kpi title="Units" value={formatQty(summary.quantity)} subtitle="Forecast quantity" />
+    <Kpi title="Average price" value={formatPrice(summary.averagePrice)} subtitle="Gross sales ÷ units" />
+    <Kpi title="Forecast lines" value={formatQty(summary.lines)} subtitle="Customer × product" />
+    <Kpi
+      title="Customers"
+      value={formatQty(summary.customers)}
+      subtitle={`${formatQty(summary.products)} product${summary.products === 1 ? '' : 's'} sold`}
+      help="Customers and products with units in the months shown"
+    />
+  </div>
+);
+
+export default RevenueSummary;

@@ -101,7 +101,7 @@ const ReportingDashboard = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="container mx-auto space-y-6 px-6 py-8">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <h1 className="text-3xl font-bold text-gray-900">Reporting &amp; Analysis</h1>

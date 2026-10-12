@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useForecast } from '../../../context/ForecastContext';
 import { useConfirm } from '../../Common/ConfirmDialog';
-import api from '../../../lib/apiClient';
+import api, { showErrorToast } from '../../../lib/apiClient';
 import { toast } from 'react-hot-toast';
 import { PageHeader } from '../../ui/page-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -174,18 +174,18 @@ const ExpenseManagement = () => {
     ];
 
     const handleSaveExpense = async (values) => {
+        // The context action shows the one toast (or the server's reason);
+        // on failure the form stays open.
         try {
             if (expenseModal.expense) {
                 await actions.updateExpense(expenseModal.expense.expense_id, values);
-                toast.success('Expense updated');
             } else {
                 await actions.createExpense(values);
-                toast.success('Expense created');
             }
             setExpenseModal({ open: false, expense: null });
             await reload();
         } catch (error) {
-            toast.error(error?.userMessage || 'Failed to save expense');
+            console.error('Error saving expense:', error);
         }
     };
 
@@ -203,21 +203,20 @@ const ExpenseManagement = () => {
         if (!ok) return;
         try {
             await actions.deleteExpense(expenseId);
-            toast.success('Expense deleted');
             await reload();
         } catch (error) {
-            toast.error(error?.userMessage || 'Failed to delete expense');
+            console.error('Error deleting expense:', error);
         }
     };
 
     const handleSaveCategory = async (values) => {
         try {
-            await api.post('/expenses/categories', values, { suppressErrorToast: true });
-            toast.success('Category created');
+            await api.post('/expenses/categories', values, { suppressErrorToast: true, suppressSuccessToast: true });
+            toast.success(`Category "${values.category_name}" created`);
             setShowCategoryModal(false);
             await loadExpenseCategories();
         } catch (error) {
-            toast.error(error?.userMessage || 'Failed to create category');
+            showErrorToast(error, 'Could not create category');
         }
     };
 

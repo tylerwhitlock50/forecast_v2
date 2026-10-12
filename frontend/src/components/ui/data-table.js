@@ -11,16 +11,33 @@ const parseDateValue = (value) => {
   return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
 };
 
+/**
+ * Table with an optional actions column. The actions column stays pinned to
+ * the right edge (sticky) so Edit / Delete are always reachable even when
+ * the table scrolls sideways on a narrow screen.
+ *
+ * rowActions: extra per-row buttons shown before Edit / Delete, as
+ *   [{ label, onClick(row), title?, variant?, hidden?(row) }].
+ * rowKey: field (or function) that identifies a row (default: row.id).
+ */
 const DataTable = ({ 
   data = [], 
   columns = [], 
   onEdit, 
   onDelete, 
   onCustomAction,
+  rowActions = [],
+  rowKey,
   className,
   emptyMessage = "No data available",
   ...props 
 }) => {
+  const hasActions = Boolean(onEdit || onDelete || onCustomAction || rowActions.length);
+  const keyFor = (row, index) => {
+    if (typeof rowKey === 'function') return rowKey(row, index);
+    if (rowKey && row[rowKey] !== undefined && row[rowKey] !== null) return row[rowKey];
+    return row.id || index;
+  };
   const formatCellValue = (value, column) => {
     if (value === null || value === undefined) return '';
     
@@ -66,11 +83,26 @@ const DataTable = ({
     }
     
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+        {rowActions.filter(a => !(a.hidden && a.hidden(row))).map((action) => (
+          <Button
+            key={action.label}
+            type="button"
+            variant={action.variant || 'outline'}
+            size="sm"
+            className="h-8 px-2.5"
+            title={action.title}
+            onClick={() => action.onClick(row)}
+          >
+            {action.label}
+          </Button>
+        ))}
         {onCustomAction && (
           <Button
+            type="button"
             variant="outline"
             size="sm"
+            className="h-8 px-2.5"
             onClick={() => onCustomAction(row)}
           >
             {onCustomAction.label || 'Action'}
@@ -78,8 +110,10 @@ const DataTable = ({
         )}
         {onEdit && (
           <Button
+            type="button"
             variant="outline"
             size="sm"
+            className="h-8 px-2.5"
             onClick={() => onEdit(row)}
           >
             Edit
@@ -87,8 +121,10 @@ const DataTable = ({
         )}
         {onDelete && (
           <Button
-            variant="destructive"
+            type="button"
+            variant="outline"
             size="sm"
+            className="h-8 px-2.5 border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
             onClick={() => onDelete(row)}
           >
             Delete
@@ -118,14 +154,16 @@ const DataTable = ({
                 {column.title}
               </TableHead>
             ))}
-            {(onEdit || onDelete || onCustomAction) && (
-              <TableHead className="w-32">Actions</TableHead>
+            {hasActions && (
+              <TableHead className="sticky right-0 z-10 w-px bg-white text-right shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.15)]">
+                Actions
+              </TableHead>
             )}
           </TableRow>
         </TableHeader>
         <TableBody>
           {data.map((row, index) => (
-            <TableRow key={row.id || index}>
+            <TableRow key={keyFor(row, index)} className="group">
               {columns.map((column) => (
                 <TableCell key={column.key} className={column.cellClassName}>
                   {column.render 
@@ -134,8 +172,8 @@ const DataTable = ({
                   }
                 </TableCell>
               ))}
-              {(onEdit || onDelete || onCustomAction) && (
-                <TableCell>
+              {hasActions && (
+                <TableCell className="sticky right-0 z-10 w-px bg-white py-2 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.15)] group-hover:bg-slate-50">
                   {renderActions(row)}
                 </TableCell>
               )}

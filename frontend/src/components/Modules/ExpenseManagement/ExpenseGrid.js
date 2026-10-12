@@ -36,7 +36,7 @@ const ExpenseGrid = ({ expenses = [], onRefresh }) => {
 
   const handleCommit = async (rowId, key, value) => {
     try {
-      await api.put(`/expenses/${rowId}`, { [key]: value === '' ? null : value }, { suppressErrorToast: true });
+      await api.put(`/expenses/${rowId}`, { [key]: value === '' ? null : value }, { suppressErrorToast: true, suppressSuccessToast: true });
       toast.success('Expense updated');
       if (onRefresh) await onRefresh();
     } catch (error) {

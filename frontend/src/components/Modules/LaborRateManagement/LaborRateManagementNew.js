@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
@@ -17,6 +18,7 @@ import LaborRateValidation from './LaborRateValidation';
 const LaborRateManagement = () => {
   const { data, actions, loading } = useForecast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('table');
   const [showLaborRateModal, setShowLaborRateModal] = useState(false);
   const [editingLaborRate, setEditingLaborRate] = useState(null);
@@ -77,39 +79,47 @@ const LaborRateManagement = () => {
 
   // Handle labor rate creation/editing
   const handleSaveLaborRate = async (laborRateData) => {
+    // The context action shows the one toast (or the server's reason, e.g.
+    // a duplicate rate id); on failure the form stays open.
     try {
       if (editingLaborRate) {
         await actions.updateLaborRate(editingLaborRate.rate_id, laborRateData);
-        toast.success('Labor rate updated successfully');
       } else {
         await actions.createLaborRate(laborRateData);
-        toast.success('Labor rate created successfully');
       }
       
       setShowLaborRateModal(false);
       setEditingLaborRate(null);
-      await actions.fetchAllData();
     } catch (error) {
       console.error('Error saving labor rate:', error);
-      toast.error('Failed to save labor rate');
     }
   };
 
   // Handle labor rate deletion
   const handleDeleteLaborRate = async (rateId) => {
+    const ops = (Array.isArray(data.router_operations) ? data.router_operations : [])
+      .filter(op => op.labor_type_id === rateId);
+    if (ops.length > 0) {
+      // The server refuses to delete a labor rate that routing steps still use.
+      const goToRoutings = await confirm({
+        title: `${rateId} is still in use`,
+        body: `Used by ${ops.length} routing operation${ops.length === 1 ? '' : 's'}: ${ops.map(op => `${op.router_id} seq ${op.sequence}`).join(', ')}. Give those operations another labor type (or delete them) first.`,
+        confirmLabel: 'Open routings',
+        cancelLabel: 'Close',
+      });
+      if (goToRoutings) navigate('/routing');
+      return;
+    }
     if (await confirm({
-      title: 'Delete labor rate?',
-      body: 'Router operations that reference this rate will contribute $0 for labor until a replacement is assigned.',
+      title: `Delete labor rate ${rateId}?`,
+      body: 'No routing uses it. This cannot be undone.',
       confirmLabel: 'Delete',
       variant: 'destructive',
     })) {
       try {
         await actions.deleteLaborRate('labor_rates', rateId);
-        toast.success('Labor rate deleted successfully');
-        await actions.fetchAllData();
       } catch (error) {
         console.error('Error deleting labor rate:', error);
-        toast.error('Failed to delete labor rate');
       }
     }
   };
@@ -180,9 +190,9 @@ const LaborRateManagement = () => {
       key: 'rate_name',
       title: 'Rate Name',
       render: (value, row) => (
-        <div className="space-y-1">
-          <div className="font-semibold">{value}</div>
-          <div className="text-sm text-muted-foreground">ID: {row.rate_id}</div>
+        <div className="space-y-0.5">
+          <div className="font-semibold text-gray-900">{value}</div>
+          <div className="whitespace-nowrap font-mono text-xs text-muted-foreground">{row.rate_id}</div>
         </div>
       )
     },
@@ -204,30 +214,15 @@ const LaborRateManagement = () => {
     {
       key: 'rate_description',
       title: 'Description',
-      render: (value) => value || 'N/A'
+      cellClassName: 'max-w-xs text-sm text-gray-600',
+      render: (value) => value || <span className="text-muted-foreground">—</span>
     },
     {
       key: 'rate_amount',
-      title: 'Hourly Rate',
-      render: (value) => <span className="font-semibold">{formatCurrency(value)}</span>
-    },
-    {
-      key: 'overtime_multiplier',
-      title: 'Overtime Rate',
-      render: (value, row) => {
-        const overtimeRate = (row.rate_amount || 0) * (value || 1.5);
-        return (
-          <div className="space-y-1">
-            <div className="font-semibold">{formatCurrency(overtimeRate)}</div>
-            <div className="text-sm text-muted-foreground">({value || 1.5}x)</div>
-          </div>
-        );
-      }
-    },
-    {
-      key: 'burden_rate',
-      title: 'Burden Rate',
-      render: (value) => value ? `${value}%` : 'N/A'
+      title: 'Hourly rate',
+      headerClassName: 'text-right whitespace-nowrap',
+      cellClassName: 'text-right',
+      render: (value) => <span className="font-semibold tabular-nums">{formatCurrency(value)}</span>
     },
     {
       key: 'used_in',
@@ -244,25 +239,19 @@ const LaborRateManagement = () => {
         return (
           <Badge
             variant="outline"
+            className="whitespace-nowrap"
             title={`Routers: ${routerIds.join(', ')}`}
           >
             {matching.length} op{matching.length === 1 ? '' : 's'} · {routerIds.length} router{routerIds.length === 1 ? '' : 's'}
           </Badge>
         );
       }
-    },
-    {
-      key: 'is_active',
-      title: 'Status',
-      render: (value) => (
-        <Badge variant={value !== false ? 'success' : 'secondary'}>
-          {value !== false ? 'Active' : 'Inactive'}
-        </Badge>
-      )
     }
   ];
 
-  if (loading) {
+  // Full-page spinner only for the first load; later refreshes (after a
+  // save) keep the table and any open dialog on screen.
+  if (loading && !(Array.isArray(data.labor_rates) && data.labor_rates.length)) {
     return (
       <div className="container mx-auto px-6 py-8">
         <div className="flex items-center justify-center h-64">
@@ -307,7 +296,7 @@ const LaborRateManagement = () => {
     <div className="container mx-auto px-6 py-8">
       <PageHeader
         title="Labor Rate Management"
-        description="Manage labor rates, overtime multipliers, and burden rates"
+        description="Hourly rates by labor type. Routing operations use them to cost direct labor."
         actions={headerActions}
       />
 

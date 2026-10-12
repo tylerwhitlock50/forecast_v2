@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useForecast } from '../../../context/ForecastContext';
 import { toast } from 'react-hot-toast';
 import { useConfirm } from '../../Common/ConfirmDialog';
@@ -17,6 +18,7 @@ import MachineValidation from './MachineValidation';
 const MachineManagement = () => {
   const { data, actions, loading } = useForecast();
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('table');
   const [showMachineModal, setShowMachineModal] = useState(false);
   const [editingMachine, setEditingMachine] = useState(null);
@@ -76,9 +78,10 @@ const MachineManagement = () => {
   // Handle machine creation/editing
   const handleSaveMachine = async (machineData) => {
     try {
+      // The context action shows the one toast (or the server's reason);
+      // on failure the form stays open.
       if (editingMachine) {
         await actions.updateMachine(editingMachine.machine_id, machineData);
-        toast.success('Machine updated successfully');
       } else {
         // Generate machine ID if not provided
         if (!machineData.machine_id) {
@@ -91,23 +94,33 @@ const MachineManagement = () => {
         }
         
         await actions.createMachine(machineData);
-        toast.success('Machine created successfully');
       }
       
       setShowMachineModal(false);
       setEditingMachine(null);
-      await actions.fetchAllData();
     } catch (error) {
       console.error('Error saving machine:', error);
-      toast.error('Failed to save machine');
     }
   };
 
   // Handle machine deletion
   const handleDeleteMachine = async (machineId) => {
+    const ops = (Array.isArray(data.router_operations) ? data.router_operations : [])
+      .filter(op => op.machine_id === machineId);
+    if (ops.length > 0) {
+      // The server refuses to delete a machine that routing steps still use.
+      const goToRoutings = await confirm({
+        title: `${machineId} is still in use`,
+        body: `Used by ${ops.length} routing operation${ops.length === 1 ? '' : 's'}: ${ops.map(op => `${op.router_id} seq ${op.sequence}`).join(', ')}. Point those operations at another machine (or delete them) first.`,
+        confirmLabel: 'Open routings',
+        cancelLabel: 'Close',
+      });
+      if (goToRoutings) navigate('/routing');
+      return;
+    }
     if (await confirm({
-      title: 'Delete machine?',
-      body: 'Router operations that reference this machine will drop its $/unit contribution until a replacement is assigned.',
+      title: `Delete machine ${machineId}?`,
+      body: 'No routing uses it. This cannot be undone.',
       confirmLabel: 'Delete',
       variant: 'destructive',
     })) {
@@ -233,6 +246,7 @@ const MachineManagement = () => {
         return (
           <Badge
             variant="outline"
+            className="whitespace-nowrap"
             title={`Routers: ${routerIds.join(', ')}`}
           >
             {matching.length} op{matching.length === 1 ? '' : 's'} · {routerIds.length} router{routerIds.length === 1 ? '' : 's'}
@@ -242,7 +256,9 @@ const MachineManagement = () => {
     }
   ];
 
-  if (loading) {
+  // Full-page spinner only for the first load; later refreshes (after a
+  // save) keep the table and any open dialog on screen.
+  if (loading && !(Array.isArray(data.machines) && data.machines.length)) {
     return (
       <div className="container mx-auto px-6 py-8">
         <div className="flex items-center justify-center h-64">

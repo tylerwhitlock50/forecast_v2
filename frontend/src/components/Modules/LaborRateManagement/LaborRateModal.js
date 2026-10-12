@@ -83,7 +83,7 @@ const LaborRateModal = ({ isOpen, onClose, onSave, laborRate }) => {
       });
     } catch (error) {
       console.error('Error saving labor rate:', error);
-      toast.error('Failed to save labor rate');
+      if (!error?.toastShown) toast.error('Could not save labor rate');
     }
   };
 

@@ -1,11 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useForecast } from '../../../context/ForecastContext';
+import Papa from 'papaparse';
 import { toast } from 'react-hot-toast';
+import { Download, Plus, Upload } from 'lucide-react';
+import { useForecast } from '../../../context/ForecastContext';
+import api from '../../../lib/apiClient';
 import { useConfirm } from '../../Common/ConfirmDialog';
-import { PageHeader } from '../../ui/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Select, SelectOption } from '../../ui/select';
@@ -13,407 +16,273 @@ import { DataTable } from '../../ui/data-table';
 import ProductModal from './ProductModal';
 import ProductSummary from './ProductSummary';
 import ProductValidation from './ProductValidation';
-import ProductImportModal from '../RevenueForecasting/ProductImportModal';
+import { goToImport } from '../RevenueForecasting/importNavigation';
+import { DependencyList, fetchSalesDependencies } from '../RevenueForecasting/salesDependencies';
+
+const EXPORT_COLUMNS = ['unit_id', 'unit_name', 'unit_type', 'base_price', 'bom_id', 'bom_version', 'router_id', 'unit_description'];
+
+const TABS = [
+  { id: 'table', label: 'Products' },
+  { id: 'summary', label: 'Summary' },
+  { id: 'validation', label: 'Costing checks' },
+];
 
 const ProductManagement = () => {
   const navigate = useNavigate();
-  const { data, actions, loading } = useForecast();
+  const { data, actions, loading, scenarios } = useForecast();
   const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState('table');
   const [showProductModal, setShowProductModal] = useState(false);
-  const [showProductImportModal, setShowProductImportModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
-  const [sortField] = useState('unit_name');
-  const [sortDirection] = useState('asc');
-  const [selectedProducts, setSelectedProducts] = useState([]);
-  const [bulkAction, setBulkAction] = useState('');
 
-  // Get unique product types for filtering
-  const productTypes = useMemo(() => {
-    const products = Array.isArray(data.products) ? data.products : [];
-    return [...new Set(products.map(p => p.unit_type || 'General'))];
-  }, [data.products]);
+  const products = useMemo(() => (Array.isArray(data.products) ? data.products : []), [data.products]);
 
-  // Filter and sort products
+  const productTypes = useMemo(
+    () => [...new Set(products.map(p => p.unit_type || 'No type'))].sort(),
+    [products]
+  );
+
   const filteredProducts = useMemo(() => {
-    let products = Array.isArray(data.products) ? data.products : [];
-    
-    console.log('ProductManagement - data.products:', data.products);
-    console.log('ProductManagement - filtered products:', products);
-    
-    // Apply search filter
-    if (searchTerm) {
-      products = products.filter(product => 
-        product.unit_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.unit_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.unit_type?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.unit_description?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-    
-    // Apply type filter
-    if (filterType !== 'all') {
-      products = products.filter(product => 
-        (product.unit_type || 'General') === filterType
-      );
-    }
-    
-    // Apply sorting
-    products.sort((a, b) => {
-      const aValue = a[sortField] || '';
-      const bValue = b[sortField] || '';
-      
-      if (sortDirection === 'asc') {
-        return aValue.toString().localeCompare(bValue.toString());
-      } else {
-        return bValue.toString().localeCompare(aValue.toString());
-      }
-    });
-    
-    return products;
-  }, [data.products, searchTerm, filterType, sortField, sortDirection]);
+    const term = searchTerm.trim().toLowerCase();
+    return products
+      .filter(p => !term || [p.unit_name, p.unit_id, p.unit_type, p.unit_description]
+        .some(v => String(v || '').toLowerCase().includes(term)))
+      .filter(p => filterType === 'all' || (p.unit_type || 'No type') === filterType)
+      .sort((a, b) => String(a.unit_name || '').localeCompare(String(b.unit_name || '')));
+  }, [products, searchTerm, filterType]);
 
-  // Handle product creation/editing
   const handleSaveProduct = async (productData) => {
+    // The context shows the success / error toast and reloads the data.
+    if (editingProduct) await actions.updateProduct(editingProduct.unit_id, productData);
+    else await actions.createProduct(productData);
+    setShowProductModal(false);
+    setEditingProduct(null);
+  };
+
+  // Say exactly which sales rows go with the product before deleting it.
+  const handleDeleteProduct = async (product) => {
+    const name = product.unit_name || product.unit_id;
+    let deps;
     try {
-      if (editingProduct) {
-        await actions.updateProduct(editingProduct.unit_id, productData);
-        toast.success('Product updated successfully');
-      } else {
-        await actions.createProduct(productData);
-        toast.success('Product created successfully');
-      }
-      
-      setShowProductModal(false);
-      setEditingProduct(null);
-      await actions.fetchAllData();
-    } catch (error) {
-      console.error('Error saving product:', error);
-      toast.error('Failed to save product');
-    }
-  };
-
-  // Handle product deletion
-  const handleDeleteProduct = async (productId) => {
-    if (await confirm({
-      title: 'Delete product?',
-      body: 'Sales forecast rows for this product will become orphaned and any budget-by-product rollup will stop including it.',
-      confirmLabel: 'Delete',
-      variant: 'destructive',
-    })) {
-      try {
-        await actions.deleteProduct('units', productId);
-        toast.success('Product deleted successfully');
-        await actions.fetchAllData();
-      } catch (error) {
-        console.error('Error deleting product:', error);
-        toast.error('Failed to delete product');
-      }
-    }
-  };
-
-  // Handle bulk operations
-  const handleBulkOperation = async () => {
-    if (selectedProducts.length === 0) {
-      toast.error('Please select products for bulk operation');
+      deps = await fetchSalesDependencies('unit_id', product.unit_id, scenarios);
+    } catch {
+      toast.error('Could not check where this product is used. Nothing was deleted.');
       return;
     }
-
-    if (bulkAction === 'delete') {
-      if (await confirm({
-        title: `Delete ${selectedProducts.length} products?`,
-        body: 'Sales forecast rows for these products will become orphaned.',
-        confirmLabel: 'Delete',
-        variant: 'destructive',
-      })) {
-        try {
-          for (const productId of selectedProducts) {
-            await actions.deleteProduct('units', productId);
-          }
-          toast.success(`${selectedProducts.length} products deleted successfully`);
-          setSelectedProducts([]);
-          await actions.fetchAllData();
-        } catch (error) {
-          console.error('Error in bulk delete:', error);
-          toast.error('Failed to delete some products');
-        }
-      }
-    } else if (bulkAction === 'export') {
-      const csvData = selectedProducts.map(productId => {
-        const product = data.products.find(p => p.unit_id === productId);
-        return product;
-      }).filter(Boolean);
-
-      if (csvData.length > 0) {
-        const csv = [
-          Object.keys(csvData[0]).join(','),
-          ...csvData.map(row => Object.values(row).join(','))
-        ].join('\n');
-
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `products-export-${new Date().toISOString().split('T')[0]}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-        toast.success(`Exported ${csvData.length} products`);
-      }
+    const ok = await confirm({
+      title: `Delete ${name}?`,
+      body: <DependencyList name={name} deps={deps} noun="product" />,
+      confirmLabel: deps.rows ? `Delete product and ${deps.rows.toLocaleString('en-US')} sales rows` : 'Delete product',
+      variant: 'destructive',
+    });
+    if (!ok) return;
+    try {
+      const res = await api.delete(`/forecast/delete/units/${encodeURIComponent(product.unit_id)}`, {
+        params: deps.rows ? { cascade: true } : {},
+        suppressSuccessToast: true,
+        suppressErrorToast: true,
+      });
+      const deleted = res?.data?.deleted_sales || 0;
+      toast.success(deleted ? `Deleted ${name} and ${deleted.toLocaleString('en-US')} sales rows` : `Deleted ${name}`);
+      await actions.fetchAllData();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Failed to delete the product');
     }
   };
 
-  // Define columns for DataTable
+  const handleExport = () => {
+    if (filteredProducts.length === 0) {
+      toast.error('No products to export');
+      return;
+    }
+    const rows = filteredProducts.map(p => ({
+      unit_id: p.unit_id,
+      unit_name: p.unit_name,
+      unit_type: p.unit_type || '',
+      base_price: p.base_price ?? '',
+      bom_id: p.bom || '',
+      bom_version: p.bom ? (p.bom_version || '') : '',
+      router_id: p.router || '',
+      unit_description: p.unit_description || '',
+    }));
+    const csv = Papa.unparse(rows, { columns: EXPORT_COLUMNS });
+    const url = URL.createObjectURL(new Blob([`﻿${csv}\n`], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `products_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast.success(`Exported ${rows.length} products`);
+  };
+
   const productColumns = [
     {
       key: 'unit_name',
-      title: 'Product Name',
+      title: 'Product',
       render: (value, row) => (
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <button
             type="button"
-            onClick={() => navigate(`/products/${row.unit_id}`)}
-            className="font-semibold text-left text-primary hover:underline"
+            onClick={() => navigate(`/products/${encodeURIComponent(row.unit_id)}`)}
+            className="text-left font-semibold text-gray-900 hover:text-orange-700 hover:underline"
           >
-            {value}
+            {value || row.unit_id}
           </button>
-          <div className="text-sm text-muted-foreground">ID: {row.unit_id}</div>
+          <div className="font-mono text-xs text-gray-500">{row.unit_id}</div>
         </div>
       )
     },
     {
       key: 'unit_type',
       title: 'Type',
-      render: (value) => {
-        const type = value || 'General';
-        const variants = {
-          'Finished Goods': 'success',
-          'Raw Materials': 'warning',
-          'Components': 'info',
-          'General': 'default'
-        };
-        return <Badge variant={variants[type] || 'default'}>{type}</Badge>;
-      }
-    },
-    {
-      key: 'unit_description',
-      title: 'Description',
-      render: (value) => value || 'N/A'
+      render: (value) => (value ? <Badge variant="outline">{value}</Badge> : <span className="text-xs text-gray-400">No type</span>)
     },
     {
       key: 'base_price',
-      title: 'Base Price',
+      title: 'List price',
       type: 'currency'
     },
     {
       key: 'bom',
       title: 'BOM',
-      render: (value) => value ? (
-        <Badge variant="outline">{value}</Badge>
-      ) : (
-        <span className="text-muted-foreground">No BOM</span>
-      )
+      render: (value, row) => (value ? (
+        <span className="whitespace-nowrap font-mono text-xs text-gray-700">
+          {value}<span className="ml-1 rounded bg-gray-100 px-1 py-0.5 text-gray-600">v{row.bom_version || '1.0'}</span>
+        </span>
+      ) : <span className="text-xs font-medium text-amber-700">No BOM</span>)
     },
     {
       key: 'router',
-      title: 'Router',
-      render: (value) => value ? (
-        <Badge variant="outline">{value}</Badge>
-      ) : (
-        <span className="text-muted-foreground">No Router</span>
-      )
+      title: 'Routing',
+      render: (value) => (value
+        ? <span className="font-mono text-xs text-gray-700">{value}</span>
+        : <span className="text-xs font-medium text-amber-700">No routing</span>)
     },
     {
-      key: 'is_active',
-      title: 'Status',
-      render: (value) => (
-        <Badge variant={value !== false ? 'success' : 'secondary'}>
-          {value !== false ? 'Active' : 'Inactive'}
-        </Badge>
-      )
-    }
+      key: 'unit_description',
+      title: 'Description',
+      render: (value) => <span className="text-sm text-gray-600">{value || ''}</span>
+    },
   ];
 
-  if (loading) {
+  if (loading && products.length === 0) {
     return (
       <div className="container mx-auto px-6 py-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="ml-4 text-muted-foreground">Loading product data...</p>
+        <div className="flex h-64 items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-orange-600" />
+          <p className="ml-4 text-gray-500">Loading products…</p>
         </div>
       </div>
     );
   }
 
-  const headerActions = [
-    {
-      label: 'Add Product',
-      onClick: () => {
-        setEditingProduct(null);
-        setShowProductModal(true);
-      },
-      variant: 'default',
-      className: 'bg-orange-600 hover:bg-orange-700'
-    },
-    {
-      label: 'Import Products',
-      onClick: () => setShowProductImportModal(true),
-      variant: 'outline'
-    }
-  ];
-
-  if (selectedProducts.length > 0) {
-    headerActions.push({
-      label: 'Export Selected',
-      onClick: () => {
-        setBulkAction('export');
-        handleBulkOperation();
-      },
-      variant: 'outline'
-    });
-    headerActions.push({
-      label: 'Delete Selected',
-      onClick: () => {
-        setBulkAction('delete');
-        handleBulkOperation();
-      },
-      variant: 'destructive'
-    });
-  }
-
   return (
     <div className="container mx-auto px-6 py-8">
-      <PageHeader
-        title="Product Management"
-        description="Manage your product catalog, pricing, and specifications"
-        actions={headerActions}
-      />
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 max-w-2xl lg:flex-1">
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Products</h1>
+          <p className="mt-1 text-gray-600">What you sell: list price, product type, and the BOM and routing that cost each unit.</p>
+        </div>
+        <div className="flex flex-shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">
+          <Button variant="outline" onClick={() => goToImport(navigate, 'products')} title="Import data, step 2: Products">
+            <Upload className="mr-1.5 h-4 w-4" />
+            Import products
+          </Button>
+          <Button variant="outline" onClick={handleExport} disabled={filteredProducts.length === 0}>
+            <Download className="mr-1.5 h-4 w-4" />
+            Export CSV
+          </Button>
+          <Button
+            onClick={() => { setEditingProduct(null); setShowProductModal(true); }}
+            className="bg-orange-600 text-white hover:bg-orange-700"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Add product
+          </Button>
+        </div>
+      </div>
 
-      {/* Search and Filter Controls */}
-      <div className="flex flex-wrap gap-4 mb-6">
+      <div className="mb-5 flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
-          <Label>Search:</Label>
+          <Label htmlFor="product-search">Search</Label>
           <Input
+            id="product-search"
             type="text"
-            placeholder="Search products..."
+            placeholder="Name, ID, type…"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-64"
           />
         </div>
-        
         <div className="flex items-center gap-2">
-          <Label>Type:</Label>
-          <Select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            <SelectOption value="all">All Types</SelectOption>
-            {productTypes.map(type => (
-              <SelectOption key={type} value={type}>{type}</SelectOption>
-            ))}
+          <Label htmlFor="product-type-filter">Type</Label>
+          <Select id="product-type-filter" value={filterType} onChange={(e) => setFilterType(e.target.value)} className="w-44">
+            <SelectOption value="all">All types</SelectOption>
+            {productTypes.map(type => <SelectOption key={type} value={type}>{type}</SelectOption>)}
           </Select>
         </div>
-
-        {selectedProducts.length > 0 && (
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="px-3 py-1">
-              {selectedProducts.length} selected
-            </Badge>
-          </div>
-        )}
       </div>
 
-      {/* Custom Tab Navigation */}
-      <div className="space-y-6">
-        {/* Tab Buttons */}
-        <div className="grid w-full grid-cols-3 bg-gray-100 p-1 rounded-lg">
+      <div className="mb-5 inline-flex rounded-lg bg-gray-100 p-1" role="tablist" aria-label="Product views">
+        {TABS.map(tab => (
           <button
-            onClick={() => setActiveTab('table')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'table'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
           >
-            Product Table
+            {tab.label}
           </button>
-          <button
-            onClick={() => setActiveTab('summary')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'summary'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Summary
-          </button>
-          <button
-            onClick={() => setActiveTab('validation')}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-all ${
-              activeTab === 'validation'
-                ? 'bg-white text-orange-700 shadow-sm border border-orange-200'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            Data Validation
-          </button>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'table' && (
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>All Products ({filteredProducts.length})</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <DataTable
-                  data={filteredProducts}
-                  columns={productColumns}
-                  onEdit={(product) => {
-                    setEditingProduct(product);
-                    setShowProductModal(true);
-                  }}
-                  onDelete={(product) => handleDeleteProduct(product.unit_id)}
-                  emptyMessage="No products found. Click 'Add Product' to get started."
-                />
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {activeTab === 'summary' && (
-          <div className="space-y-6">
-            <ProductSummary products={data.products || []} />
-          </div>
-        )}
-
-        {activeTab === 'validation' && (
-          <div className="space-y-6">
-            <ProductValidation products={data.products || []} />
-          </div>
-        )}
+        ))}
       </div>
+
+      {activeTab === 'table' && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">
+              {filteredProducts.length === products.length ? `${products.length} products` : `${filteredProducts.length} of ${products.length} products`}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {products.length === 0 ? (
+              <div className="py-12 text-center">
+                <h3 className="mb-2 text-lg font-semibold text-gray-900">No products yet</h3>
+                <p className="mb-4 text-sm text-gray-600">Import your product list (with BOM and routing IDs) or add products one at a time.</p>
+                <div className="flex justify-center gap-2">
+                  <Button variant="outline" onClick={() => goToImport(navigate, 'products')}>Import products</Button>
+                  <Button onClick={() => { setEditingProduct(null); setShowProductModal(true); }} className="bg-orange-600 text-white hover:bg-orange-700">Add product</Button>
+                </div>
+              </div>
+            ) : (
+              <DataTable
+                data={filteredProducts}
+                columns={productColumns}
+                rowKey="unit_id"
+                onEdit={(product) => { setEditingProduct(product); setShowProductModal(true); }}
+                onDelete={handleDeleteProduct}
+                emptyMessage="No products match the search."
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === 'summary' && <ProductSummary products={products} />}
+
+      {activeTab === 'validation' && <ProductValidation products={products} />}
 
       <ProductModal
         isOpen={showProductModal}
-        onClose={() => {
-          setShowProductModal(false);
-          setEditingProduct(null);
-        }}
+        onClose={() => { setShowProductModal(false); setEditingProduct(null); }}
         onSave={handleSaveProduct}
         product={editingProduct}
-        bomData={data.bom_definitions || []}
-        routerData={data.router_definitions || []}
-        actions={actions}
-      />
-
-      <ProductImportModal
-        isOpen={showProductImportModal}
-        onClose={() => setShowProductImportModal(false)}
-        onComplete={async () => {
-          await actions.fetchAllData();
-          setShowProductImportModal(false);
-        }}
       />
     </div>
   );

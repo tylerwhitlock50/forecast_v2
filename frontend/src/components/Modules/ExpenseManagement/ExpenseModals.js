@@ -1,4 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { Modal, ModalHeader, ModalTitle, ModalContent, ModalFooter, ModalClose } from '../../ui/modal';
+import { Button } from '../../ui/button';
+import { Input } from '../../ui/input';
+import { Label } from '../../ui/label';
+import { Select, SelectOption } from '../../ui/select';
+import { Textarea } from '../../ui/textarea';
 
 export const ExpenseModal = ({ expense, categories, onSave, onClose, activeScenario = null, activeScenarioName = '' }) => {
   const [formData, setFormData] = useState({
@@ -114,228 +120,251 @@ export const ExpenseModal = ({ expense, categories, onSave, onClose, activeScena
     }
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content expense-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>{expense ? 'Edit Expense' : 'Add New Expense'}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+  const err = (field) => (errors[field] ? <p className="mt-1 text-xs text-red-600">{errors[field]}</p> : null);
+  const bad = (field) => (errors[field] ? 'border-red-500' : '');
 
-        <form onSubmit={handleSubmit} className="expense-form">
-          <div className="form-grid">
-            <div className="form-group">
-              <label>Expense Name *</label>
-              <input
-                type="text"
+  return (
+    <Modal onClose={onClose} className="max-w-3xl">
+      <ModalHeader>
+        <ModalTitle>{expense ? `Edit expense: ${expense.expense_name}` : 'Add an expense'}</ModalTitle>
+        <ModalClose onClick={onClose} />
+      </ModalHeader>
+
+      <form onSubmit={handleSubmit} className="expense-form">
+        <ModalContent className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <Label htmlFor="expense_name">Expense name *</Label>
+              <Input
+                id="expense_name"
+                className={`mt-1.5 ${bad('expense_name')}`}
                 value={formData.expense_name}
                 onChange={(e) => handleChange('expense_name', e.target.value)}
-                className={errors.expense_name ? 'error' : ''}
-                placeholder="e.g., Office Rent, Software License"
+                placeholder="e.g., Plant electricity, ERP licence"
+                autoFocus
               />
-              {errors.expense_name && <span className="error-text">{errors.expense_name}</span>}
+              {err('expense_name')}
             </div>
 
-            <div className="form-group">
-              <label>Category *</label>
-              <select
+            <div>
+              <Label htmlFor="expense_category">Category *</Label>
+              <Select
+                id="expense_category"
+                className={`mt-1.5 ${bad('category_id')}`}
                 value={formData.category_id}
                 onChange={(e) => handleChange('category_id', e.target.value)}
-                className={errors.category_id ? 'error' : ''}
               >
-                <option value="">Select Category</option>
+                <SelectOption value="">Select a category</SelectOption>
                 {categories.map(cat => (
-                  <option key={cat.category_id} value={cat.category_id}>
-                    {cat.category_name} ({cat.category_type})
-                  </option>
+                  <SelectOption key={cat.category_id} value={cat.category_id}>
+                    {cat.category_name} ({String(cat.category_type || '').replace(/_/g, ' ')})
+                  </SelectOption>
                 ))}
-              </select>
-              {errors.category_id && <span className="error-text">{errors.category_id}</span>}
+              </Select>
+              {err('category_id')}
             </div>
 
-            <div className="form-group">
-              <label>Scope</label>
-              <select
+            <div>
+              <Label htmlFor="expense_scope">Scope</Label>
+              <Select
+                id="expense_scope"
+                className="mt-1.5"
                 value={formData.forecast_id || ''}
                 onChange={(e) => handleChange('forecast_id', e.target.value || null)}
               >
-                <option value="">Company-wide (in every scenario)</option>
+                <SelectOption value="">Company-wide (in every scenario)</SelectOption>
                 {activeScenario && (
-                  <option value={activeScenario}>This scenario only ({activeScenarioName || activeScenario})</option>
+                  <SelectOption value={activeScenario}>This scenario only ({activeScenarioName || activeScenario})</SelectOption>
                 )}
                 {formData.forecast_id && formData.forecast_id !== activeScenario && (
-                  <option value={formData.forecast_id}>Scenario {formData.forecast_id} only</option>
+                  <SelectOption value={formData.forecast_id}>Scenario {formData.forecast_id} only</SelectOption>
                 )}
-              </select>
-              <small className="text-muted-foreground">
-                Company-wide expenses roll into every scenario. Scenario-only expenses are copied when that scenario is branched.
-              </small>
+              </Select>
+              <p className="mt-1 text-xs text-gray-500">
+                Company-wide expenses roll into every scenario; scenario-only ones are copied when that scenario is branched.
+              </p>
             </div>
 
-            <div className="form-group">
-              <label>Amount *</label>
-              <input
+            <div>
+              <Label htmlFor="expense_amount">Amount *</Label>
+              <Input
+                id="expense_amount"
                 type="number"
                 step="0.01"
                 min="0"
+                className={`mt-1.5 ${bad('amount')}`}
                 value={formData.amount}
                 onChange={(e) => handleChange('amount', e.target.value)}
-                className={errors.amount ? 'error' : ''}
                 placeholder="0.00"
               />
-              {errors.amount && <span className="error-text">{errors.amount}</span>}
+              {err('amount')}
             </div>
 
-            <div className="form-group">
-              <label>Frequency *</label>
-              <select
+            <div>
+              <Label htmlFor="expense_frequency">Frequency *</Label>
+              <Select
+                id="expense_frequency"
+                className="mt-1.5"
                 value={formData.frequency}
                 onChange={(e) => handleChange('frequency', e.target.value)}
               >
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-                <option value="quarterly">Quarterly</option>
-                <option value="biannually">Biannually</option>
-                <option value="annually">Annually</option>
-                <option value="one_time">One-time</option>
-              </select>
+                <SelectOption value="weekly">Weekly</SelectOption>
+                <SelectOption value="monthly">Monthly</SelectOption>
+                <SelectOption value="quarterly">Quarterly</SelectOption>
+                <SelectOption value="biannually">Twice a year</SelectOption>
+                <SelectOption value="annually">Annually</SelectOption>
+                <SelectOption value="one_time">One-time</SelectOption>
+              </Select>
             </div>
 
-            <div className="form-group">
-              <label>Start Date *</label>
-              <input
+            <div>
+              <Label htmlFor="expense_start">Start date *</Label>
+              <Input
+                id="expense_start"
                 type="date"
+                className={`mt-1.5 ${bad('start_date')}`}
                 value={formData.start_date}
                 onChange={(e) => handleChange('start_date', e.target.value)}
-                className={errors.start_date ? 'error' : ''}
               />
-              {errors.start_date && <span className="error-text">{errors.start_date}</span>}
+              {err('start_date')}
             </div>
 
-            <div className="form-group">
-              <label>End Date</label>
-              <input
+            <div>
+              <Label htmlFor="expense_end">End date</Label>
+              <Input
+                id="expense_end"
                 type="date"
+                className={`mt-1.5 ${bad('end_date')}`}
                 value={formData.end_date}
                 onChange={(e) => handleChange('end_date', e.target.value)}
-                className={errors.end_date ? 'error' : ''}
               />
-              {errors.end_date && <span className="error-text">{errors.end_date}</span>}
+              {err('end_date')}
             </div>
 
-            <div className="form-group">
-              <label>Vendor</label>
-              <input
-                type="text"
+            <div>
+              <Label htmlFor="expense_vendor">Vendor</Label>
+              <Input
+                id="expense_vendor"
+                className="mt-1.5"
                 value={formData.vendor}
                 onChange={(e) => handleChange('vendor', e.target.value)}
-                placeholder="e.g., Office Depot, Electric Company"
+                placeholder="e.g., Rocky Mountain Power"
               />
             </div>
 
-            <div className="form-group">
-              <label>Payment Method</label>
-              <select
+            <div>
+              <Label htmlFor="expense_payment">Payment method</Label>
+              <Select
+                id="expense_payment"
+                className="mt-1.5"
                 value={formData.payment_method}
                 onChange={(e) => handleChange('payment_method', e.target.value)}
               >
-                <option value="">Select Payment Method</option>
-                <option value="ACH">ACH</option>
-                <option value="Check">Check</option>
-                <option value="Credit Card">Credit Card</option>
-                <option value="Net30">Net30</option>
-              </select>
+                <SelectOption value="">Not specified</SelectOption>
+                <SelectOption value="ACH">ACH</SelectOption>
+                <SelectOption value="Check">Check</SelectOption>
+                <SelectOption value="Credit Card">Credit card</SelectOption>
+                <SelectOption value="Net30">Net 30</SelectOption>
+              </Select>
             </div>
 
-            <div className="form-group">
-              <label>Department</label>
-              <input
-                type="text"
+            <div>
+              <Label htmlFor="expense_department">Department</Label>
+              <Input
+                id="expense_department"
+                className="mt-1.5"
                 value={formData.department}
                 onChange={(e) => handleChange('department', e.target.value)}
-                placeholder="e.g., Manufacturing, Administration"
+                placeholder="e.g., Manufacturing"
               />
             </div>
 
-            <div className="form-group">
-              <label>Cost Center</label>
-              <input
-                type="text"
+            <div>
+              <Label htmlFor="expense_cost_center">Cost center</Label>
+              <Input
+                id="expense_cost_center"
+                className="mt-1.5"
                 value={formData.cost_center}
                 onChange={(e) => handleChange('cost_center', e.target.value)}
-                placeholder="e.g., MFGCOST, ADMCOST"
+                placeholder="e.g., MFGCOST"
               />
             </div>
 
-            <div className="form-group">
-              <label>Allocation Method</label>
-              <select
+            <div>
+              <Label htmlFor="expense_allocation">Allocation</Label>
+              <Select
+                id="expense_allocation"
+                className="mt-1.5"
                 value={formData.expense_allocation}
                 onChange={(e) => handleChange('expense_allocation', e.target.value)}
               >
-                <option value="immediate">Immediate</option>
-                <option value="amortized">Amortized</option>
-              </select>
+                <SelectOption value="immediate">Expense when incurred</SelectOption>
+                <SelectOption value="amortized">Spread over months (amortized)</SelectOption>
+              </Select>
             </div>
 
             {formData.expense_allocation === 'amortized' && (
-              <div className="form-group">
-                <label>Amortization Months *</label>
-                <input
+              <div>
+                <Label htmlFor="expense_amortization">Amortization months *</Label>
+                <Input
+                  id="expense_amortization"
                   type="number"
                   min="1"
                   max="60"
+                  className={`mt-1.5 ${bad('amortization_months')}`}
                   value={formData.amortization_months}
                   onChange={(e) => handleChange('amortization_months', e.target.value)}
-                  className={errors.amortization_months ? 'error' : ''}
                   placeholder="12"
                 />
-                {errors.amortization_months && <span className="error-text">{errors.amortization_months}</span>}
+                {err('amortization_months')}
               </div>
             )}
+
+            <div className="md:col-span-2">
+              <Label htmlFor="expense_description">Description</Label>
+              <Textarea
+                id="expense_description"
+                className="mt-1.5"
+                value={formData.description}
+                onChange={(e) => handleChange('description', e.target.value)}
+                placeholder="Optional details"
+                rows={3}
+              />
+            </div>
           </div>
 
-          <div className="form-group full-width">
-            <label>Description</label>
-            <textarea
-              value={formData.description}
-              onChange={(e) => handleChange('description', e.target.value)}
-              placeholder="Additional details about this expense..."
-              rows="3"
-            />
-          </div>
-
-          <div className="form-checkboxes">
-            <label className="checkbox-label">
+          <div className="flex flex-wrap gap-6 text-sm text-gray-700">
+            <label className="inline-flex items-center gap-2">
               <input
                 type="checkbox"
+                className="h-4 w-4 accent-orange-600"
                 checked={formData.approval_required}
                 onChange={(e) => handleChange('approval_required', e.target.checked)}
               />
-              Requires Approval
+              Requires approval
             </label>
-
-            <label className="checkbox-label">
+            <label className="inline-flex items-center gap-2">
               <input
                 type="checkbox"
+                className="h-4 w-4 accent-orange-600"
                 checked={formData.is_active}
                 onChange={(e) => handleChange('is_active', e.target.checked)}
               />
-              Active
+              Active (included in the forecast)
             </label>
           </div>
+        </ModalContent>
 
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary">
-              {expense ? 'Update Expense' : 'Create Expense'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <ModalFooter className="sticky bottom-0 bg-background">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" className="bg-orange-600 text-white hover:bg-orange-700">
+            {expense ? 'Save changes' : 'Create expense'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 
@@ -398,86 +427,95 @@ export const CategoryModal = ({ categories, onSave, onClose }) => {
     cat.category_type === formData.category_type && !cat.parent_category_id
   );
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content category-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Add New Category</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+  const err = (field) => (errors[field] ? <p className="mt-1 text-xs text-red-600">{errors[field]}</p> : null);
 
-        <form onSubmit={handleSubmit} className="category-form">
-          <div className="form-group">
-            <label>Category Name *</label>
-            <input
-              type="text"
+  return (
+    <Modal onClose={onClose} className="max-w-lg">
+      <ModalHeader>
+        <ModalTitle>Add an expense category</ModalTitle>
+        <ModalClose onClick={onClose} />
+      </ModalHeader>
+
+      <form onSubmit={handleSubmit} className="category-form">
+        <ModalContent className="space-y-4">
+          <div>
+            <Label htmlFor="category_name">Category name *</Label>
+            <Input
+              id="category_name"
+              className={`mt-1.5 ${errors.category_name ? 'border-red-500' : ''}`}
               value={formData.category_name}
               onChange={(e) => handleChange('category_name', e.target.value)}
-              className={errors.category_name ? 'error' : ''}
-              placeholder="e.g., Office Supplies, Welding Supplies"
+              placeholder="e.g., Shop supplies, Utilities"
+              autoFocus
             />
-            {errors.category_name && <span className="error-text">{errors.category_name}</span>}
+            {err('category_name')}
           </div>
 
-          <div className="form-group">
-            <label>Category Type *</label>
-            <select
+          <div>
+            <Label htmlFor="category_type">Type *</Label>
+            <Select
+              id="category_type"
+              className={`mt-1.5 ${errors.category_type ? 'border-red-500' : ''}`}
               value={formData.category_type}
               onChange={(e) => handleChange('category_type', e.target.value)}
-              className={errors.category_type ? 'error' : ''}
             >
-              <option value="factory_overhead">Factory Overhead</option>
-              <option value="admin_expense">Administrative Expense</option>
-              <option value="cogs">Cost of Goods Sold</option>
-            </select>
-            {errors.category_type && <span className="error-text">{errors.category_type}</span>}
+              <SelectOption value="factory_overhead">Factory overhead (in COGS)</SelectOption>
+              <SelectOption value="admin_expense">Administrative expense (below gross profit)</SelectOption>
+              <SelectOption value="cogs">Cost of goods sold</SelectOption>
+            </Select>
+            {err('category_type')}
           </div>
 
-          <div className="form-group">
-            <label>Parent Category</label>
-            <select
+          <div>
+            <Label htmlFor="category_parent">Parent category</Label>
+            <Select
+              id="category_parent"
+              className="mt-1.5"
               value={formData.parent_category_id}
               onChange={(e) => handleChange('parent_category_id', e.target.value)}
             >
-              <option value="">None (Top Level)</option>
+              <SelectOption value="">None (top level)</SelectOption>
               {parentCategories.map(cat => (
-                <option key={cat.category_id} value={cat.category_id}>
+                <SelectOption key={cat.category_id} value={cat.category_id}>
                   {cat.category_name}
-                </option>
+                </SelectOption>
               ))}
-            </select>
+            </Select>
           </div>
 
-          <div className="form-group">
-            <label>Account Code</label>
-            <input
-              type="text"
+          <div>
+            <Label htmlFor="category_account">Account code</Label>
+            <Input
+              id="category_account"
+              className="mt-1.5"
               value={formData.account_code}
               onChange={(e) => handleChange('account_code', e.target.value)}
-              placeholder="e.g., 6100, 7200"
+              placeholder="e.g., 6100"
             />
           </div>
 
-          <div className="form-group">
-            <label>Description</label>
-            <textarea
+          <div>
+            <Label htmlFor="category_description">Description</Label>
+            <Textarea
+              id="category_description"
+              className="mt-1.5"
               value={formData.description}
               onChange={(e) => handleChange('description', e.target.value)}
-              placeholder="Description of this category..."
-              rows="3"
+              placeholder="Optional"
+              rows={3}
             />
           </div>
+        </ModalContent>
 
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary">
-              Create Category
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" className="bg-orange-600 text-white hover:bg-orange-700">
+            Create category
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };

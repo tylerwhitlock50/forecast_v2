@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
 import { useForecast } from '../../../context/ForecastContext';
 import { useConfirm } from '../../Common/ConfirmDialog';
+import { Modal, ModalHeader, ModalTitle, ModalClose } from '../../ui/modal';
 
 
 const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, laborRates, onSave }) => {
@@ -96,14 +97,14 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
         operation_description: formData.operation_description || ''
       };
       
-      if (editingOperation && editingOperation.router_id && editingOperation.sequence) {
-        // Create compound key: router_id-sequence
-        const compoundKey = `${editingOperation.router_id}-${editingOperation.sequence}`;
-        await actions.updateRouterOperation(compoundKey, dataToSave);
-        toast.success('Operation updated successfully');
+      // The context action shows the one toast (or the server's reason).
+      if (editingOperation && editingOperation.operation_id) {
+        await actions.updateRouterOperation(String(editingOperation.operation_id), dataToSave);
+      } else if (editingOperation && editingOperation.router_id && editingOperation.sequence) {
+        // Compound key: router_id-sequence
+        await actions.updateRouterOperation(`${editingOperation.router_id}-${editingOperation.sequence}`, dataToSave);
       } else {
         await actions.createRouterOperation(dataToSave);
-        toast.success('Operation created successfully');
       }
       
       setShowAddOperation(false);
@@ -111,7 +112,6 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
       await onSave();
     } catch (error) {
       console.error('Error saving operation:', error);
-      toast.error('Failed to save operation');
     }
   };
 
@@ -149,11 +149,9 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
     })) {
       try {
         await actions.deleteRouterOperation(operationId);
-        toast.success('Operation deleted successfully');
         await onSave();
       } catch (error) {
         console.error('Error deleting operation:', error);
-        toast.error('Failed to delete operation');
       }
     }
   };
@@ -218,14 +216,16 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
   if (!isOpen || !router) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '1200px', maxHeight: '90vh' }}>
-        <div className="modal-header">
-          <h2>Manage Operations: {router.router_name}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal onClose={onClose} className="max-w-6xl">
+        <ModalHeader className="pr-14">
+          <ModalTitle>
+            Operations: {router.router_name || router.router_id}
+            <span className="ml-2 text-sm font-normal text-gray-500">{router.router_id}</span>
+          </ModalTitle>
+          <ModalClose onClick={onClose} />
+        </ModalHeader>
 
-        <div className="router-form">
+        <div className="router-form p-6">
           {/* Operations List */}
           <div className="form-section">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
@@ -456,8 +456,7 @@ const RouterOperationsModal = ({ isOpen, onClose, router, operations, machines, 
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

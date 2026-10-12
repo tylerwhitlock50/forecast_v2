@@ -24,17 +24,18 @@ const ScenarioBar = () => {
 
   return (
     <div
-      className="sticky top-0 z-30 -mx-6 -mt-6 mb-6 flex flex-wrap items-center gap-3 border-b border-gray-200 bg-white/95 px-6 py-2 backdrop-blur"
+      className="scenario-bar sticky top-0 z-30 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-gray-200 bg-white/95 px-6 py-2 backdrop-blur lg:flex-nowrap"
       data-testid="scenario-bar"
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-none items-center gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Scenario</span>
         {list.length > 0 ? (
           <select
             aria-label="Active scenario"
             value={activeScenario || ''}
             onChange={(e) => actions.switchScenario(e.target.value || null)}
-            className="h-8 max-w-[260px] rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            className="h-8 max-w-[240px] truncate rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            title={active ? `${active.name} (${active.id})` : undefined}
           >
             {!activeScenario && <option value="">Select a scenario…</option>}
             {list.map(s => (
@@ -50,27 +51,30 @@ const ScenarioBar = () => {
       </div>
 
       {scope && (
-        <div className="flex items-center gap-2" title={scope.help}>
-          <span className="text-xs text-gray-400">This screen:</span>
-          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${scope.tone}`}>
+        <div className="flex flex-none items-center gap-2" title={scope.help}>
+          <span className="whitespace-nowrap text-xs text-gray-400">This screen:</span>
+          <span
+            className={`inline-flex cursor-help items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${scope.tone}`}
+            data-testid="scope-badge"
+          >
             {scope.label}
           </span>
         </div>
       )}
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex min-w-0 items-center justify-end gap-3 lg:flex-1">
         {active?.description && !onScenariosPage && (
-          <span className="hidden max-w-[320px] truncate text-xs text-gray-500 lg:inline" title={active.description}>
+          <span className="hidden min-w-0 truncate text-xs text-gray-500 xl:block" title={active.description}>
             {active.description}
           </span>
         )}
         {list.length === 0 ? (
-          <Button size="sm" onClick={() => navigate('/scenarios')} className="bg-orange-600 hover:bg-orange-700 text-white">
+          <Button size="sm" onClick={() => navigate('/scenarios')} className="flex-none bg-orange-600 hover:bg-orange-700 text-white">
             Create a scenario
           </Button>
         ) : (
           !onScenariosPage && (
-            <Link to="/scenarios" className="text-sm font-medium text-orange-700 hover:underline">
+            <Link to="/scenarios" className="flex-none whitespace-nowrap text-sm font-medium text-orange-700 hover:underline">
               Manage scenarios
             </Link>
           )
