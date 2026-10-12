@@ -822,6 +822,13 @@ async def delete_forecast_record(
     (machines / labor rates: the routing operations; routings: operations and
     products; BOM headers: products) unless ``cascade`` applies.
     """
+    if table_name == "forecast":
+        # A scenario owns sales, rules, prices, assumptions and more; delete it
+        # exactly as the Scenarios page does so nothing is orphaned and a base
+        # scenario always remains.
+        from api.forecast_routes import delete_forecast_scenario
+        return await delete_forecast_scenario(record_id)
+
     conn = None
     try:
         from db.database import db_manager

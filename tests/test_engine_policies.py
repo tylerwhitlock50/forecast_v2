@@ -139,3 +139,31 @@ def test_non_monthly_periods_are_warned(db):
                    VALUES ('S1', 'C1', 'P1', '2027-Q1', 1, 100, 100, ?)""", (F,))
     stmt = _build(mgr)
     assert any(w["code"] == "non_monthly_sales_periods" for w in stmt["warnings"])
+
+
+def test_generic_forecast_delete_cascades_and_keeps_a_base(db):
+    mgr, path = db
+    import app.db.database as dbmod
+    import db.database as dbmod_short
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from api import crud_routes, forecast_routes
+    _exec(path, "INSERT INTO forecast (forecast_id, name, is_base) VALUES ('F-2', 'Second', 0)")
+    _exec(path, """INSERT INTO sales (sale_id, customer_id, unit_id, period, quantity, unit_price, total_revenue, forecast_id)
+                   VALUES ('S1', 'C1', 'P1', '2027-01', 1, 100, 100, ?)""", (F,))
+    originals = (dbmod.db_manager, dbmod_short.db_manager)
+    dbmod.db_manager = dbmod_short.db_manager = mgr
+    try:
+        app = FastAPI()
+        app.include_router(forecast_routes.router)
+        app.include_router(crud_routes.router)
+        resp = TestClient(app).delete(f"/forecast/delete/forecast/{F}")
+    finally:
+        dbmod.db_manager, dbmod_short.db_manager = originals
+    assert resp.status_code == 200, resp.text
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0] == 0
+        assert conn.execute("SELECT forecast_id FROM forecast WHERE is_base = 1").fetchone()[0] == "F-2"
+    finally:
+        conn.close()
