@@ -777,6 +777,14 @@ class TestPrincipalChangeIsKept:
         client, db_path = env
         loan_id = create(client, principal_amount=1158586.16, interest_rate=0, loan_term_months=360,
                          start_date="2026-01-31")
+        # Schedules are generated in cents now; store the rows as the earlier generator did (the balance tracked
+        # unrounded, each row's principal rounded on its own), so the history drifts as a legacy one does.
+        level = 1158586.16 / 360
+        for n in range(1, 361):
+            principal = level if n < 360 else 1158586.16 - level * 359
+            execute(db_path, "UPDATE loan_payments SET principal_payment = ?, payment_amount = ?, remaining_balance = ? "
+                             "WHERE loan_id = ? AND payment_number = ?",
+                    (round(principal, 2), round(principal, 2), round(max(1158586.16 - level * n, 0), 2), loan_id, n))
         execute(db_path, "UPDATE loan_payments SET payment_status = 'paid' WHERE loan_id = ? AND payment_number <= 300",
                 (loan_id,))
         rows = schedule(db_path, loan_id)

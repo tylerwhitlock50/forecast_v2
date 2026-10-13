@@ -24,7 +24,7 @@ from db.models import (
     ForecastResponse, Loan, LoanCreate, LoanUpdate, LoanPayment, LoanPaymentCreate,
     AmortizationSchedule, LoanWithDetails, LoanSummary, CashFlowProjection
 )
-from services.financial_statements import add_months, loans_by_period, period_range
+from services.financial_statements import add_months, loans_by_period, period_range, schedule_rounding_residue
 from services.financial_statements import _parse_date as _engine_date
 
 
@@ -61,14 +61,19 @@ ON_CALENDAR_DAYS = 15
 PERIOD_NAMES = {1: 'month', 3: 'quarter', 12: 'year'}
 
 
+def _cents(value: Any) -> float:
+    """Money rounded to cents, never -0.0."""
+    return round(float(value or 0), 2) + 0.0
+
+
 def calculate_loan_payment(principal: float, annual_rate: float, term_months: int, payment_type: str = "amortizing") -> float:
-    """Calculate monthly loan payment amount"""
+    """Monthly loan payment amount, in cents."""
     if payment_type == "interest_only":
-        return principal * (annual_rate / 12)
+        return round(principal * (annual_rate / 12), 2)
 
     # Amortizing loan payment calculation
     if annual_rate == 0:
-        return principal / term_months
+        return round(principal / term_months, 2)
 
     monthly_rate = annual_rate / 12
     payment = principal * (monthly_rate * (1 + monthly_rate) ** term_months) / ((1 + monthly_rate) ** term_months - 1)
@@ -189,7 +194,12 @@ def generate_amortization_schedule(
     re-amortises `opening_balance` over those installments. When the history
     already runs to maturity one final installment pays the balance off.
 
-    The last installment always clears the balance (no rounding residue):
+    The schedule is worked in cents: each installment's interest is rounded
+    first, its principal is the payment less that interest (rounded), and
+    the running balance (stored as remaining_balance) is reduced by exactly
+    the stored principal. The last installment always clears the balance,
+    so the principal column adds up exactly to the principal (or to
+    `opening_balance` for a rebuilt tail):
 
     * amortizing: level installments over the term; with `balloon_date` the
       first installment on or after it repays the balance still owed (a
@@ -199,7 +209,7 @@ def generate_amortization_schedule(
     * interest_only: interest each period; the principal is repaid on the
       balloon date or, without one, with the last installment at maturity.
     """
-    remaining_balance = float(principal if opening_balance is None else opening_balance)
+    remaining_balance = round(float(principal if opening_balance is None else opening_balance), 2)
     if remaining_balance <= 0.005:
         return []
     freq_months = FREQUENCY_MONTHS.get(payment_frequency, 1)
@@ -224,34 +234,32 @@ def generate_amortization_schedule(
     payments = []
     for i, (due, length) in enumerate(zip(dates, lengths)):
         payment_num = first_payment_number + i
-        interest_payment = remaining_balance * _period_rate(annual_rate, length)
+        interest_payment = round(remaining_balance * _period_rate(annual_rate, length), 2)
         last = i == payoff
         if level is None:
             # Interest only; the balloon (or the last installment) repays the principal.
             principal_payment = remaining_balance if last else 0.0
-            amount = interest_payment + principal_payment
         else:
-            principal_payment = level - interest_payment
-            amount = level
+            principal_payment = round(level - interest_payment, 2)
             # Never pay more principal than is owed, and clear the balance on
             # the balloon / last installment.
             if principal_payment > remaining_balance or last:
                 principal_payment = remaining_balance
-                amount = principal_payment + interest_payment
-        remaining_balance -= principal_payment
+        # In cents: the stored principal is exactly what comes off the balance.
+        remaining_balance = round(remaining_balance - principal_payment, 2) + 0.0
 
         payments.append(LoanPayment(
             payment_id=f"{loan_id}-{payment_num:03d}",
             loan_id=loan_id,
             payment_number=payment_num,
             payment_date=due.strftime('%Y-%m-%d'),
-            payment_amount=round(amount, 2),
-            principal_payment=round(principal_payment, 2),
-            interest_payment=round(interest_payment, 2),
-            remaining_balance=round(remaining_balance, 2),
+            payment_amount=_cents(principal_payment + interest_payment),
+            principal_payment=_cents(principal_payment),
+            interest_payment=_cents(interest_payment),
+            remaining_balance=remaining_balance,
             payment_status="scheduled"
         ))
-        if last or remaining_balance <= 0.01:  # Account for rounding
+        if last or remaining_balance <= 0.005:
             break
 
     return payments
@@ -515,13 +523,42 @@ def _owed_after_history(terms: Dict[str, Any], kept: List[Dict[str, Any]]) -> Di
     (`tolerance`: BALANCE_TOLERANCE plus half a cent per row, the most that
     rounding each row's principal and balance to cents can add up to).
     Also returns stored and repaid (the principal of the kept rows).
+
+    Kept rows whose last one says nothing is owed and whose principal
+    misses the loan's by rounding alone (a schedule saved before schedules
+    were generated in cents, `schedule_rounding_residue`) paid the loan
+    off: `opening` is 0, never a few cents owed or overpaid.
     """
     repaid = round(sum(float(r.get('principal_payment') or 0) for r in kept), 2)
     opening = round(terms['principal'] - repaid, 2)
+    if kept and schedule_rounding_residue(terms['principal'], [r.get('principal_payment') for r in kept],
+                                          kept[-1].get('remaining_balance')):
+        opening = 0.0
     stored = round(float(kept[-1].get('remaining_balance') or 0), 2) if kept else opening
     tolerance = BALANCE_TOLERANCE + 0.005 * len(kept)
     return {'opening': opening, 'stored': stored, 'repaid': repaid,
             'adjusted': bool(kept) and abs(opening - stored) > tolerance, 'tolerance': tolerance}
+
+
+def _balance_owed(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> float:
+    """
+    What is still owed on a loan, from its saved schedule (the loan list's and
+    the portfolio summary's current_balance): the principal less the
+    principal of the installments kept as recorded history, the same rule
+    as `_owed_after_history`, so the same loan state always shows the same
+    balance and a principal changed after recorded payments counts. In
+    cents and never negative; nothing once recorded installments paid the
+    loan off, a legacy schedule's rounding residue included. A loan with no
+    saved schedule owes its principal when it has a start date (as the
+    statements read it), else the stored current_balance.
+    """
+    terms = _terms(loan)
+    if not rows:
+        stored = loan.get('current_balance')
+        return _cents(terms['principal'] if terms['start'] is not None or stored is None else stored)
+    kept, _rest = _split_history(rows)
+    owed = _owed_after_history(terms, kept)['opening'] if kept else terms['principal']
+    return _cents(max(owed, 0.0))
 
 
 def _principal_note(terms: Dict[str, Any], kept: List[Dict[str, Any]], owed: Dict[str, Any], number: int) -> str:
@@ -1443,13 +1480,14 @@ async def get_loans(active_only: bool = Query(True)):
                 normalized_payment_type
             )
 
-            current_balance_val = loan_dict.get('current_balance')
-            if current_balance_val is None:
-                current_balance_val = principal
+            # What is owed comes from the schedule (principal less recorded principal), never the stored column,
+            # which only an edit of the loan's terms refreshes.
+            current_balance_val = _balance_owed(loan_dict, _load_rows(cursor, loan_dict['loan_id']))
 
             monthly_payment_amount_val = loan_dict.get('monthly_payment_amount')
             if monthly_payment_amount_val is None:
                 monthly_payment_amount_val = computed_monthly_payment
+            monthly_payment_amount_val = _cents(monthly_payment_amount_val)
 
             next_payment_date_val = loan_dict.get('next_payment_date')
             if not next_payment_date_val and start_date_val:
@@ -1484,8 +1522,8 @@ async def get_loans(active_only: bool = Query(True)):
                 monthly_payment_amount=monthly_payment_amount_val,
                 payments_made=payments_made,
                 payments_remaining=payments_remaining,
-                total_interest_paid=loan_dict.get('total_interest_paid', 0) or 0,
-                total_interest_remaining=loan_dict.get('total_interest_remaining', 0) or 0
+                total_interest_paid=_cents(loan_dict.get('total_interest_paid')),
+                total_interest_remaining=_cents(loan_dict.get('total_interest_remaining'))
             )
             loans.append(loan_with_details.dict())
         
@@ -1637,12 +1675,10 @@ async def get_loan_summary():
         # Get basic loan statistics
         print("Getting basic statistics...")
         cursor.execute("""
-            SELECT 
+            SELECT
                 COUNT(*) as total_loans,
                 COUNT(CASE WHEN is_active = 1 THEN 1 END) as active_loans,
                 SUM(principal_amount) as total_principal,
-                SUM(current_balance) as total_current_balance,
-                SUM(monthly_payment_amount) as total_monthly_payments,
                 AVG(interest_rate) as avg_interest_rate,
                 MIN(interest_rate) as min_interest_rate,
                 MAX(interest_rate) as max_interest_rate
@@ -1650,15 +1686,22 @@ async def get_loan_summary():
         """)
         stats = cursor.fetchone()
         print(f"Basic stats: {stats}")
-        
+
+        # Balances owed come from each loan's schedule (`_balance_owed`, as the loan list shows them), never the
+        # stored current_balance column; payments are summed as the list shows them, in cents.
+        cursor.execute("SELECT * FROM loans")
+        columns = [d[0] for d in cursor.description]
+        all_loans = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        balances = {loan['loan_id']: _balance_owed(loan, _load_rows(cursor, loan['loan_id'])) for loan in all_loans}
+        total_monthly = _cents(sum(_cents(loan.get('monthly_payment_amount')) for loan in all_loans))
+
         # Get loans by type
         print("Getting loans by type...")
         cursor.execute("""
-            SELECT loan_type, 
+            SELECT loan_type,
                    COUNT(*) as count,
-                   SUM(current_balance) as total_balance,
                    AVG(interest_rate) as avg_rate
-            FROM loans 
+            FROM loans
             WHERE is_active = 1
             GROUP BY loan_type
         """)
@@ -1667,8 +1710,9 @@ async def get_loan_summary():
             loans_by_type.append({
                 "loan_type": row[0],
                 "count": row[1],
-                "total_balance": row[2],
-                "avg_interest_rate": row[3]
+                "total_balance": _cents(sum(balances[loan['loan_id']] for loan in all_loans
+                                            if loan.get('loan_type') == row[0] and _norm('is_active', loan.get('is_active')))),
+                "avg_interest_rate": row[2]
             })
         print(f"Loans by type: {loans_by_type}")
         
@@ -1700,16 +1744,16 @@ async def get_loan_summary():
         summary = LoanSummary(
             total_loans=stats[0] or 0,
             active_loans=stats[1] or 0,
-            total_principal=stats[2] or 0,
-            total_current_balance=stats[3] or 0,
-            total_monthly_payments=stats[4] or 0,
-            total_annual_payments=(stats[4] or 0) * 12,
+            total_principal=_cents(stats[2]),
+            total_current_balance=_cents(sum(balances.values())),
+            total_monthly_payments=total_monthly,
+            total_annual_payments=_cents(total_monthly * 12),
             upcoming_payments=upcoming_payments,
             loans_by_type=loans_by_type,
             interest_rate_summary={
-                "average": stats[5] or 0,
-                "minimum": stats[6] or 0,
-                "maximum": stats[7] or 0
+                "average": stats[3] or 0,
+                "minimum": stats[4] or 0,
+                "maximum": stats[5] or 0
             }
         )
         
@@ -1745,10 +1789,12 @@ async def get_loan_cash_flow_projection(
     and remaining_balance, the debt owed at the end of the month: the
     opening balance plus proceeds minus principal, rolled forward exactly as
     the balance sheet's debt line (`services.financial_statements.
-    loans_by_period`). loan_payments lists each loan with a payment or
-    proceeds that month (loan_id, loan_name, lender, loan_type,
-    principal_payment, interest_payment, payment_amount, payment_count,
-    loan_proceeds, remaining_balance).
+    loans_by_period`; a saved schedule whose principal misses the loan's
+    principal by rounding alone books the difference with its last
+    installment, so the balance is 0.00 once it is paid). loan_payments
+    lists each loan with a payment or proceeds that month (loan_id,
+    loan_name, lender, loan_type, principal_payment, interest_payment,
+    payment_amount, payment_count, loan_proceeds, remaining_balance).
     """
     try:
         periods = period_range(start_period, end_period)
@@ -1764,17 +1810,16 @@ async def get_loan_cash_flow_projection(
         window = set(periods)
         cursor.execute("SELECT loan_id, loan_name, lender, loan_type FROM loans WHERE is_active = 1")
         names = {row[0]: row[1:] for row in cursor.fetchall()}
-        # Payment amounts and counts per loan and month, dated as the engine dates them.
-        paid: Dict[Tuple[str, str], List[float]] = {}
-        cursor.execute("SELECT lp.loan_id, lp.payment_date, lp.payment_amount FROM loan_payments lp "
+        # Payment counts per loan and month, dated as the engine dates them. The amounts are the engine's, which
+        # book a legacy schedule's rounding residue with its last installment (`schedule_rounding_residue`).
+        paid: Dict[Tuple[str, str], int] = {}
+        cursor.execute("SELECT lp.loan_id, lp.payment_date FROM loan_payments lp "
                        "JOIN loans l ON l.loan_id = lp.loan_id WHERE l.is_active = 1")
-        for loan_id, pay_date, amount in cursor.fetchall():
+        for loan_id, pay_date in cursor.fetchall():
             day = _engine_date(pay_date)
             period = day.strftime("%Y-%m") if day else None
             if period in window:
-                slot = paid.setdefault((loan_id, period), [0.0, 0])
-                slot[0] += float(amount or 0)
-                slot[1] += 1
+                paid[(loan_id, period)] = paid.get((loan_id, period), 0) + 1
 
         balances = {loan_id: float(entry["opening_balance"]) for loan_id, entry in flows["by_loan"].items()}
         debt = float(flows["opening_debt"])
@@ -1784,27 +1829,27 @@ async def get_loan_cash_flow_projection(
             loan_rows = []
             for loan_id, entry in flows["by_loan"].items():
                 balances[loan_id] += entry["proceeds"][period] - entry["principal"][period]
-                amount, count = paid.get((loan_id, period), (0.0, 0))
+                count = paid.get((loan_id, period), 0)
                 if not count and not entry["proceeds"][period]:
                     continue
                 loan_name, lender, loan_type = names.get(loan_id, (entry.get("loan_name"), None, None))
                 loan_rows.append({
                     "loan_id": loan_id, "loan_name": loan_name, "lender": lender, "loan_type": loan_type,
-                    "principal_payment": round(entry["principal"][period], 2),
-                    "interest_payment": round(entry["interest"][period], 2),
-                    "payment_amount": round(amount, 2), "payment_count": count,
-                    "loan_proceeds": round(entry["proceeds"][period], 2),
-                    "remaining_balance": round(balances[loan_id], 2),
+                    "principal_payment": _cents(entry["principal"][period]),
+                    "interest_payment": _cents(entry["interest"][period]),
+                    "payment_amount": _cents(entry["payments"][period]), "payment_count": count,
+                    "loan_proceeds": _cents(entry["proceeds"][period]),
+                    "remaining_balance": _cents(balances[loan_id]),
                 })
             loan_rows.sort(key=lambda r: (str(r["loan_name"] or ""), r["loan_id"]))
             projection = CashFlowProjection(
                 period=period, loan_payments=loan_rows,
-                total_principal=round(flows["principal"][period], 2),
-                total_interest=round(flows["interest"][period], 2),
-                total_payment=round(flows["payments"][period], 2),
-                remaining_balance=round(debt, 2),
+                total_principal=_cents(flows["principal"][period]),
+                total_interest=_cents(flows["interest"][period]),
+                total_payment=_cents(flows["payments"][period]),
+                remaining_balance=_cents(debt),
             ).model_dump()
-            projection["loan_proceeds"] = round(flows["proceeds"][period], 2)
+            projection["loan_proceeds"] = _cents(flows["proceeds"][period])
             projections.append(projection)
 
         db_manager.close_connection(conn)

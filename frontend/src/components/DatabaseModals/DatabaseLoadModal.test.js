@@ -87,6 +87,23 @@ describe('DatabaseLoadModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it('offers no Delete for the copies taken at an approval and says why', async () => {
+    const approval = snap('approved_F001_20261012_232010.db', 'approval_snapshot', 'system_backup', '2026-10-12T23:20:10', rehearsal);
+    api.get.mockResolvedValue(listResponse([...before, approval]));
+    render(<DatabaseLoadModal isOpen onClose={jest.fn()} onLoad={jest.fn().mockResolvedValue(undefined)} />);
+    await screen.findByText('Copies made when a scenario was approved');
+
+    const group = document.querySelector('[data-group="approvals"]');
+    expect(within(group).queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument();
+    expect(within(group).getByTestId('approval-evidence')).toHaveTextContent('Approval evidence');
+    expect(within(group).getByText(/evidence of a scenario's approval, so it cannot be deleted/)).toBeInTheDocument();
+    // Every other snapshot can still be deleted, and the approval copy can still be selected and loaded.
+    expect(screen.getAllByRole('button', { name: /^Delete / })).toHaveLength(before.length);
+    fireEvent.click(within(group).getByRole('radio'));
+    expect(screen.getByRole('button', { name: 'Load Database' })).toBeEnabled();
+    expect(api.delete).not.toHaveBeenCalled();
+  });
+
   it('says so when the list cannot be read', async () => {
     api.get.mockRejectedValue(Object.assign(new Error('x'), { userMessage: 'Network error - the backend is not reachable' }));
     render(<DatabaseLoadModal isOpen onClose={jest.fn()} onLoad={jest.fn()} />);
