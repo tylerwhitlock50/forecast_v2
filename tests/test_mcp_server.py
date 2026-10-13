@@ -942,7 +942,11 @@ def test_host_headers_and_proxy_config(mcp_client):
     nginx = open(os.path.join(root, "frontend", "nginx.conf")).read()
     assert "proxy_set_header Host $host;" not in nginx
     assert nginx.count("proxy_set_header Host $http_host;") == 3
-    assert "location = /mcp {" in nginx and "proxy_pass http://fastapi:8000/mcp;" in nginx
+    assert "location = /mcp {" in nginx and "proxy_pass $api/mcp;" in nginx
+    # The upstream is resolved per request (resolver + variable) so nginx
+    # starts even when the API container is not up yet.
+    assert "resolver 127.0.0.11" in nginx and "set $api http://fastapi:8000;" in nginx
+    assert "proxy_pass http://fastapi" not in nginx
     compose = open(os.path.join(root, "docker-compose.yml")).read()
     assert "host.docker.internal:*" in compose and "MCP_ALLOWED_ORIGINS" in compose
     mcp_json = json.load(open(os.path.join(root, ".mcp.json")))
