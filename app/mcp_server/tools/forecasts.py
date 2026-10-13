@@ -169,6 +169,10 @@ async def labor_forecast(
     aligned with 'periods'; machine hours, utilization % of monthly capacity
     and over-capacity months; optional labor per product. Labor cost equals
     the income statement's standard direct labor (cogs_labor).
+    machine_totals (every machine together, hours and cost, for the window
+    and by month) is the income statement's machine line (cogs_manufacturing)
+    to the cent; quote it rather than adding up by_machine, whose rows are
+    rounded one by one and can differ from it by a cent.
     standard_vs_payroll compares it with employees classed Direct in payroll
     (standard vs paid hours, utilization %, labor variance = direct payroll -
     standard cost, booked in COGS); payroll_note carries every field of the
@@ -208,6 +212,15 @@ async def labor_forecast(
                        keep=("available_hours_per_month",))
             for m in body.get("by_machine") or []
         ]
+        # Every machine together, as the statements add it: quote this, not a sum of the rounded machine rows.
+        machine_totals = dict(body.get("machine_totals") or {})
+        machine_note = machine_totals.pop("note", None)
+        machine_rows = {r.get("period"): r for r in body.get("machine_totals_by_period") or []}
+        result["machine_totals"] = drop_empty({
+            "totals": machine_totals,
+            "by_period": {m: series(machine_rows, m) for m in ("hours", "cost")},
+            "note": machine_note,
+        })
     if include_products:
         products = body.get("by_product") or []
         shown, omitted = cap(products, top_n)

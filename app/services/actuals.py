@@ -319,6 +319,17 @@ def choose_columns(rows: List[Tuple[int, Dict[str, Any]]]) -> Tuple[Dict[str, st
 #: Common names for each statement line (matched ignoring case, spaces and punctuation; '&' = 'and').
 LINE_ALIASES: Dict[str, Tuple[str, ...]] = {
     "gross_sales": ("gross revenue", "total gross sales", "sales gross", "gross sales revenue"),
+    # The gross-to-net detail lines (Sales Deductions is their sum: a file carries one or the other per month).
+    "terms_allowance": ("terms", "terms allowances", "terms discount", "terms discounts", "cash discount",
+                        "cash discounts", "early payment discount", "early payment discounts",
+                        "prompt payment discount", "prompt payment discounts", "payment terms discount"),
+    "chargebacks": ("chargeback", "charge backs", "charge back", "chargeback allowance", "chargebacks allowances",
+                    "customer chargebacks"),
+    "other_allowances": ("other allowances", "other allowance", "other discounts", "other discounts and allowances",
+                         "other sales allowances", "rebates", "volume rebates", "customer rebates",
+                         "co op advertising", "coop allowance"),
+    "excise_tax": ("excise", "excise taxes", "fet", "federal excise tax", "federal excise taxes", "federal excise",
+                   "fet tax", "excise tax fet", "fet excise tax", "firearms excise tax"),
     "total_sales_deductions": ("deductions", "sales deductions", "total deductions", "total sales deductions",
                                "discounts and allowances", "sales discounts", "sales discounts and allowances",
                                "sales returns and allowances", "gross to net", "gross to net deductions"),
@@ -362,8 +373,8 @@ AMBIGUOUS_LINES: Dict[str, str] = {
     "sales": "'{text}' could be gross or net sales: use 'Gross Sales' or 'Net Sales' (after deductions)",
     "labor": "'{text}' could be direct labor or payroll: use 'Direct Labor' (COGS) or 'Payroll' (operating expense)",
     "labour": "'{text}' could be direct labor or payroll: use 'Direct Labor' (COGS) or 'Payroll' (operating expense)",
-    "tax": "'{text}' is ambiguous: use 'Income Tax' (excise tax belongs in 'Sales Deductions')",
-    "taxes": "'{text}' is ambiguous: use 'Income Tax' (excise tax belongs in 'Sales Deductions')",
+    "tax": "'{text}' is ambiguous: use 'Income Tax' or 'Excise tax (FET)' (a sales deduction)",
+    "taxes": "'{text}' is ambiguous: use 'Income Tax' or 'Excise tax (FET)' (a sales deduction)",
     "overhead": "'{text}' is ambiguous: use 'Factory Overhead' (COGS) or 'Admin Expenses'",
     "profit": "'{text}' is ambiguous: use 'Gross Profit', 'Operating Income' or 'Net Income'",
     "expenses": "'{text}' is ambiguous: use 'Operating Expenses', 'Admin Expenses' or 'Payroll'",

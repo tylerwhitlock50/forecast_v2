@@ -7,7 +7,8 @@ uses (financial_statements.load_sales_lines), so:
   * the COGS forecast's monthly gross profit equals the income statement's,
   * its labor and machine COGS equal the statement's direct labor and
     machine lines, and
-  * the labor forecast's labor cost equals the statement's direct labor.
+  * the labor forecast's labor cost equals the statement's direct labor,
+    and its machine_totals the statement's machine / manufacturing line.
 
 Per product / customer / customer type figures are a contribution margin
 before factory overhead (overhead is a period expense from expense
@@ -58,6 +59,10 @@ _LINE_TO_REPORT = {
 }
 REPORT_METRICS = list(_LINE_TO_REPORT.values())
 PERIOD_METRICS = ("units", "gross_sales", "total_sales_deductions", "net_sales", "product_cogs", "contribution_margin")
+#: How the labor forecast's machine_totals relate to its per-machine rows (the workbook and MCP repeat it).
+MACHINE_TOTALS_NOTE = ("Machine cost totals are the income statement's Machine / manufacturing line, month by month "
+                       "and for the window. Each machine's row is rounded to the cent on its own, so the machine "
+                       "rows can add up to a cent or two more or less than the total.")
 
 
 def _pct(numerator: float, denominator: float) -> float:
@@ -261,9 +266,16 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
     # line['labor'] (revenue_and_cogs_by_period), so it is the income statement's Direct labor (standard)
     # to the cent; the per-labor-type costs below are a breakdown of it.
     standard_cost = {p: 0.0 for p in periods}
+    # Machine cost and hours per month, added line by line as the engine adds line['machine'], so the
+    # month is the income statement's Machine / manufacturing to the cent (the per-machine rows below are
+    # a breakdown of it, each rounded on its own).
+    machine_cost = {p: 0.0 for p in periods}
+    machine_hours = {p: 0.0 for p in periods}
     for line in lines:
         p = line["period"]
         standard_cost[p] += line["labor"]
+        machine_cost[p] += line["machine"]
+        machine_hours[p] += line["machine_minutes"] / 60.0
         for type_id, v in line["labor_by_type"].items():
             name, amount = rates.get(type_id, (None, None))
             entry = labor.setdefault(type_id, {
@@ -440,6 +452,15 @@ def build_labor_forecast(cursor, forecast_ids: Sequence[str], start_period: str,
                       "months with direct payroll; it is the Direct labor variance line on the income statement."),
         },
         "by_machine": by_machine,
+        # Every machine together: each month is the income statement's Machine / manufacturing line and the
+        # window total adds those months as the statements do (never a sum of the rounded per-machine rows).
+        "machine_totals_by_period": [_round({"period": p, "hours": machine_hours[p], "cost": machine_cost[p]})
+                                     for p in periods],
+        "machine_totals": _round({
+            "hours": window_total(machine_hours, periods),
+            "cost": window_total(machine_cost, periods),
+            "note": MACHINE_TOTALS_NOTE,
+        }),
         "by_product": by_product,
         "payroll_note": _round({
             "direct_labor_cost": direct_labor_cost,

@@ -196,8 +196,25 @@ async def machine_utilization(forecast_id: Scenario = None, start_period: Start 
     required minutes / available_minutes_per_month); peak_utilization_percent
     and peak_period are the busiest month; over_capacity_periods lists the
     months over 100%. Report both average and peak. A machine with no
-    capacity set has utilization null and a capacity_not_set warning."""
+    capacity set has utilization null and a capacity_not_set warning.
+    totals (every machine together: total_hours_required, total_cost, and
+    with include_monthly the months) is the income statement's machine line
+    (cogs_manufacturing) to the cent; quote it rather than adding up the
+    machines' total_cost, which are rounded one by one."""
     body = await call("GET", "/products/machines/utilization", params=_window(forecast_id, start_period, end_period))
+    if body.get("machines") and body.get("forecast_id") and body.get("start_period") and body.get("end_period"):
+        labor = await call("GET", "/reporting/labor-forecast", params={
+            "forecast_ids": body["forecast_id"], "start_period": body["start_period"],
+            "end_period": body["end_period"]})
+        machine_totals = labor.get("machine_totals") or {}
+        body["totals"] = {
+            "machine_count": len(body["machines"]),
+            "total_hours_required": machine_totals.get("hours"),
+            "total_cost": machine_totals.get("cost"),
+            "monthly": [{"period": r.get("period"), "hours_required": r.get("hours"), "cost": r.get("cost")}
+                        for r in labor.get("machine_totals_by_period") or []],
+            "note": machine_totals.get("note"),
+        }
     return _trim(body, include_monthly)
 
 
