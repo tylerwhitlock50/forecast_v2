@@ -233,3 +233,19 @@ describe('PayrollManagement labor classes and forecast tab', () => {
     expect(await screen.findByTestId('payroll-bridge-table')).toHaveTextContent('$20,482');
   });
 });
+
+describe('PayrollManagement tab strip (UI-1)', () => {
+  it('wraps instead of squeezing five labels into fixed fifths', async () => {
+    render(<PayrollManagement />);
+    await screen.findByText('$245,784');
+    const tablist = screen.getByRole('tablist');
+    expect(screen.getAllByRole('tab').map(t => t.textContent)).toEqual([
+      'Employees', 'Forecast', 'Departments', 'Business Units', 'Reports',
+    ]);
+    // At 390px a fixed five-column grid let the nowrap labels print over
+    // each other; the strip now wraps onto more rows and grows to fit.
+    expect(tablist.className).not.toMatch(/(^|\s)grid-cols-5(\s|$)/);
+    expect(tablist).toHaveClass('flex-wrap', 'h-auto');
+    screen.getAllByRole('tab').forEach(tab => expect(tab).toHaveClass('flex-1'));
+  });
+});
