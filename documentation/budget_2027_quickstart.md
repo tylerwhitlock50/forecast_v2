@@ -84,7 +84,9 @@ Gross sales - deductions = **net sales**, which is "revenue" on every report.
 When the numbers are final, **Scenarios -> Approve & lock** (or ask Claude to approve it). The
 statement totals, the Excel workbook and a database snapshot are saved as evidence, and the
 scenario is locked: any change to its sales, prices, rules, payroll, expenses or assumptions is
-refused until it is unlocked with a reason. Branch it to work on a revised version. **History**
+refused until it is unlocked with a reason. The Sales Forecast grid and the Statements page's
+*Assumptions* tab show a locked scenario read-only (company-wide capex stays editable). Branch it
+to work on a revised version. **History**
 shows who changed what and when, and runs read-only checks on older data.
 
 ## 6. With Claude Code

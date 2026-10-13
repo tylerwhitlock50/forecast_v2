@@ -42,9 +42,11 @@ export const useAssumptions = () => {
     setSaving(true);
     setError(null);
     try {
+      // No client toast: the panel shows the reason inline, as the one message.
       const res = await api.put(
         `/reporting/assumptions?forecast_id=${encodeURIComponent(forecastId)}`,
-        values
+        values,
+        { suppressErrorToast: true }
       );
       if (res?.data?.assumptions) setAssumptions(res.data.assumptions);
       else setAssumptions({ ...values, forecast_id: forecastId, found: true });

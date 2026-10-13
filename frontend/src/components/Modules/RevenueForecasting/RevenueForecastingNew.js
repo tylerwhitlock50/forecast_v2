@@ -9,7 +9,7 @@ import { calendarYearWindow } from '../../../lib/scenarioWindow';
 import { Card, CardContent } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
-import RevenueMatrix from './RevenueMatrix';
+import RevenueMatrix, { LOCKED_NOTE } from './RevenueMatrix';
 import RevenueSummary from './RevenueSummary';
 import RevenueAnalysis from './RevenueAnalysis';
 import RevenueVisualizations from './RevenueVisualizations';
@@ -20,6 +20,7 @@ import KeyboardShortcutsModal from './KeyboardShortcutsModal';
 import NewScenarioModal from './NewScenarioModal';
 import GettingStartedCard from './GettingStartedCard';
 import { goToImport } from '../../Common/importLink';
+import { isLocked } from '../Scenarios/governance';
 import {
   buildLines,
   buildPeriods,
@@ -151,6 +152,8 @@ const RevenueForecasting = () => {
   const [exporting, setExporting] = useState(null);
 
   const scenario = activeScenario && scenarios ? scenarios[activeScenario] || null : null;
+  // Approved and locked: its sales cannot change, so nothing here offers to.
+  const locked = isLocked(scenario);
 
   useEffect(() => {
     try { localStorage.setItem(PERIOD_MODE_KEY, periodMode); } catch { /* storage unavailable */ }
@@ -324,7 +327,8 @@ const RevenueForecasting = () => {
         {hasMasterData && (
           <Button
             onClick={() => setShowForecastLineModal(true)}
-            disabled={!activeScenario}
+            disabled={!activeScenario || locked}
+            title={locked ? LOCKED_NOTE : undefined}
             className="bg-orange-600 text-white hover:bg-orange-700"
           >
             <Plus className="mr-1.5 h-4 w-4" />
@@ -386,7 +390,7 @@ const RevenueForecasting = () => {
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-600">
         {scenario ? (
           <>
-            <span>Editing</span>
+            <span>{locked ? 'Viewing' : 'Editing'}</span>
             <span className="font-semibold text-gray-900">{scenario.name}</span>
             <Badge variant="outline" className="font-mono">{activeScenario}</Badge>
             {scenario.is_base && <Badge variant="secondary">Base</Badge>}

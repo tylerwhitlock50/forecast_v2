@@ -6,6 +6,7 @@ import { useForecast } from '../../../context/ForecastContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
+import { LockIcon, isLocked } from '../Scenarios/governance';
 import {
   buildMatrixRows,
   carriedPrice,
@@ -29,6 +30,9 @@ const fmtRevenue = blankIfZero(formatMoney);
 // Hides ForecastGrid's "Click a cell, type to edit" hint when nothing is editable.
 const READ_ONLY_GRID = '[&>div:last-child>span:last-child]:invisible';
 
+/** Why a locked scenario's sales cannot be edited (the server refuses with 409 SCENARIO_LOCKED). */
+export const LOCKED_NOTE = 'Approved and locked: branch it to make changes';
+
 /** Price list price for a line and month (customer price, customer-type price, then list price). */
 const resolveListPrice = async ({ unitId, customerId, period, forecastId }) => {
   const params = new URLSearchParams({ unit_id: unitId, customer_id: customerId, period });
@@ -45,12 +49,14 @@ const resolveListPrice = async ({ unitId, customerId, period, forecastId }) => {
 /**
  * Customer × product lines for the active scenario, one column per period,
  * showing one measure at a time. Quantity and price are edited inline in the
- * monthly view and saved per cell; revenue is always derived.
+ * monthly view and saved per cell; revenue is always derived. An approved
+ * and locked scenario is read-only.
  */
 const RevenueMatrix = ({ lines, periods, selectedSegment, onAddForecastLine, periodType = 'monthly' }) => {
   const { actions, activeScenario, scenarios } = useForecast();
   const [measure, setMeasure] = useState('quantity');
-  const editable = periodType === 'monthly' && Boolean(activeScenario);
+  const locked = isLocked(scenarios?.[activeScenario]);
+  const editable = periodType === 'monthly' && Boolean(activeScenario) && !locked;
   const scenarioName = activeScenario && scenarios?.[activeScenario] ? scenarios[activeScenario].name : activeScenario;
 
   const lineById = useMemo(() => new Map((lines || []).map(l => [l.id, l])), [lines]);
@@ -155,10 +161,15 @@ const RevenueMatrix = ({ lines, periods, selectedSegment, onAddForecastLine, per
     <Card>
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <CardTitle className="flex items-center gap-2 text-lg">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-lg">
             Forecast lines
             <Badge variant="secondary">{rows.length}</Badge>
-            {!editable && periodType !== 'monthly' && (
+            {locked ? (
+              <Badge variant="outline" className="gap-1 border-emerald-200 bg-emerald-50 text-emerald-800" data-testid="sales-locked-note">
+                <LockIcon className="h-3.5 w-3.5 flex-none" />
+                {LOCKED_NOTE}
+              </Badge>
+            ) : !editable && periodType !== 'monthly' && (
               <Badge variant="outline" title="Switch the period to Monthly to edit">Totals only · switch to Monthly to edit</Badge>
             )}
           </CardTitle>
@@ -184,10 +195,10 @@ const RevenueMatrix = ({ lines, periods, selectedSegment, onAddForecastLine, per
             <h3 className="mb-2 text-lg font-semibold text-gray-900">No forecast lines in these months</h3>
             <p className="mb-4 text-sm text-gray-600">
               {activeScenario
-                ? <>Nothing is forecast in <span className="font-medium">{scenarioName}</span> for the selected months. Import a sales file or add a line.</>
+                ? <>Nothing is forecast in <span className="font-medium">{scenarioName}</span> for the selected months.{locked ? '' : ' Import a sales file or add a line.'}</>
                 : 'Select a scenario in the bar above first.'}
             </p>
-            {onAddForecastLine && activeScenario && (
+            {onAddForecastLine && activeScenario && !locked && (
               <Button variant="outline" onClick={onAddForecastLine}>Add a forecast line</Button>
             )}
           </div>

@@ -4,6 +4,7 @@ import { DataTable } from '../../ui/data-table';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
+import { loanTypeLabel, paymentTypeLabel } from './loanLabels';
 
 const LoanTable = ({ loans, auditByLoan = {}, onEdit, onDelete, onViewSchedule, onReviewSchedule }) => {
     const formatCurrency = (amount) => {
@@ -82,11 +83,11 @@ const LoanTable = ({ loans, auditByLoan = {}, onEdit, onDelete, onViewSchedule, 
             render: (_, row) => (
                 <div className="space-y-2">
                     <Badge variant={getLoanTypeVariant(row.loan_type)}>
-                        {row.loan_type.replace('_', ' ')}
+                        {loanTypeLabel(row.loan_type)}
                     </Badge>
                     <div>
                         <Badge variant={getPaymentTypeVariant(row.payment_type)}>
-                            {row.payment_type.replace('_', ' ')}
+                            {paymentTypeLabel(row.payment_type)}
                         </Badge>
                     </div>
                 </div>

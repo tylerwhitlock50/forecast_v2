@@ -16,6 +16,7 @@ import ReportWarnings from './components/ReportWarnings';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/tabs';
+import { isLocked } from '../Scenarios/governance';
 import { formatPeriod } from './utils/formatters';
 
 const TABS = [
@@ -100,6 +101,8 @@ const ReportingDashboard = () => {
 
   const primaryForecastId = selectedForecasts[0];
   const primaryForecastName = scenarios[primaryForecastId]?.name;
+  // Approved and locked: its assumptions and its own capex are read-only.
+  const primaryForecastLocked = isLocked(scenarios[primaryForecastId]);
   const hasStatements = Boolean(statements?.income_statement);
 
   const handleExportWorkbook = async () => {
@@ -206,9 +209,10 @@ const ReportingDashboard = () => {
       {selectedForecasts.length > 0 && (
         <Card className="p-6">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-5">
+            {/* On a phone the tabs wrap onto more rows instead of squeezing the labels into fixed fifths. */}
+            <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
               {TABS.map(tab => (
-                <TabsTrigger key={tab.id} value={tab.id}>{tab.label}</TabsTrigger>
+                <TabsTrigger key={tab.id} value={tab.id} className="flex-1 px-2.5 sm:px-3">{tab.label}</TabsTrigger>
               ))}
             </TabsList>
 
@@ -246,6 +250,7 @@ const ReportingDashboard = () => {
                 <AssumptionsPanel
                   forecastId={primaryForecastId}
                   forecastName={primaryForecastName}
+                  locked={primaryForecastLocked}
                   period={reportingPeriod}
                   onChanged={refetch}
                 />

@@ -583,12 +583,13 @@ const PayrollManagement = () => {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="employees">Employees</TabsTrigger>
-          <TabsTrigger value="forecast">Forecast</TabsTrigger>
-          <TabsTrigger value="departments">Departments</TabsTrigger>
-          <TabsTrigger value="allocation">Business Units</TabsTrigger>
-          <TabsTrigger value="reports">Reports</TabsTrigger>
+        {/* On a phone the tabs wrap onto more rows instead of squeezing the labels into fixed fifths. */}
+        <TabsList className="h-auto w-full flex-wrap justify-start gap-1">
+          <TabsTrigger value="employees" className="flex-1 px-2.5 sm:px-3">Employees</TabsTrigger>
+          <TabsTrigger value="forecast" className="flex-1 px-2.5 sm:px-3">Forecast</TabsTrigger>
+          <TabsTrigger value="departments" className="flex-1 px-2.5 sm:px-3">Departments</TabsTrigger>
+          <TabsTrigger value="allocation" className="flex-1 px-2.5 sm:px-3">Business Units</TabsTrigger>
+          <TabsTrigger value="reports" className="flex-1 px-2.5 sm:px-3">Reports</TabsTrigger>
         </TabsList>
 
         <TabsContent value="employees" className="space-y-6">

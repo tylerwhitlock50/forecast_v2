@@ -313,16 +313,17 @@ export const ForecastProvider = ({ children }) => {
           await api.post('/forecast/bulk_update', { forecasts, operation }, { suppressSuccessToast: true, suppressErrorToast: true });
         }
       } catch (error) {
+        // Handled here in full: one toast and a rollback. The debounced call
+        // is fire-and-forget (bulkUpdateForecast and the flushes never await
+        // it), so rethrowing would only leave an unhandled rejection behind.
         console.error('Error saving forecast updates:', error);
         showErrorToast(error, 'Could not save forecast changes');
-        // Rollback on error
         if (previousSales) {
-          dispatchRef({ 
-            type: actionTypes.ROLLBACK_SALES_UPDATE, 
-            payload: { previousSales } 
+          dispatchRef({
+            type: actionTypes.ROLLBACK_SALES_UPDATE,
+            payload: { previousSales }
           });
         }
-        throw error;
       }
     }, 1500)
   );

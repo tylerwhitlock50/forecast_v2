@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useAssumptions } from '../hooks/useAssumptions';
+import { LockIcon } from '../../Scenarios/governance';
 import { Card } from '../../../ui/card';
 import { Button } from '../../../ui/button';
 import { Input } from '../../../ui/input';
@@ -48,6 +50,8 @@ const FIELD_GROUPS = [
 ];
 
 const ALL_FIELDS = FIELD_GROUPS.flatMap(g => g.fields);
+
+const LOCKED_NOTE = 'Approved and locked: branch it to make changes';
 
 // API values -> form strings (tax as percent).
 export const toForm = (assumptions = {}) => {
@@ -134,7 +138,9 @@ const CapexModal = ({ item, forecastId, defaultPeriod, onSave, onClose }) => {
         depreciation_method: form.depreciation_method,
         description: form.description || null,
         is_active: form.is_active,
-        forecast_id: forecastId
+        // Editing keeps the row's scope: a company-wide row (no forecast_id)
+        // stays company-wide instead of moving into this scenario.
+        forecast_id: item ? (item.forecast_id ?? null) : forecastId
       });
     } catch (err) {
       setError(err.userMessage || err.message || 'Failed to save');
@@ -201,7 +207,12 @@ const CapexModal = ({ item, forecastId, defaultPeriod, onSave, onClose }) => {
   );
 };
 
-const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
+/**
+ * Balance-sheet assumptions and capital expenditures for one scenario.
+ * `locked`: the scenario is approved and locked, so its assumptions and its
+ * own capex rows are read-only (company-wide capex rows stay editable).
+ */
+const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged, locked = false }) => {
   const {
     assumptions, defaults, capex, loading, saving, error,
     loadAssumptions, saveAssumptions, loadCapex, createCapex, updateCapex, deleteCapex
@@ -233,19 +244,19 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
   };
 
   const handleSave = async () => {
+    if (locked) return;
     setMessage(null);
     const ok = await saveAssumptions(forecastId, fromForm(form));
     if (ok) {
       setDirty(false);
       setMessage({ type: 'success', text: 'Assumptions saved. Statements refreshed.' });
       if (onChanged) onChanged();
-    } else {
-      setMessage({ type: 'error', text: 'Failed to save assumptions.' });
     }
+    // A refusal shows once, as the hook's `error` (the server's reason) below.
   };
 
   const handleResetToDefaults = () => {
-    if (!defaults) return;
+    if (!defaults || locked) return;
     setForm(toForm({ ...defaults, opening_period: form.opening_period }));
     setDirty(true);
   };
@@ -272,6 +283,9 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
     }
   };
 
+  // Rows pinned to a locked scenario cannot change; company-wide rows can.
+  const capexLocked = (item) => locked && item.forecast_id === forecastId;
+
   if (!forecastId) {
     return <p className="text-sm text-gray-500 py-6 text-center">Select a forecast to edit its assumptions.</p>;
   }
@@ -289,10 +303,25 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleResetToDefaults} disabled={!defaults || saving}>Reset to defaults</Button>
-          <Button size="sm" onClick={handleSave} disabled={saving || loading}>{saving ? 'Saving...' : dirty || (assumptions && !assumptions.found) ? 'Save assumptions' : 'Saved'}</Button>
+          <Button variant="outline" size="sm" onClick={handleResetToDefaults} disabled={!defaults || saving || locked}>Reset to defaults</Button>
+          <Button size="sm" onClick={handleSave} disabled={saving || loading || locked}>{saving ? 'Saving...' : dirty || (assumptions && !assumptions.found) ? 'Save assumptions' : 'Saved'}</Button>
         </div>
       </div>
+
+      {locked && (
+        <div
+          className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+          role="status"
+          data-testid="assumptions-locked-note"
+        >
+          <LockIcon className="mt-0.5 h-4 w-4 flex-none text-emerald-700" />
+          <p className="min-w-0">
+            <span className="font-semibold">{LOCKED_NOTE}.</span>{' '}
+            Its assumptions and its own capital expenditures are read-only; company-wide capex can still be edited.{' '}
+            <Link to="/scenarios" className="font-medium underline">Branch or unlock it on Scenarios</Link>
+          </p>
+        </div>
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {message && (
@@ -317,7 +346,7 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
                   className="h-8 mt-1"
                   value={form[f.key] ?? ''}
                   onChange={e => setField(f.key, e.target.value)}
-                  disabled={loading}
+                  disabled={loading || locked}
                 />
                 {f.help && <p className="text-[11px] text-gray-500 mt-1">{f.help}</p>}
               </div>
@@ -333,7 +362,7 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
             <h3 className="text-lg font-medium">Capital expenditures</h3>
             <p className="text-sm text-gray-600">Purchases flow through investing cash flow and are depreciated straight-line into operating expenses.</p>
           </div>
-          <Button size="sm" onClick={() => setCapexModal({ item: null })}>Add capex</Button>
+          <Button size="sm" onClick={() => setCapexModal({ item: null })} disabled={locked}>Add capex</Button>
         </div>
         <div className="overflow-x-auto rounded-md border border-gray-200">
           <table data-testid="capex-table" className="min-w-full text-xs tabular-nums">
@@ -353,7 +382,12 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
             <tbody>
               {capex.map(item => (
                 <tr key={item.capex_id} className="border-t border-gray-100">
-                  <td className="px-3 py-1 whitespace-nowrap font-medium">{item.asset_name}</td>
+                  <td className="px-3 py-1 whitespace-nowrap font-medium">
+                    {item.asset_name}
+                    {!item.forecast_id && (
+                      <span className="ml-2 font-normal text-gray-500" title="Included in every scenario">Company-wide</span>
+                    )}
+                  </td>
                   <td className="px-3 py-1 whitespace-nowrap text-gray-600">{item.category || '—'}</td>
                   <td className="px-3 py-1 text-right whitespace-nowrap">{formatAccounting(item.amount)}</td>
                   <td className="px-3 py-1 whitespace-nowrap">{formatPeriod(item.purchase_period)}</td>
@@ -362,8 +396,8 @@ const AssumptionsPanel = ({ forecastId, forecastName, period, onChanged }) => {
                   <td className="px-3 py-1 whitespace-nowrap">{item.depreciation_method === 'none' ? 'None' : 'Straight line'}</td>
                   <td className="px-3 py-1 text-center">{item.is_active ? 'Yes' : 'No'}</td>
                   <td className="px-3 py-1 text-right whitespace-nowrap">
-                    <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setCapexModal({ item })}>Edit</Button>
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-red-600" onClick={() => handleCapexDelete(item)}>Delete</Button>
+                    <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setCapexModal({ item })} disabled={capexLocked(item)}>Edit</Button>
+                    <Button variant="ghost" size="sm" className="h-7 px-2 text-red-600" onClick={() => handleCapexDelete(item)} disabled={capexLocked(item)}>Delete</Button>
                   </td>
                 </tr>
               ))}

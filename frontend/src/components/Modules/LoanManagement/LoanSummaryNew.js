@@ -3,6 +3,7 @@ import { formatDateOnly } from '../../../lib/dates';
 import { StatsCard } from '../../ui/stats-card';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
+import { loanTypeLabel } from './loanLabels';
 
 const LoanSummary = ({ summary, onRefresh }) => {
     const formatCurrency = (amount) => {
@@ -126,8 +127,8 @@ const LoanSummary = ({ summary, onRefresh }) => {
                                         <div key={index} className="space-y-2">
                                             <div className="flex items-center justify-between">
                                                 <div className="space-y-1">
-                                                    <div className="font-semibold capitalize">
-                                                        {type.loan_type.replace('_', ' ')}
+                                                    <div className="font-semibold">
+                                                        {loanTypeLabel(type.loan_type)}
                                                     </div>
                                                     <div className="text-sm text-muted-foreground">
                                                         {type.count} loan{type.count !== 1 ? 's' : ''}
@@ -163,15 +164,18 @@ const LoanSummary = ({ summary, onRefresh }) => {
                     </CardHeader>
                     <CardContent>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div className="space-y-2">
+                            {/* Share of the original principal paid back. Not a leverage
+                                ratio: that needs total assets from the balance sheet. */}
+                            <div className="space-y-2" data-testid="principal-repaid-pct">
                                 <div className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                                    Debt-to-Asset Ratio
+                                    Principal Repaid
                                 </div>
                                 <div className="text-2xl font-bold">
-                                    {summary.total_principal > 0 ? 
-                                        `${((summary.total_current_balance / summary.total_principal) * 100).toFixed(1)}%` : 
+                                    {summary.total_principal > 0 ?
+                                        `${(((summary.total_principal - summary.total_current_balance) / summary.total_principal) * 100).toFixed(1)}%` :
                                         '0%'}
                                 </div>
+                                <div className="text-sm text-muted-foreground">% of original principal</div>
                             </div>
                             
                             <div className="space-y-2">
