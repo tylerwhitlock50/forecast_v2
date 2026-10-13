@@ -2,8 +2,10 @@ services:
   fastapi:
     build: ./app
     container_name: forecast-api
+    # Host ports default off 8000/3000 (used by other local stacks); override
+    # with API_PORT / FRONTEND_PORT in .env.
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8100}:8000"
     volumes:
       - ./data:/data
       - ./app:/app
@@ -41,7 +43,7 @@ services:
     build: ./frontend
     container_name: forecast-frontend
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3100}:3000"
     # Start only once the API answers; nginx also resolves the API name per
     # request (frontend/nginx.conf), so it no longer dies with "host not
     # found in upstream fastapi" when the API is late or restarting.

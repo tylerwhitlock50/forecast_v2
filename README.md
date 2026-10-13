@@ -17,9 +17,13 @@ It forecasts revenue by customer and product, prices it by customer and customer
 docker-compose up --build
 ```
 
-- Frontend: http://localhost:3000
-- API: http://localhost:8000
-- API docs: http://localhost:8000/docs
+- Frontend: http://localhost:3100
+- API: http://localhost:8100
+- API docs: http://localhost:8100/docs
+
+The host ports default to 3100 and 8100 so they stay clear of other stacks on 3000 / 8000. To use
+different ones, set `FRONTEND_PORT` and `API_PORT` in a `.env` file next to `docker-compose.yml`
+(inside the containers the ports are always 3000 and 8000).
 
 The database is `data/forecast.db` on the host (`./data` is mounted at `/data`), so it survives
 `docker-compose down`, `down -v` and rebuilds. See [Snapshots and starting clean](#snapshots-and-starting-clean).
@@ -42,8 +46,12 @@ Frontend:
 ```bash
 cd frontend
 npm install
-npm start
+npm start                          # http://localhost:3000, proxies /api to http://localhost:8000
 ```
+
+If 8000 or 3000 is taken, start the backend with `--port 8100` and the frontend with
+`PORT=3100` and `REACT_APP_API_URL=http://localhost:8100` (PowerShell: `$env:PORT=3100;
+$env:REACT_APP_API_URL="http://localhost:8100"; npm start`).
 
 ## Project Structure
 
@@ -68,7 +76,8 @@ forecast_v2/
 
 ## API Endpoints
 
-Routes are grouped by domain. See http://localhost:8000/docs for the full interactive list.
+Routes are grouped by domain. See http://localhost:8100/docs (Docker) or http://localhost:8000/docs
+(local run) for the full interactive list.
 
 | Prefix          | Source                          | Purpose                                  |
 |-----------------|---------------------------------|------------------------------------------|
@@ -87,17 +96,18 @@ Routes are grouped by domain. See http://localhost:8000/docs for the full intera
 ## MCP Server (AI assistants)
 
 The backend serves a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at
-`http://localhost:8000/mcp`. Connect Claude Code or Codex to it and ask for model changes in
-plain language ("cut the ASP 35% in June, August and September", "steel goes up 12%"); the
-assistant reads and updates the model through the same API the UI uses, and you refresh the
-page to see the result.
+`http://localhost:8100/mcp` under Docker (`http://localhost:8000/mcp` for a local run). Connect
+Claude Code or Codex to it and ask for model changes in plain language ("cut the ASP 35% in June,
+August and September", "steel goes up 12%"); the assistant reads and updates the model through the
+same API the UI uses, and you refresh the page to see the result.
 
 ```bash
-claude mcp add --transport http forecast http://localhost:8000/mcp   # Claude Code
-codex mcp add forecast --url http://localhost:8000/mcp               # Codex
+claude mcp add --transport http forecast http://localhost:8100/mcp   # Claude Code
+codex mcp add forecast --url http://localhost:8100/mcp               # Codex
 ```
 
-Opening this repository in Claude Code picks the server up from `.mcp.json` automatically.
+Opening this repository in Claude Code picks the server up from `.mcp.json` automatically; it points
+at the Docker port (8100), so change it if you run the backend on another port.
 Setup, the tool catalog and the planning workflow are in `documentation/mcp_server_guide.md`.
 
 ## Frontend Modules
@@ -183,14 +193,14 @@ Test config is in `pytest.ini`. Markers: `unit`, `integration`, `slow`.
 
 ## Docker Services
 
-| Service    | Port | Purpose                |
-|------------|------|------------------------|
-| `fastapi`  | 8000 | API backend            |
-| `frontend` | 3000 | React UI               |
+| Service    | Host port (override)     | Container port | Purpose     |
+|------------|--------------------------|----------------|-------------|
+| `fastapi`  | 8100 (`API_PORT`)        | 8000           | API backend |
+| `frontend` | 3100 (`FRONTEND_PORT`)   | 3000           | React UI    |
 
 ## Troubleshooting
 
-- **Port conflicts**: ensure 3000 and 8000 are free.
+- **Port conflicts** (`docker-compose up` fails with "port is already allocated"): find the owner with `docker ps` or `Get-NetTCPConnection -State Listen -LocalPort 8100,3100`, then pick free ports with `API_PORT` / `FRONTEND_PORT` in `.env` (and update `.mcp.json` if the API port changes).
 - **Stale or old sample data**: `POST /database/start-clean {"confirm": true}` (snapshots first), or stop the app and delete `data/forecast.db*`. `docker-compose down -v` does not touch the database.
 - **A restore looked like it did nothing**: use `POST /database/load` (or the UI's Load Database), never a file copy over `forecast.db`; check `GET /database/info` for the file the app is using.
 - **Schema out of date**: the schema is migrated at every start and after every load, so a restart is enough.
