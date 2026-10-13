@@ -2193,7 +2193,10 @@ class DatabaseManager:
                         text = str(e)
                         if denied or GOVERNANCE_TOKEN in text or 'SCENARIO_LOCKED' in text:
                             if denied:
-                                reason = " and ".join(dict.fromkeys(denied))
+                                unique = list(dict.fromkeys(denied))
+                                # ANALYZE / REINDEX touch every table: name the first few, count the rest.
+                                reason = " and ".join(unique[:3]) + (
+                                    f" (and {len(unique) - 3} more)" if len(unique) > 3 else "")
                             elif GOVERNANCE_TOKEN in text:
                                 reason = "change a scenario's approval fields (approve / unlock only)"
                             else:

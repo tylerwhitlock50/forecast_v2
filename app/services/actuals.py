@@ -78,8 +78,11 @@ from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from services.financial_statements import VARIANCE_LINE_ITEMS, period_range
+from services.financial_statements import SALES_DEDUCTION_DETAIL_LINES, VARIANCE_LINE_ITEMS, period_range
 from utils.period_normalizer import normalize_month, normalize_period, period_kind
+
+#: The sales deductions total line; a month carries either it or the detail lines (SALES_DEDUCTION_DETAIL_LINES).
+DEDUCTIONS_TOTAL_LINE = "total_sales_deductions"
 
 #: Two amounts closer than this are the same amount (and a control total ties within it).
 TOLERANCE = 0.005
@@ -763,6 +766,11 @@ def _tie_out_warnings(planned: List[Dict[str, Any]]) -> List[str]:
             continue
         by_period.setdefault(item["period"], {})[item["line_item"]] = item["amount"]
     out: List[str] = []
+    for lines in by_period.values():
+        # Deductions given as the detail lines (terms, chargebacks, other allowances, excise) tie out as their sum.
+        details = [k for k in SALES_DEDUCTION_DETAIL_LINES if k in lines]
+        if details and DEDUCTIONS_TOTAL_LINE not in lines:
+            lines[DEDUCTIONS_TOTAL_LINE] = sum(lines[k] for k in details)
     checks = (
         ("gross_sales", "total_sales_deductions", "revenue", "Gross Sales - Sales Deductions"),
         ("revenue", "total_cogs", "gross_profit", "Net Sales - Total COGS"),
@@ -2022,17 +2030,31 @@ def list_periods(conn, start_period: Optional[str] = None, end_period: Optional[
     cursor = conn.cursor()
     cursor.execute(f"SELECT {', '.join(PERIOD_COLUMNS)} FROM actuals_periods")
     status = {r[0]: dict(zip(PERIOD_COLUMNS, r)) for r in cursor.fetchall()}
-    cursor.execute("SELECT period, COUNT(*), COUNT(DISTINCT line_item), MAX(updated_at) FROM actuals GROUP BY period")
-    stats = {r[0]: {"rows": r[1], "lines_entered": r[2], "last_updated": r[3]} for r in cursor.fetchall()}
+    cursor.execute("SELECT period, COUNT(*), MAX(updated_at) FROM actuals GROUP BY period")
+    stats = {r[0]: {"rows": r[1], "last_updated": r[2]} for r in cursor.fetchall()}
+    cursor.execute("SELECT DISTINCT period, line_item FROM actuals")
+    lines_by_period: Dict[str, set] = {}
+    for period, line in cursor.fetchall():
+        lines_by_period.setdefault(period, set()).add(line)
     if start_period and end_period:
         months = period_range(start_period, end_period)
     else:
         months = sorted(set(status) | set(stats))
-    lines_total = len(VARIANCE_LINE_ITEMS)
     out = []
     for p in months:
         s = status.get(p) or {}
-        st = stats.get(p) or {"rows": 0, "lines_entered": 0, "last_updated": None}
+        st = stats.get(p) or {"rows": 0, "last_updated": None}
+        # The sales deductions are either the total or the detail lines (as budget vs actual counts them):
+        # a month given the total alone needs no detail lines, and detail lines alone give the total.
+        lines = lines_by_period.get(p, set()) & set(VARIANCE_LINE_ITEMS)
+        details = lines & set(SALES_DEDUCTION_DETAIL_LINES)
+        required = set(VARIANCE_LINE_ITEMS)
+        if DEDUCTIONS_TOTAL_LINE in lines and not details:
+            required -= set(SALES_DEDUCTION_DETAIL_LINES)
+        if details and DEDUCTIONS_TOTAL_LINE not in lines:
+            lines = lines | {DEDUCTIONS_TOTAL_LINE}
+        st = {**st, "lines_entered": len(lines & required)}
+        lines_total = len(required)
         out.append({
             "period": p,
             "label": month_label(p),

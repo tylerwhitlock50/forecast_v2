@@ -446,3 +446,14 @@ def test_moving_a_row_into_a_locked_scenario_is_filed_under_that_scenario_when_s
     assert res.json()["forecast_id"] == "F002" and "Upside" in res.json()["detail"]
     assert latest(client)["forecast_id"] == "F002"
     assert q(mgr, "SELECT forecast_id FROM sales WHERE sale_id = 'W1'") == [(draft,)]
+
+
+def test_a_replay_refusal_of_analyze_or_reindex_stays_short(env):
+    client, mgr = env
+    for statement in ("ANALYZE", "REINDEX"):
+        raw(mgr, "DELETE FROM execution_log")
+        log_sql(mgr, statement)
+        res = client.post("/database/rollback/replay")
+        assert res.status_code == 409, res.text
+        detail = res.json()["detail"]
+        assert len(detail) < 800 and "more)" in detail, detail

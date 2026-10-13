@@ -233,6 +233,22 @@ def test_the_current_balance_comes_from_the_recorded_payments_not_the_edit_histo
     assert overview(client, loan_id) == (owed, owed, owed)
 
 
+def test_a_note_or_a_skipped_installment_repays_nothing(env):
+    client, mgr = env
+    loan_id = create_loan(client, loan_name="Term N", principal_amount=120000, interest_rate=6, loan_term_months=36,
+                          start_date="2027-01-15")
+    schedule = rows(mgr, loan_id)
+    raw(mgr, "UPDATE loan_payments SET notes = 'rate review expected' WHERE loan_id = ? AND payment_number = 10",
+        (loan_id,))
+    raw(mgr, "UPDATE loan_payments SET payment_status = 'skipped' WHERE loan_id = ? AND payment_number = 4",
+        (loan_id,))
+    assert overview(client, loan_id) == (120000.0, 120000.0, 120000.0)
+    raw(mgr, "UPDATE loan_payments SET payment_status = 'paid' WHERE loan_id = ? AND payment_number IN (1, 2)",
+        (loan_id,))
+    owed = round(120000 - schedule[0]["principal_payment"] - schedule[1]["principal_payment"], 2)
+    assert overview(client, loan_id) == (owed, owed, owed)
+
+
 def test_loan_money_is_in_cents(env):
     client, mgr = env
     zero = create_loan(client, loan_name="Zero", principal_amount=100157, interest_rate=0, loan_term_months=11,

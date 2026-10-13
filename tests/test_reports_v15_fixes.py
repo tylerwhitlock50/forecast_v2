@@ -273,3 +273,28 @@ def test_both_the_total_and_detail_lines_in_one_month_warn(env):
                                    "detail_sum": 42500.0, "difference": 2500.0}]
     assert "either the detail lines or the total, never both" in warning["message"]
     assert "2027-04" in warning["message"] and "42,500.00" in warning["message"]
+
+
+def test_month_close_counts_deductions_as_the_total_or_the_detail_lines(env):
+    client, _mgr, _fid = env
+    from services.financial_statements import SALES_DEDUCTION_DETAIL_LINES, VARIANCE_LINE_ITEMS
+    others = [k for k in VARIANCE_LINE_ITEMS if k not in SALES_DEDUCTION_DETAIL_LINES and k != "total_sales_deductions"]
+    total_month = [{"period": "2031-02", "line_item": k, "amount": 1} for k in others + ["total_sales_deductions"]]
+    detail_month = [{"period": "2031-01", "line_item": k, "amount": 1} for k in others + list(SALES_DEDUCTION_DETAIL_LINES)]
+    res = client.post("/reporting/actuals", json={"entries": total_month + detail_month})
+    assert res.status_code == 200, res.text
+    periods = {p["period"]: p for p in client.get("/reporting/actuals/periods").json()["data"]["periods"]}
+    assert periods["2031-02"]["lines_entered"] == periods["2031-02"]["lines_total"] == len(VARIANCE_LINE_ITEMS) - 4
+    assert periods["2031-01"]["lines_entered"] == periods["2031-01"]["lines_total"] == len(VARIANCE_LINE_ITEMS)
+
+
+def test_the_tie_out_check_adds_up_the_detail_deduction_lines(env):
+    client, _mgr, _fid = env
+    rows = [{"period": "2031-07", "line_item": "gross_sales", "amount": 1000},
+            {"period": "2031-07", "line_item": "terms_allowance", "amount": 10},
+            {"period": "2031-07", "line_item": "excise_tax", "amount": 100},
+            {"period": "2031-07", "line_item": "revenue", "amount": 500}]
+    res = client.post("/reporting/actuals", params={"dry_run": "true"}, json={"entries": rows})
+    assert res.status_code == 200, res.text
+    warnings = " ".join(str(w) for w in res.json()["data"].get("warnings") or [])
+    assert "Gross Sales - Sales Deductions = 890.00" in warnings

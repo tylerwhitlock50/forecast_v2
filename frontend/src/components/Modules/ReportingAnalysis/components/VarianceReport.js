@@ -63,9 +63,15 @@ const CoverageBadge = ({ totals, actualsThrough }) => {
 };
 
 // CSV template for actual imports, built client-side.
+// The sales deductions go in as the total OR as the detail lines, never both for one month; a blank amount
+// refuses the row. The template carries the total; a file may list the detail lines in its place.
+export const SALES_DEDUCTION_DETAIL_LINES = ['terms_allowance', 'chargebacks', 'other_allowances', 'excise_tax'];
+
 export const buildActualsTemplate = (lineItems, period) => {
   const header = 'period,line_item,amount,reference_id,notes';
-  const body = lineItems.map(li => `${period || ''},${li.line_item},,,`).join('\n');
+  const hasTotal = lineItems.some(li => li.line_item === 'total_sales_deductions');
+  const rows = hasTotal ? lineItems.filter(li => !SALES_DEDUCTION_DETAIL_LINES.includes(li.line_item)) : lineItems;
+  const body = rows.map(li => `${period || ''},${li.line_item},,,`).join('\n');
   return `${header}\n${body}\n`;
 };
 
@@ -147,6 +153,11 @@ const VarianceReport = ({ forecastIds, period }) => {
   const actualsThrough = variance?.actuals_through || (withActuals.length > 0 ? withActuals[withActuals.length - 1] : null);
   const incompleteLines = useMemo(() => variance?.incomplete_lines || [], [variance]);
   const periodCoverage = useMemo(() => variance?.period_coverage || [], [variance]);
+  // A month whose actuals carry both the sales deductions total and its detail lines (compared as entered).
+  const bothDeductionForms = useMemo(
+    () => (variance?.warnings || []).filter(w => w?.code === 'sales_deductions_total_and_detail'),
+    [variance],
+  );
   const selectedCoverage = periodCoverage.find(c => c.period === selectedPeriod) || null;
   const closedPeriods = useMemo(() => variance?.closed_periods || [], [variance]);
   const selectedClosed = closedPeriods.includes(selectedPeriod);
@@ -285,6 +296,11 @@ const VarianceReport = ({ forecastIds, period }) => {
             <p className="text-sm text-amber-800 mt-1" data-testid="incomplete-actuals-note">
               Incomplete actuals: {incompleteLines.map(l => `${l.label} missing ${l.missing_periods.map(formatPeriod).join(', ')}`).join('; ')}.
               A blank month is missing, not zero; to-date variances compare only the months each line has actuals for.
+            </p>
+          )}
+          {bothDeductionForms.length > 0 && (
+            <p className="text-sm text-amber-800 mt-1" data-testid="deductions-both-note">
+              {bothDeductionForms.map(w => w.message).join(' ')}
             </p>
           )}
           {selectedClosed && (

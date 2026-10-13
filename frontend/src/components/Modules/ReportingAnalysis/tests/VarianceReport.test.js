@@ -377,4 +377,17 @@ describe('VarianceReport', () => {
     expect(lines).toContain('2026-02,revenue,,,');
     expect(lines).toContain('2026-02,capex,,,');
   });
+
+  it('puts the sales deductions total in the template, not the detail lines as well', () => {
+    const items = [
+      { line_item: 'gross_sales' }, { line_item: 'total_sales_deductions' }, { line_item: 'terms_allowance' },
+      { line_item: 'chargebacks' }, { line_item: 'other_allowances' }, { line_item: 'excise_tax' },
+      { line_item: 'revenue' },
+    ];
+    const lines = buildActualsTemplate(items, '2027-01').trim().split('\n').slice(1).map(l => l.split(',')[1]);
+    expect(lines).toEqual(['gross_sales', 'total_sales_deductions', 'revenue']);
+    // Without the total in the catalogue the detail lines stay.
+    const detail = buildActualsTemplate(items.filter(i => i.line_item !== 'total_sales_deductions'), '2027-01');
+    expect(detail).toContain('2027-01,excise_tax,,,');
+  });
 });

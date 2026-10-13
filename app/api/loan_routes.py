@@ -544,9 +544,10 @@ def _balance_owed(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> float:
     """
     What is still owed on a loan, from its saved schedule (the loan list's and
     the portfolio summary's current_balance): the principal less the
-    principal of the installments kept as recorded history, the same rule
-    as `_owed_after_history`, so the same loan state always shows the same
-    balance and a principal changed after recorded payments counts. In
+    principal of the installments actually paid (paid status, actual date or
+    actual amount; a skipped installment or a note repays nothing), by the
+    rule of `_owed_after_history`, so the same loan state always shows the
+    same balance and a principal changed after recorded payments counts. In
     cents and never negative; nothing once recorded installments paid the
     loan off, a legacy schedule's rounding residue included. A loan with no
     saved schedule owes its principal when it has a start date (as the
@@ -556,8 +557,14 @@ def _balance_owed(loan: Dict[str, Any], rows: List[Dict[str, Any]]) -> float:
     if not rows:
         stored = loan.get('current_balance')
         return _cents(terms['principal'] if terms['start'] is not None or stored is None else stored)
-    kept, _rest = _split_history(rows)
-    owed = _owed_after_history(terms, kept)['opening'] if kept else terms['principal']
+    # Only installments actually paid count: a paid status, an actual date or an actual amount. A skipped
+    # installment or a note keeps the schedule's history (_split_history) but repays nothing.
+    paid = [r for r in rows if str(r.get('payment_status') or '').strip().lower() == 'paid'
+            or str(r.get('actual_payment_date') or '').strip() != '' or r.get('actual_payment_amount') is not None]
+    owed = _owed_after_history(terms, paid)['opening'] if paid else terms['principal']
+    if paid and len(paid) < len(rows):
+        # The residue rule reads "nothing left" off the last row; with installments still unpaid it cannot apply.
+        owed = round(terms['principal'] - sum(float(r.get('principal_payment') or 0) for r in paid), 2)
     return _cents(max(owed, 0.0))
 
 
