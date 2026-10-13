@@ -183,7 +183,9 @@ Typical workflow: start clean, import BOMs / routings / products / customers and
 /forecast/scenario/{id}/approve {"approved_by": "Dana, CFO", "note": "Board approved"}`, MCP
 `forecast_approve_scenario`) freezes a scenario as a baseline: it stores the statement totals over the
 scenario's sales window, saves the Excel workbook to `data/exports/approved/` and a database snapshot
-`approved_<id>_<YYYYMMDD_HHMMSS>.db` to `data/saved_databases/`, and locks the scenario. While it is
+`approved_<id>_<YYYYMMDD_HHMMSS>.db` to `data/saved_databases/` (the approval's evidence: it can be
+loaded, which restores a copy, but never deleted or made the live file with `/database/switch`), and
+locks the scenario. While it is
 locked, every change to its own rows (sales, scenario expenses, payroll, capex, assumptions, prices,
 deduction rules), renaming it and deleting it are refused with HTTP 409 ("Scenario '2027 Budget' is
 approved and locked: branch it to make changes, or unlock it with a reason"). Branch it to work on a new

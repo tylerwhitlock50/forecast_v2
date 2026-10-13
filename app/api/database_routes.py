@@ -3,6 +3,7 @@ Database management and utility API routes
 """
 
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime
@@ -230,6 +231,55 @@ def _snapshot_path(filename: str) -> str:
     if os.path.basename(name) != name or name.startswith('.') or '..' in name:
         raise HTTPException(status_code=400, detail=f"Invalid snapshot filename: {filename}")
     return os.path.join(_manager().snapshot_dir, name)
+
+
+#: approved_<scenario>_<YYYYMMDD_HHMMSS>[_n].db -> the scenario id (the fallback when no approval names the file).
+_APPROVAL_SNAPSHOT_ID = re.compile(r'^approved_(.+)_\d{8}_\d{6}(?:_\d+)?\.db$')
+
+
+def approval_evidence(filename: str) -> Optional[Dict[str, Any]]:
+    """
+    The approval a snapshot file is the evidence of, or None when it is not
+    approval evidence. A file is evidence when its name is an approval
+    snapshot's (``approved_<id>_<YYYYMMDD_HHMMSS>[_n].db``) or an approval in
+    the live database names it (``scenario_approvals.snapshot_filename``).
+    Returns {forecast_id, scenario_name, actor, approved_at} (the newest
+    approval naming it; the scenario id from the file name when none does).
+    """
+    name = os.path.basename(str(filename or ""))
+    found = None
+    try:
+        with _manager().connection() as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scenario_approvals'").fetchone():
+                found = conn.execute(
+                    "SELECT a.forecast_id, f.name, a.actor, a.created_at FROM scenario_approvals a "
+                    "LEFT JOIN forecast f ON f.forecast_id = a.forecast_id "
+                    "WHERE a.snapshot_filename = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1",
+                    (name,)).fetchone()
+    except Exception:
+        found = None
+    if found is None and not is_approval_snapshot(name):
+        return None
+    if found is not None:
+        forecast_id, scenario_name, actor, approved_at = found
+    else:
+        match = _APPROVAL_SNAPSHOT_ID.match(name)
+        forecast_id, scenario_name, actor, approved_at = (match.group(1) if match else None), None, None, None
+    return {"forecast_id": forecast_id, "scenario_name": scenario_name, "actor": actor, "approved_at": approved_at}
+
+
+def _evidence_refusal(filename: str, evidence: Dict[str, Any], what: str) -> JSONResponse:
+    """409 for a delete / switch of an approval snapshot, filed under the approved scenario (``forecast_id``)."""
+    fid = evidence.get("forecast_id")
+    scenario = (f"scenario '{evidence['scenario_name']}' ({fid})" if evidence.get("scenario_name")
+                else f"scenario {fid}" if fid else "a scenario")
+    by = f" by {evidence['actor']}" if evidence.get("actor") else ""
+    when = f" on {evidence['approved_at']}" if evidence.get("approved_at") else ""
+    detail = (f"{filename} is the copy taken when {scenario} was approved{by}{when}. It is the approval's evidence "
+              f"(an approval without its evidence is not an approval), so it {what}. To look inside it, load it with "
+              f"POST /database/load (restores a copy into the live database, which is backed up first) or download "
+              f"it with GET /database/snapshot?filename={filename}. Nothing was changed.")
+    return JSONResponse(status_code=409, content={"detail": detail, "code": "APPROVAL_EVIDENCE", "forecast_id": fid})
 
 
 def _unique_path(directory: str, stem: str) -> str:
@@ -528,12 +578,20 @@ async def switch_database_endpoint(request: dict):
     to that file). The app's one DatabaseManager is repointed in place, so
     every screen, report and MCP tool follows, and the file's schema is
     migrated. Prefer /database/load, which keeps the live file and its path.
+    An approval snapshot (``approved_<id>_<YYYYMMDD_HHMMSS>.db``, or a file
+    an approval names) is refused with 409 (``code: APPROVAL_EVIDENCE``,
+    ``forecast_id``): every later write would change the approval's
+    evidence. Inspect one with /database/load, which restores a copy.
     """
     try:
         filename = request.get("filename", "")
         target_db_path = _snapshot_path(filename)
         if not os.path.exists(target_db_path):
             raise HTTPException(status_code=404, detail=f"Database file {os.path.basename(target_db_path)} not found")
+        evidence = approval_evidence(os.path.basename(target_db_path))
+        if evidence is not None:
+            return _evidence_refusal(os.path.basename(target_db_path), evidence,
+                                     "cannot become the live database (every later write would change it)")
         if not is_sqlite_file(target_db_path):
             raise HTTPException(status_code=422, detail=f"{os.path.basename(target_db_path)} is not a SQLite database")
         current_db_path = get_current_database_path()
@@ -555,7 +613,11 @@ async def switch_database_endpoint(request: dict):
 @router.delete("/delete/{filename}")
 async def delete_saved_database(filename: str):
     """
-    Delete a saved snapshot file
+    Delete a saved snapshot file. Refused with 409 for the live database and
+    for an approval snapshot (``approved_<id>_<YYYYMMDD_HHMMSS>.db``, or a
+    file an approval names): that file is the approval's evidence
+    (``code: APPROVAL_EVIDENCE``, ``forecast_id`` names the scenario, so the
+    change history files the attempt under it).
     """
     try:
         file_path = _snapshot_path(filename)
@@ -563,6 +625,9 @@ async def delete_saved_database(filename: str):
             raise HTTPException(status_code=409, detail="That file is the live database; switch away from it first")
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"Database file {os.path.basename(file_path)} not found")
+        evidence = approval_evidence(os.path.basename(file_path))
+        if evidence is not None:
+            return _evidence_refusal(os.path.basename(file_path), evidence, "cannot be deleted")
         os.remove(file_path)
         for suffix in ('-wal', '-shm', '-journal'):
             if os.path.exists(file_path + suffix):

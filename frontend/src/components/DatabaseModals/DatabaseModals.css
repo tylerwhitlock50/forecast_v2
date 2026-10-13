@@ -562,6 +562,26 @@
   transform: none;
 }
 
+/* An approval's copy is its evidence: no Delete, a label instead. */
+.database-load-modal .evidence-badge {
+  align-self: center;
+  flex-shrink: 0;
+  margin-right: 0.75rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.database-group-help.evidence-note {
+  flex-basis: 100%;
+}
+
 .database-load-modal .btn-delete:disabled,
 .database-load-modal .btn-refresh:disabled {
   opacity: 0.5;

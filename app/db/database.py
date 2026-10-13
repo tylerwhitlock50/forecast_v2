@@ -76,6 +76,51 @@ REPLAY_PROTECTED_TABLES = frozenset({
 REPLAY_PROTECTED_FORECAST_COLUMNS = ('locked', 'status', 'approved_by', 'approved_at', 'approval_note')
 
 
+#: Schema actions of the SQLite authorizer: action code -> (verb, object). arg1 names the object
+#: (ALTER TABLE: arg2), so a refusal reads "change the schema (drop trigger trg_lock_sales_update)".
+_SCHEMA_ACTIONS = {
+    getattr(sqlite3, f"SQLITE_{name}"): (verb, obj)
+    for name, verb, obj in (
+        ('CREATE_INDEX', 'create', 'index'), ('CREATE_TABLE', 'create', 'table'),
+        ('CREATE_TEMP_INDEX', 'create', 'temporary index'), ('CREATE_TEMP_TABLE', 'create', 'temporary table'),
+        ('CREATE_TEMP_TRIGGER', 'create', 'temporary trigger'), ('CREATE_TEMP_VIEW', 'create', 'temporary view'),
+        ('CREATE_TRIGGER', 'create', 'trigger'), ('CREATE_VIEW', 'create', 'view'),
+        ('CREATE_VTABLE', 'create', 'virtual table'),
+        ('DROP_INDEX', 'drop', 'index'), ('DROP_TABLE', 'drop', 'table'),
+        ('DROP_TEMP_INDEX', 'drop', 'temporary index'), ('DROP_TEMP_TABLE', 'drop', 'temporary table'),
+        ('DROP_TEMP_TRIGGER', 'drop', 'temporary trigger'), ('DROP_TEMP_VIEW', 'drop', 'temporary view'),
+        ('DROP_TRIGGER', 'drop', 'trigger'), ('DROP_VIEW', 'drop', 'view'), ('DROP_VTABLE', 'drop', 'virtual table'),
+        ('ALTER_TABLE', 'alter', 'table'), ('REINDEX', 'reindex', 'index'), ('ANALYZE', 'analyze', 'table'),
+    )
+    if hasattr(sqlite3, f"SQLITE_{name}")
+}
+
+
+def _denied_action(action: int, arg1: Any, arg2: Any) -> str:
+    """What a statement the replay authorizer refuses would do, as a verb phrase that reads after
+    'would' ("drop trigger ...", "run PRAGMA foreign_keys ...")."""
+    def named(*parts: Any) -> str:
+        return " ".join(str(p) for p in parts if p not in (None, ""))
+
+    if action in _SCHEMA_ACTIONS:
+        verb, obj = _SCHEMA_ACTIONS[action]
+        name = arg2 if action == sqlite3.SQLITE_ALTER_TABLE else arg1
+        return f"change the schema ({named(verb, obj, name)})"
+    if action == sqlite3.SQLITE_PRAGMA:
+        return f"run {named('PRAGMA', arg1, '=' if arg2 not in (None, '') else '', arg2)}"
+    if action == sqlite3.SQLITE_TRANSACTION:
+        return f"run transaction control ({named(arg1) or 'BEGIN / COMMIT / ROLLBACK'})"
+    if action == getattr(sqlite3, 'SQLITE_SAVEPOINT', None):
+        operation = {'BEGIN': 'SAVEPOINT', 'ROLLBACK': 'ROLLBACK TO'}.get(str(arg1 or '').upper(), arg1)
+        return f"run savepoint control ({named(operation, arg2)})"
+    if action == sqlite3.SQLITE_ATTACH:
+        # VACUUM attaches a temporary database with an empty file name.
+        return f"attach another database ({arg1})" if arg1 else "run VACUUM (rebuilds the database file)"
+    if action == sqlite3.SQLITE_DETACH:
+        return f"detach database {arg1}"
+    return "change the schema or run a PRAGMA, ATTACH / DETACH or transaction-control statement"
+
+
 def replay_authorizer(denied: List[str]):
     """
     SQLite authorizer for replayed SQL: reads and plain row writes only. It
@@ -83,7 +128,9 @@ def replay_authorizer(denied: List[str]):
     REPLAY_PROTECTED_TABLES or SQLite's own tables, any change to the forecast
     approval columns, and everything that is not a row read or write: schema
     changes (CREATE / DROP / ALTER of tables, triggers, views, indexes),
-    PRAGMA, ATTACH / DETACH, transaction control and savepoints.
+    PRAGMA, ATTACH / DETACH, transaction control and savepoints. Every reason
+    is a verb phrase that reads after "would" (the replay's 409 says
+    "log N: would <reason>").
     """
     reads = (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE)
     writes = {sqlite3.SQLITE_INSERT: 'insert into', sqlite3.SQLITE_UPDATE: 'update',
@@ -94,14 +141,21 @@ def replay_authorizer(denied: List[str]):
             return sqlite3.SQLITE_OK
         if action in writes:
             table = str(arg1 or '')
-            if table in REPLAY_PROTECTED_TABLES or table.lower().startswith('sqlite_'):
+            if table.lower() in ('sqlite_master', 'sqlite_schema', 'sqlite_temp_master', 'sqlite_temp_schema'):
+                # CREATE / DROP of a table, index, view or trigger writes SQLite's own catalogue first.
+                denied.append(f"change the schema ({writes[action]} {table})")
+                return sqlite3.SQLITE_DENY
+            if table.lower().startswith('sqlite_'):
+                denied.append(f"{writes[action]} {table} (SQLite's own bookkeeping)")
+                return sqlite3.SQLITE_DENY
+            if table in REPLAY_PROTECTED_TABLES:
                 denied.append(f"{writes[action]} {table}")
                 return sqlite3.SQLITE_DENY
             if action == sqlite3.SQLITE_UPDATE and table == 'forecast' and arg2 in REPLAY_PROTECTED_FORECAST_COLUMNS:
                 denied.append(f"change forecast.{arg2} (approve / unlock only)")
                 return sqlite3.SQLITE_DENY
             return sqlite3.SQLITE_OK
-        denied.append("schema change, PRAGMA, ATTACH or transaction control")
+        denied.append(_denied_action(action, arg1, arg2))
         return sqlite3.SQLITE_DENY
 
     return authorize
@@ -2139,7 +2193,7 @@ class DatabaseManager:
                         text = str(e)
                         if denied or GOVERNANCE_TOKEN in text or 'SCENARIO_LOCKED' in text:
                             if denied:
-                                reason = "; ".join(dict.fromkeys(denied))
+                                reason = " and ".join(dict.fromkeys(denied))
                             elif GOVERNANCE_TOKEN in text:
                                 reason = "change a scenario's approval fields (approve / unlock only)"
                             else:

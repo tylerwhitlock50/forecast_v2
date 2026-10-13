@@ -18,10 +18,18 @@ const formatTime = (ms) => (ms === null ? null : new Date(ms).toLocaleString('en
   month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit',
 }));
 
+// The copy taken at an approval is that approval's evidence: the server refuses to delete it (409), so the
+// dialog offers no Delete for it and says why. Loading one restores a copy, so it can still be inspected.
+const EVIDENCE_GROUP = 'approvals';
+const EVIDENCE_NOTE = "Each copy is the evidence of a scenario's approval, so it cannot be deleted. "
+  + 'Load one to look inside it: a copy is restored and your current data is saved first.';
+
 /**
  * Load a saved snapshot, delete one, or start clean. Snapshots are grouped by
  * why they exist (your saves, autosaves, safety copies the app made before a
  * Start clean or a load), newest first, and each one says what is in it.
+ * The copies taken when a scenario was approved are that approval's evidence:
+ * they can be loaded but not deleted, and their group says why.
  * After Start clean the dialog stays open with the safety copy it just made
  * selected, so getting the data back is one click.
  */
@@ -187,16 +195,22 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad, onAfterReset }) => {
             )}
           </span>
         </label>
-        <button
-          type="button"
-          className="btn-delete"
-          onClick={() => handleDelete(database)}
-          title={`Delete ${database.filename}`}
-          aria-label={`Delete ${database.filename}`}
-          disabled={loadingDatabase}
-        >
-          Delete
-        </button>
+        {groupKey === EVIDENCE_GROUP ? (
+          <span className="evidence-badge" title={EVIDENCE_NOTE} data-testid="approval-evidence">
+            Approval evidence
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="btn-delete"
+            onClick={() => handleDelete(database)}
+            title={`Delete ${database.filename}`}
+            aria-label={`Delete ${database.filename}`}
+            disabled={loadingDatabase}
+          >
+            Delete
+          </button>
+        )}
       </li>
     );
   };
@@ -258,6 +272,9 @@ const DatabaseLoadModal = ({ isOpen, onClose, onLoad, onAfterReset }) => {
                       {group.title} <span className="database-group-count">({group.items.length})</span>
                     </h4>
                     <span className="database-group-help">{group.help}</span>
+                    {group.key === EVIDENCE_GROUP && (
+                      <span className="database-group-help evidence-note">{EVIDENCE_NOTE}</span>
+                    )}
                   </div>
                   <ul className="database-grid" aria-labelledby={`database-group-${group.key}`}>
                     {group.items.map((database) => renderItem(database, group.key))}

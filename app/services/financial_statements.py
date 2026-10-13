@@ -1079,8 +1079,49 @@ def expenses_by_period(cursor, forecast_ids: Sequence[str], periods: Sequence[st
 # Loans
 # ---------------------------------------------------------------------------
 
+#: Most a saved loan schedule's principal column can miss the principal by per installment through
+#: rounding alone (schedules saved before they were generated in cents rounded each row on its own).
+ROUNDING_RESIDUE_PER_INSTALLMENT = 0.01
+
+
+def schedule_rounding_residue(principal_amount: Any, principal_payments: Sequence[Any],
+                              last_remaining_balance: Any) -> float:
+    """
+    What a saved schedule's principal column misses the loan's principal by
+    when that is only rounding, else 0.0. Schedules are generated in cents
+    (each installment's principal and the running balance rounded, the last
+    installment clearing the balance exactly), so their principal adds up to
+    the principal; schedules saved before that rounded each row's principal
+    on its own and add up to the principal plus or minus a few cents while
+    their last installment says nothing is owed. Returns principal -
+    sum(principal) (rounded to cents) when the last installment's stored
+    remaining_balance and that difference are both within
+    ROUNDING_RESIDUE_PER_INSTALLMENT per installment of zero; a larger
+    difference is a real balance (a principal changed after the last
+    payment, an incomplete or interest-only schedule) and is left alone.
+    """
+    if not principal_payments or principal_amount is None or last_remaining_balance is None:
+        return 0.0
+    try:
+        residue = round(float(principal_amount) - sum(float(p or 0) for p in principal_payments), 2)
+        left = float(last_remaining_balance)
+    except (TypeError, ValueError):
+        return 0.0
+    tolerance = ROUNDING_RESIDUE_PER_INSTALLMENT * len(principal_payments) + 0.0005
+    if abs(residue) < 0.005 or abs(residue) > tolerance or abs(left) > tolerance:
+        return 0.0
+    return residue
+
+
 def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
-    """Scheduled principal/interest per period, opening debt and new-loan proceeds."""
+    """
+    Scheduled principal/interest per period, opening debt and new-loan
+    proceeds, from the saved schedules of the active loans. A schedule whose
+    principal column misses the principal by rounding alone
+    (`schedule_rounding_residue`) books the difference with its last
+    installment's principal (and payment), so debt is 0.00 once that
+    installment is paid.
+    """
     first_day, _ = period_bounds(periods[0])
     _, last_day = period_bounds(periods[-1])
 
@@ -1105,7 +1146,13 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
             """,
             (loan_id,),
         )
-        schedule = cursor.fetchall()
+        schedule = [list(row) for row in cursor.fetchall()]
+        residue = schedule_rounding_residue(principal_amount, [row[1] for row in schedule],
+                                            schedule[-1][4] if schedule else None)
+        if residue:
+            last = schedule[-1]
+            last[1] = round(float(last[1] or 0) + residue, 2)
+            last[3] = round(float(last[3] or 0) + residue, 2)
 
         # Opening balance = the principal less the principal scheduled before
         # the window (the debt a longer window shows at that month; a stored
@@ -1120,7 +1167,7 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
                 repaid_before += float(p_amt or 0)
                 balance_before = float(remaining or 0)
         if balance_before is not None and principal_amount is not None:
-            balance_before = round(float(principal_amount) - repaid_before, 2)
+            balance_before = round(float(principal_amount) - repaid_before, 2) + 0.0   # never -0.0
         if balance_before is None:
             if originated and originated < first_day:
                 balance_before = float(principal_amount or 0)
@@ -1133,7 +1180,7 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
         loan_entry = by_loan.setdefault(loan_id, {
             "loan_name": loan_name, "opening_balance": balance_before,
             "principal": _zero_by_period(periods), "interest": _zero_by_period(periods),
-            "proceeds": _zero_by_period(periods),
+            "payments": _zero_by_period(periods), "proceeds": _zero_by_period(periods),
         })
 
         if originated and first_day <= originated <= last_day:
@@ -1153,6 +1200,7 @@ def loans_by_period(cursor, periods: Sequence[str]) -> Dict[str, Any]:
             payments[p] += float(total or 0)
             loan_entry["principal"][p] += float(p_amt or 0)
             loan_entry["interest"][p] += float(i_amt or 0)
+            loan_entry["payments"][p] += float(total or 0)
 
     return {
         "principal": principal,
