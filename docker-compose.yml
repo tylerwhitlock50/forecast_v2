@@ -25,6 +25,15 @@ services:
       # narrower request (Claude Code rejects results over ~25k tokens; 60000 chars
       # of compact JSON is about 20k tokens); 0 = off.
       - MCP_MAX_RESPONSE_CHARS=${MCP_MAX_RESPONSE_CHARS:-60000}
+    # The slim image has no curl, so probe GET / with Python. The frontend
+    # waits for this to pass before it starts (depends_on below).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
     networks:
       - forecast-network
 
@@ -33,8 +42,13 @@ services:
     container_name: forecast-frontend
     ports:
       - "3000:3000"
+    # Start only once the API answers; nginx also resolves the API name per
+    # request (frontend/nginx.conf), so it no longer dies with "host not
+    # found in upstream fastapi" when the API is late or restarting.
     depends_on:
-      - fastapi
+      fastapi:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - forecast-network
 
