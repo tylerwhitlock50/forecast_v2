@@ -135,6 +135,11 @@ PAY_PERIODS_PER_YEAR = {
 #   direction = 'expense' -> actual below budget is favourable
 VARIANCE_LINE_ITEMS: Dict[str, Dict[str, str]] = {
     "gross_sales":        {"label": "Gross Sales",             "direction": "income",  "statement": "income"},
+    # The gross-to-net detail lines (labels as on the income statement); Sales Deductions is their sum.
+    "terms_allowance":    {"label": "Terms allowance",         "direction": "expense", "statement": "income"},
+    "chargebacks":        {"label": "Chargebacks allowance",   "direction": "expense", "statement": "income"},
+    "other_allowances":   {"label": "Other discounts & allowances", "direction": "expense", "statement": "income"},
+    "excise_tax":         {"label": "Excise tax (FET)",        "direction": "expense", "statement": "income"},
     "total_sales_deductions": {"label": "Sales Deductions",    "direction": "expense", "statement": "income"},
     "revenue":            {"label": "Net Sales",               "direction": "income",  "statement": "income"},
     "cogs_materials":     {"label": "COGS - Materials",        "direction": "expense", "statement": "income"},
@@ -158,6 +163,12 @@ VARIANCE_LINE_ITEMS: Dict[str, Dict[str, str]] = {
     "capex":              {"label": "Capital Expenditures",    "direction": "expense", "statement": "cash_flow"},
     "closing_cash":       {"label": "Closing Cash",            "direction": "income",  "statement": "balance_sheet"},
 }
+
+#: Sales Deductions (total_sales_deductions) is the sum of these lines. A month's actuals carry EITHER the
+#: detail lines OR the total, never both: with detail lines only, the total's actual is their sum; with the
+#: total only, the detail lines of that month are carried in it (not missing); with both, build_variance
+#: compares the total as entered and warns (sales_deductions_total_and_detail).
+SALES_DEDUCTION_DETAIL_LINES: Tuple[str, ...] = ("terms_allowance", "chargebacks", "other_allowances", "excise_tax")
 
 
 # ---------------------------------------------------------------------------
@@ -1866,6 +1877,14 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
     are missing up to the latest month that has any actuals, so partial
     entry (e.g. January revenue but only February payroll) is visible
     instead of producing a misleading variance.
+
+    Sales Deductions is the sum of the gross-to-net detail lines
+    (SALES_DEDUCTION_DETAIL_LINES). A month's actuals carry either the detail
+    lines or the total: with detail lines only, the total's actual is the sum
+    of the detail lines entered (``derived_periods``); with the total only,
+    the month's detail lines are carried in it (``in_total_periods``) and are
+    not missing. With both, the total is compared as entered and the report
+    warns (``sales_deductions_total_and_detail``).
     """
     statements = statements or build_statements(cursor, forecast_ids, start_period, end_period)
     periods = statements["periods"]
@@ -1879,6 +1898,27 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
             unknown_lines.add(key)
             continue
         actual[key][entry["period"]] = actual[key].get(entry["period"], 0.0) + float(entry["amount"] or 0)
+
+    # Sales deductions: a month carries either the detail lines or their total.
+    total_key = "total_sales_deductions"
+    derived_from: Dict[str, List[str]] = {}   # month -> the detail lines its Sales Deductions actual adds up
+    in_total: set = set()                     # months whose detail lines are carried in the entered total
+    overlap: List[Dict[str, Any]] = []        # months with both the total and detail lines
+    deduction_months = set(actual[total_key]).union(*(actual[k] for k in SALES_DEDUCTION_DETAIL_LINES))
+    for p in sorted(deduction_months):
+        given = [k for k in SALES_DEDUCTION_DETAIL_LINES if p in actual[k]]
+        detail_sum = 0.0
+        for k in given:
+            detail_sum += actual[k][p]
+        if p not in actual[total_key]:
+            actual[total_key][p] = detail_sum
+            derived_from[p] = given
+        elif given:
+            entered = actual[total_key][p]
+            overlap.append({"period": p, "total": round(entered, 2), "detail_lines": given,
+                            "detail_sum": round(detail_sum, 2), "difference": round(entered - detail_sum, 2)})
+        else:
+            in_total.add(p)
 
     periods_with_actuals = sorted({p for line in actual.values() for p in line})
     actuals_through = periods_with_actuals[-1] if periods_with_actuals else None
@@ -1897,6 +1937,8 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
     lines_without_actuals: List[str] = []
     for key, meta in VARIANCE_LINE_ITEMS.items():
         is_balance = meta["statement"] == "balance_sheet"
+        # A detail line of a month that has only the Sales Deductions total is carried in it, not missing.
+        carried = in_total if key in SALES_DEDUCTION_DETAIL_LINES else set()
         by_period = []
         for p in periods:
             b = budget[key].get(p, 0.0)
@@ -1912,7 +1954,7 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
             })
 
         compared = [p for p in periods if p in actual[key]]
-        missing = [p for p in through_periods if p not in actual[key]]
+        missing = [p for p in through_periods if p not in actual[key] and p not in carried]
         if not compared:
             coverage = "none"
         elif missing:
@@ -1926,7 +1968,7 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
         a_ytd = _over(actual[key], compared, is_balance) if compared else None
         v_ytd = (a_ytd - b_ytd) if a_ytd is not None else None
         b_through = _over(budget[key], through_periods, is_balance)
-        lines_out.append({
+        line_out: Dict[str, Any] = {
             "line_item": key,
             "label": meta["label"],
             "direction": meta["direction"],
@@ -1946,24 +1988,64 @@ def build_variance(cursor, forecast_ids: Sequence[str], start_period: str, end_p
                 "missing_periods": missing,
                 "coverage": coverage,
             },
-        })
+        }
+        if key == total_key:
+            line_out["derived_periods"] = sorted(derived_from)
+        elif key in SALES_DEDUCTION_DETAIL_LINES:
+            line_out["in_total_periods"] = [p for p in periods if p in in_total]
+        lines_out.append(line_out)
         if coverage == "partial":
             incomplete_lines.append({"line_item": key, "label": meta["label"], "missing_periods": missing})
-        elif coverage == "none":
+        elif coverage == "none" and not carried:
             lines_without_actuals.append(key)
 
     period_coverage = []
     for p in through_periods:
-        entered = [k for k in VARIANCE_LINE_ITEMS if p in actual[k]]
+        carried_lines = [k for k in SALES_DEDUCTION_DETAIL_LINES if p in in_total]
+        required = [k for k in VARIANCE_LINE_ITEMS if k not in carried_lines]
+        entered = [k for k in required if p in actual[k]]
         period_coverage.append({
             "period": p,
             "lines_entered": len(entered),
-            "lines_total": len(VARIANCE_LINE_ITEMS),
-            "lines_missing": [k for k in VARIANCE_LINE_ITEMS if p not in actual[k]],
-            "complete": len(entered) == len(VARIANCE_LINE_ITEMS),
+            "lines_total": len(required),
+            "lines_missing": [k for k in required if p not in actual[k]],
+            "lines_in_total": carried_lines,
+            "complete": len(entered) == len(required),
         })
 
     warnings = list(statements.get("warnings", []))
+    if overlap:
+        differ = [o for o in overlap if abs(o["difference"]) >= 0.005]
+        tie = (f"the detail lines differ from it in {month_ranges([o['period'] for o in differ])} (e.g. "
+               f"{differ[0]['period']}: total {differ[0]['total']:,.2f}, detail lines {differ[0]['detail_sum']:,.2f})"
+               if differ else "the detail lines add up to it")
+        warnings.append({
+            "code": "sales_deductions_total_and_detail",
+            "message": (
+                f"Sales Deductions actuals are entered both as a total and as detail lines (terms allowance, "
+                f"chargebacks, other allowances, excise tax) for {month_ranges([o['period'] for o in overlap])}. "
+                f"A month should carry either the detail lines or the total, never both: Sales Deductions compares "
+                f"the total as entered and {tie}. Delete the total for those months (it is then the sum of the "
+                f"detail lines) or delete the detail lines."
+            ),
+            "periods": overlap,
+        })
+    if derived_from:
+        message = (f"Sales Deductions actuals for {month_ranges(sorted(derived_from))} are the sum of the detail lines "
+                   f"entered (terms allowance, chargebacks, other allowances, excise tax); no total was entered for "
+                   f"those months.")
+        absent = [(VARIANCE_LINE_ITEMS[k]["label"], [p for p in sorted(derived_from) if k not in derived_from[p]])
+                  for k in SALES_DEDUCTION_DETAIL_LINES]
+        absent = [(label, months) for label, months in absent if months]
+        if absent:
+            message += (" Not entered, so 0 in that total (enter 0 to confirm): "
+                        + "; ".join(f"{label} {month_ranges(months)}" for label, months in absent) + ".")
+        warnings.append({
+            "code": "sales_deductions_from_detail",
+            "level": "info",
+            "message": message,
+            "periods": sorted(derived_from),
+        })
     if unknown_lines:
         warnings.append({
             "code": "unknown_actual_lines",

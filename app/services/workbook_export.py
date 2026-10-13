@@ -42,9 +42,10 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from services.financial_statements import build_statements, load_assumptions, period_range
+from services.financial_statements import AVG_DAYS_PER_MONTH, build_statements, load_assumptions, period_range
 from services.operations_forecast import (
     DEFAULT_HOURS_PER_FTE,
+    MACHINE_TOTALS_NOTE,
     build_cogs_forecast,
     build_labor_forecast,
     detail_totals,
@@ -94,7 +95,8 @@ SHEET_DESCRIPTIONS: Dict[str, str] = {
     "Labor Forecast": "Direct labor hours, cost and FTEs by labor type by month (routing labor minutes x units), "
                       "the routing standard against the pay of employees classed Direct (paid hours, utilization, "
                       "variance), plus labor hours by product.",
-    "Machine Hours": "Machine hours required against available capacity, utilization and machine cost by month.",
+    "Machine Hours": "Machine hours required against available capacity, utilization and machine cost by month. "
+                     "The machine cost Total row ties to the Income Statement's Machine / manufacturing line.",
     "Unit Costs": "Per-unit material, labor and machine cost of each product sold, from its BOM and routing, "
                   "with data-quality warnings.",
     "Sales Detail": "Every forecast sales line with its deductions, net sales, product COGS and the deduction rules "
@@ -671,6 +673,7 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
 
     w.section("How the numbers are computed")
     hpf = data["hours_per_fte"]
+    days_per_month = f"{AVG_DAYS_PER_MONTH:g}"   # the engine's working-capital divisor, 365.25 / 12 = 30.4375
     assumptions = data.get("assumptions") or stmt.get("assumptions") or {}
     explanations: List[Tuple[str, str]] = [
         ("Gross sales", "Quantity x unit price for each forecast sales line; the line's stored total is used only "
@@ -722,9 +725,12 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Machine utilization", "Machine hours required / available hours per month (the machine's available "
                                 "minutes per month / 60). Above 100% means more machine time than capacity."),
         ("Payroll vs direct labor", str((labor.get("payroll_note") or {}).get("message") or "")),
-        ("Working capital", "Accounts receivable = (net sales + excise tax) x DSO / 30.44; inventory = product "
-                            "COGS x DIO / 30.44; accounts payable = purchases x DPO / 30.44; excise tax payable = "
-                            "excise tax x excise payable days / 30.44. This scenario uses DSO "
+        ("Working capital", f"Accounts receivable = (net sales + excise tax) x DSO / {days_per_month}; inventory = "
+                            f"product COGS x DIO / {days_per_month}; accounts payable = purchases x DPO / "
+                            f"{days_per_month}, where purchases = materials + factory overhead + other COGS + admin "
+                            f"+ operating expenses + sales commissions; excise tax payable = excise tax x excise "
+                            f"payable days / {days_per_month}. {days_per_month} is the average days in a month "
+                            f"(365.25 / 12). This scenario uses DSO "
                             f"{_num_text(assumptions.get('dso_days'), 4)}, "
                             f"DIO {_num_text(assumptions.get('dio_days'), 4)}, "
                             f"DPO {_num_text(assumptions.get('dpo_days'), 4)}, excise payable days "
@@ -733,7 +739,11 @@ def _sheet_read_me(ws, data: Dict[str, Any]) -> None:
         ("Rounding", "Sales Detail rounds every money amount of a line to the cent (unit prices keep up to 4 "
                      "decimals), so each line cross-foots and its Total row is the SUM of the lines. The statements "
                      "add up the unrounded lines, so that SUM can differ from the Income Statement by a few cents; "
-                     "the Rounding row under the Sales Detail total shows the difference."),
+                     "the Rounding row under the Sales Detail total shows the difference. On Machine Hours the "
+                     "Total rows are every machine together, month by month as the statements add them (the "
+                     "machine cost Total is the Income Statement's Machine / manufacturing line); each machine's "
+                     "row is rounded on its own, so the machine rows can add up to a cent or two more or less "
+                     "than the Total."),
     ]
     for topic, text in explanations:
         w.cell(w.row, 1, topic, bold=True)
@@ -1040,6 +1050,10 @@ def _sheet_machines(ws, data: Dict[str, Any]) -> None:
         w.finish(freeze="D2")
         return
 
+    # Total rows: every machine together, month by month as the statements add it (the cost row is the Income
+    # Statement's Machine / manufacturing line), never a sum of the rounded per-machine cells.
+    totals_by_period = {r["period"]: r for r in labor.get("machine_totals_by_period") or []}
+    window_totals = labor.get("machine_totals") or {}
     blocks = [
         ("hours", "Machine hours required", "hours", "hours", True),
         ("utilization_pct", "Utilization (hours required / available hours); Total column = peak month", "pct",
@@ -1048,7 +1062,6 @@ def _sheet_machines(ws, data: Dict[str, Any]) -> None:
     ]
     for metric, title, kind, total_key, has_total in blocks:
         w.section(title)
-        sums = {p: 0.0 for p in periods}
         for entry in machines:
             r = w.row
             w.cell(r, 1, entry.get("machine_name") or entry.get("machine_id"), indent=1)
@@ -1062,8 +1075,6 @@ def _sheet_machines(ws, data: Dict[str, Any]) -> None:
                 cell = w.cell(r, j, value, kind)
                 if kind == "pct" and _is_number(value) and value > 1:
                     cell.fill = _OVER_FILL
-                if _is_number(value):
-                    sums[p] += float(value)
             total = (entry.get("totals") or {}).get(total_key)
             w.cell(r, ncols, _pct(total) if kind == "pct" else total, kind)
             w.row += 1
@@ -1071,12 +1082,13 @@ def _sheet_machines(ws, data: Dict[str, Any]) -> None:
             r = w.row
             w.cell(r, 1, "Total")
             for j, p in enumerate(periods, start=4):
-                w.cell(r, j, sums[p], kind)
-            w.cell(r, ncols, sum((m.get("totals") or {}).get(total_key) or 0 for m in machines), kind)
+                w.cell(r, j, totals_by_period.get(p, {}).get(metric), kind)
+            w.cell(r, ncols, window_totals.get(total_key), kind)
             w.style_row(r, ncols)
             w.row += 1
         w.blank()
     w.note("Shaded cells: the machine needs more hours than it has available that month.")
+    w.note(str(window_totals.get("note") or MACHINE_TOTALS_NOTE))
     w.finish(freeze="D2")
 
 

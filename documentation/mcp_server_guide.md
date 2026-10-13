@@ -299,7 +299,7 @@ return the API's confirmation.
 | Expenses | `list_expense_categories`, `create_expense_category`, `list_expenses` (paged, 50), `create_expense`, `update_expense`, `delete_expense`, `expense_forecast`, `expense_summary` |
 | Loans | `list_loans`, `create_loan`, `update_loan` (paid / recorded installments are never changed; `preview` first), `delete_loan`, `loan_schedule` (paged, 120 payments, `start_period` / `end_period`), `loan_summary`, `loan_cash_flow`, `loan_schedule_audit` (read-only: legacy 30.44-day dates, gaps, broken balances), `repair_loan_schedule` (dry run unless `dry_run=false`) |
 | Reporting | `financial_statements`, `variance`, `get_assumptions`, `update_assumptions`, `list_capex`, `create_capex`, `update_capex`, `delete_capex` |
-| Actuals | `actual_line_items`, `list_actuals`, `upsert_actuals`, `import_actuals` (CSV / XLSX, Excel date cells included; atomic unless `allow_partial`; duplicates refused unless `combine_duplicates`; `control_total`; `dry_run` first; amounts under different references add up per month + line, `line_totals` / `stored_after_total` show each line's month total after the import and a warning names the other references; `replace_lines` replaces them, undo puts them back), `delete_actuals`, `list_actuals_batches`, `undo_actuals_batch` (as if the import had never run: replays the imports still in place, so any undo order gives the same rows; deletes rows the batch added, puts back rows it replaced, returns rows it overwrote to the latest earlier import that is not undone, leaves a row a later import found unchanged with that import; dry run by default), `actuals_periods`, `close_actuals_period`, `reopen_actuals_period` (reason required) |
+| Actuals | `actual_line_items` (includes the gross-to-net lines terms allowance, chargebacks, other allowances and excise tax (FET), whose sum is Sales Deductions: a file carries the detail lines or the total for a month, never both, and `variance` warns when both are stored), `list_actuals`, `upsert_actuals`, `import_actuals` (CSV / XLSX, Excel date cells included; atomic unless `allow_partial`; duplicates refused unless `combine_duplicates`; `control_total`; `dry_run` first; amounts under different references add up per month + line, `line_totals` / `stored_after_total` show each line's month total after the import and a warning names the other references; `replace_lines` replaces them, undo puts them back), `delete_actuals`, `list_actuals_batches`, `undo_actuals_batch` (as if the import had never run: replays the imports still in place, so any undo order gives the same rows; deletes rows the batch added, puts back rows it replaced, returns rows it overwrote to the latest earlier import that is not undone, leaves a row a later import found unchanged with that import; dry run by default), `actuals_periods`, `close_actuals_period`, `reopen_actuals_period` (reason required) |
 | Safety | `save_database`, `list_saved_databases`, `load_database`, `revert_to_last_save`, `start_clean` (only when asked; snapshots first), `data_quality` |
 
 ### Reports at a glance
@@ -315,7 +315,10 @@ return the API's confirmation.
   `others`.
 * `forecast_labor_forecast`: `periods` plus arrays per labor type (`hours`, `cost`, `fte`),
   per machine (`hours`, `utilization_pct`, `over_capacity_periods`). Labor cost is the routing
-  standard (the income statement's standard direct labor). `standard_vs_payroll` sets it against
+  standard (the income statement's standard direct labor). `machine_totals` (every machine
+  together: `totals` and `by_period` hours and cost) is the income statement's machine line to
+  the cent; quote it, not a sum of `by_machine`, whose rows are rounded one by one and can be a
+  cent off (`forecast_machine_utilization` carries the same figure in `totals`). `standard_vs_payroll` sets it against
   employees classed Direct: standard vs paid hours, `utilization_pct`, and `labor_variance`
   (direct payroll - standard, booked in COGS, so nobody is counted twice), with every monthly
   column of the API as an array. `payroll_note` carries every field of the API's note: payroll
